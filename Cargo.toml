@@ -3,7 +3,7 @@ name = "tinycortex"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/tinyhumansai/neocortex"
+repository = "https://github.com/tinyhumansai/tinycortex"
 description = "Rust core for the TinyCortex memory system"
 
 [dependencies]

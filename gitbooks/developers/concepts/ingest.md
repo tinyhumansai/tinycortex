@@ -1,11 +1,11 @@
 # Ingest
 
-Ingesting is how you write memory into Neocortex. Ingest is an upsert operation.
+Ingesting is how you write memory into TinyCortex. Ingest is an upsert operation.
 
 ## What Upsert Means
 
-- If `(namespace, key)` does not exist, Neocortex creates a new memory item.
-- If `(namespace, key)` already exists, Neocortex updates the existing item.
+- If `(namespace, key)` does not exist, TinyCortex creates a new memory item.
+- If `(namespace, key)` already exists, TinyCortex updates the existing item.
 
 This prevents duplicates and lets you safely re-send corrected or richer versions of the same memory.
 

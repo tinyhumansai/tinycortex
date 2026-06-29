@@ -31,7 +31,7 @@
 \providecommand{\tightlist}{%
   \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
 
-\title{Neocortex (Draft)\\\large Building Artificial Consciousness with a High-Throughput Context System}
+\title{TinyCortex (Draft)\\\large Building Artificial Consciousness with a High-Throughput Context System}
 
 \author{
   Tiny Humans \\
@@ -51,11 +51,11 @@ long-term coherence and adaptation. Most systems retrieve information, answer,
 and move on.
 
 \smallskip\noindent
-We present \textbf{Neocortex}, a simple ongoing intelligence loop built on top
+We present \textbf{TinyCortex}, a simple ongoing intelligence loop built on top
 of memory. The loop continuously processes experience, learns from feedback,
 forgets low-value noise, and updates a persistent internal state over time.
 \smallskip\noindent
-Neocortex has two components: \textbf{(1)} a memory layer and
+TinyCortex has two components: \textbf{(1)} a memory layer and
 \textbf{(2)} a consciousness loop. Together they provide persistent context
 and continuous adaptation.
 
@@ -91,7 +91,7 @@ control.'' Practical systems must decide which evidence to admit, which
 evidence to decay, and which state transitions to preserve as durable
 history.
 
-Neocortex is explicitly two things: a memory layer and a consciousness loop.
+TinyCortex is explicitly two things: a memory layer and a consciousness loop.
 The memory layer provides durable context; the consciousness loop provides
 continuous adaptation through feedback, learning, and forgetting. Together,
 they transform stored context into evolving intelligence.
@@ -103,7 +103,7 @@ retrieval well, but still under-specify these three control functions:
 \textbf{what to keep}, \textbf{what to strengthen}, and
 \textbf{what to update over time}.
 
-We introduce \textbf{Neocortex}, an architecture for conscious
+We introduce \textbf{TinyCortex}, an architecture for conscious
 intelligence designed around those control functions. It combines:
 \begin{itemize}
 \item Semantic and graph retrieval for topical and relational recall;
@@ -215,7 +215,7 @@ Another useful distinction is conscious versus subconscious processing. The
 conscious layer is task-facing and prompt-responsive. The subconscious layer
 is continuous and background: it consolidates experience, updates associations,
 and reweights salience between explicit tasks. This supports a key design
-choice in Neocortex: recall quality depends on both query-time retrieval and
+choice in TinyCortex: recall quality depends on both query-time retrieval and
 ongoing maintenance cycles.
 
 \section{Consciousness Loop}
@@ -306,14 +306,14 @@ More importantly, this loop creates system-level traits associated with
 conscious intelligence: \textbf{feedback} (actions and outcomes alter future
 weights), \textbf{learning} (useful patterns are reinforced into latent
 state), and \textbf{forgetting} (noise decays unless revalidated). In this
-view, Neocortex is not merely a memory layer; it is a practical control
+view, TinyCortex is not merely a memory layer; it is a practical control
 mechanism for adaptive intelligence growth.
 
 \section{Implementation \& Results}
 
-We implement Neocortex as a custom memory stack coupled to a lightweight LLM
+We implement TinyCortex as a custom memory stack coupled to a lightweight LLM
 within the loop above. We then modify the inference layer of an open-source
-LLM runtime to consume Neocortex recall packets and write back thought/memory
+LLM runtime to consume TinyCortex recall packets and write back thought/memory
 updates each cycle.
 
 \begingroup
@@ -366,7 +366,7 @@ progress. The next version will add:
 \section{Conclusion}
 
 Prior work including Titans/MIRAS, GraphRAG, and MemoryBank demonstrates the
-importance of structured memory and retention-aware mechanisms. Neocortex
+importance of structured memory and retention-aware mechanisms. TinyCortex
 extends this direction with an operational conscious-intelligence loop that
 integrates ingestion, interval recall, action policy, and write-back
 reweighting in one production workflow.

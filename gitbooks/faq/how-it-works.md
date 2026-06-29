@@ -10,11 +10,11 @@ See [Memory Decay](../developers/concepts/memory-decay.md) for the full technica
 
 ### Can I disable memory decay?
 
-Memory decay is a core part of how Neocortex maintains retrieval quality at scale. Disabling it would effectively turn it into a standard vector store. If you have a use case where certain memories should never decay (compliance records, core identity facts), you can use interaction signals to keep them reinforced, or reach out to discuss your needs.
+Memory decay is a core part of how TinyCortex maintains retrieval quality at scale. Disabling it would effectively turn it into a standard vector store. If you have a use case where certain memories should never decay (compliance records, core identity facts), you can use interaction signals to keep them reinforced, or reach out to discuss your needs.
 
 ### What are interactions and how do they affect memory?
 
-Interactions are signals that tell Neocortex a piece of knowledge is important. Different types carry different weights:
+Interactions are signals that tell TinyCortex a piece of knowledge is important. Different types carry different weights:
 
 * **Views**: Lowest signal, but repeated views compound
 * **Reactions**: Moderate signal

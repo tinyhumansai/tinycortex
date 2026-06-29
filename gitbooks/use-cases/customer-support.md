@@ -4,7 +4,7 @@
 This use case is a **work in progress**. We're actively building and refining it with early partners.
 {% endhint %}
 
-Support agents deal with the same questions, escalation patterns, and edge cases over and over but traditional systems treat every ticket as if it's the first time. With Neocortex, your support bot builds a living memory of past resolutions, customer context, and community knowledge.
+Support agents deal with the same questions, escalation patterns, and edge cases over and over but traditional systems treat every ticket as if it's the first time. With TinyCortex, your support bot builds a living memory of past resolutions, customer context, and community knowledge.
 
 ## How It Works
 

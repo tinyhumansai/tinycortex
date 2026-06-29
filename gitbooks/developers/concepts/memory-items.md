@@ -1,6 +1,6 @@
 # Memory Items
 
-A **memory item** is the basic unit of storage. Every piece of knowledge you store in Neocortex is a memory item.
+A **memory item** is the basic unit of storage. Every piece of knowledge you store in TinyCortex is a memory item.
 
 | Field        | Required | Description                                                              |
 | ------------ | -------- | ------------------------------------------------------------------------ |

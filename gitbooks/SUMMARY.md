@@ -1,6 +1,6 @@
 # Table of contents
 
-* [Introducing Neocortex 🧠](README.md)
+* [Introducing TinyCortex 🧠](README.md)
 * [How Human Memory Works?](how-memory-works.md)
 * [Architecture Overview](architecture-overview/README.md)
   * [Privacy Architecture](architecture-overview/privacy-architecture.md)

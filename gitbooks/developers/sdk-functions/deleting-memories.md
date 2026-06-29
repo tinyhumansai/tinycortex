@@ -45,8 +45,8 @@ curl -X POST "https://api.tinyhumans.ai/memory/admin/delete" \
 
 {% tab title="TypeScript" %}
 ```ts
-// npm install @tinyhumansai/neocortex
-import { TinyHumanMemoryClient } from "@tinyhumansai/neocortex";
+// npm install @tinyhumansai/tinycortex
+import { TinyHumanMemoryClient } from "@tinyhumansai/tinycortex";
 
 async function main() {
   // 1) Token + client.
@@ -100,7 +100,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/tinyhumansai/neocortex-sdk-go/tinyhumans"
+	"github.com/tinyhumansai/tinycortex-sdk-go/tinyhumans"
 )
 
 func main() {

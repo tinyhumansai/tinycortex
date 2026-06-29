@@ -4,7 +4,7 @@ Recall is how you fetch relevant memory context for a given task.
 
 ## How Recall Works
 
-Neocortex ranks candidate memories using:
+TinyCortex ranks candidate memories using:
 
 - semantic relevance to the query
 - recency/decay behavior

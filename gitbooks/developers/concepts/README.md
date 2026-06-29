@@ -1,6 +1,6 @@
 # Concepts
 
-Neocortex memory is built around a few core primitives. Read this section first, then use [SDK Functions](../sdk-functions/README.md) for implementation details.
+TinyCortex memory is built around a few core primitives. Read this section first, then use [SDK Functions](../sdk-functions/README.md) for implementation details.
 
 ## Start Here
 

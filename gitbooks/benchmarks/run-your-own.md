@@ -1,6 +1,6 @@
 # Run Your Own Benchmarks
 
-The benchmark suite is included in the Neocortex repository. You can run all benchmarks locally or target specific methods.
+The benchmark suite is included in the TinyCortex repository. You can run all benchmarks locally or target specific methods.
 
 ## Setup
 
@@ -16,7 +16,7 @@ bash scripts/download_corpus.sh
 python run.py
 
 # Run specific methods
-python run.py --methods neocortex,vdb --max-questions 10
+python run.py --methods tinycortex,vdb --max-questions 10
 ```
 
 ## View Results

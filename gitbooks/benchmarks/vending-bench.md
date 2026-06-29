@@ -10,7 +10,7 @@ Each method provides the agent's memory layer. The agent receives daily sales da
 
 ## Methods Compared
 
-neocortex\_v1, mem0, scratchpad, supermemory
+tinycortex\_v1, mem0, scratchpad, supermemory
 
 ## Results
 
@@ -18,11 +18,11 @@ neocortex\_v1, mem0, scratchpad, supermemory
 
 | Method            | Final P\&L (Day 30) |
 | ----------------- | ------------------- |
-| **neocortex\_v1** | **\~$295**          |
+| **tinycortex\_v1** | **\~$295**          |
 | scratchpad        | \~$285              |
 | supermemory       | \~$215              |
 | mem0              | \~$5                |
 
 ## Analysis
 
-Neocortex achieves the **highest cumulative P\&L by day 30** (\~$295). The interaction-weighted memory ensures the agent prioritizes learning from high-signal events (successful sales, pricing changes) while forgetting noise (random daily fluctuations). Mem0 barely breaks even, suggesting that without structured memory, the agent cannot learn from past decisions effectively.
+TinyCortex achieves the **highest cumulative P\&L by day 30** (\~$295). The interaction-weighted memory ensures the agent prioritizes learning from high-signal events (successful sales, pricing changes) while forgetting noise (random daily fluctuations). Mem0 barely breaks even, suggesting that without structured memory, the agent cannot learn from past decisions effectively.

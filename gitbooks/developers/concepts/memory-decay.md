@@ -1,6 +1,6 @@
 # Memory Decay
 
-Neocortex implements a **time-decay model** inspired by the Ebbinghaus Forgetting Curve. Every memory has a retention score that decreases over time unless reinforced.
+TinyCortex implements a **time-decay model** inspired by the Ebbinghaus Forgetting Curve. Every memory has a retention score that decreases over time unless reinforced.
 
 ## How It Works
 
@@ -13,9 +13,9 @@ Neocortex implements a **time-decay model** inspired by the Ebbinghaus Forgettin
 
 ## Why Decay?
 
-This is what allows Neocortex to process over **1 billion tokens** without drowning in stale, irrelevant context. You never need to manually clean up old memories the system handles it.
+This is what allows TinyCortex to process over **1 billion tokens** without drowning in stale, irrelevant context. You never need to manually clean up old memories the system handles it.
 
-Traditional memory systems accumulate everything forever. The more data they store, the harder it becomes to find what's relevant. Neocortex flips this, the system naturally stays lean and focused, just like the human brain.
+Traditional memory systems accumulate everything forever. The more data they store, the harder it becomes to find what's relevant. TinyCortex flips this, the system naturally stays lean and focused, just like the human brain.
 
 <figure><img src="/broken/files/KDosK3U7OsuEW0GYrwzu" alt=""><figcaption></figcaption></figure>
 

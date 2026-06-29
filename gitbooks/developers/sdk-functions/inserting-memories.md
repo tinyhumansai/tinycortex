@@ -1,6 +1,6 @@
 # Inserting Memories
 
-Inserting memory is how your app writes durable knowledge into Neocortex. This is an **upsert** operation: if the same identity already exists, it updates; otherwise it creates.
+Inserting memory is how your app writes durable knowledge into TinyCortex. This is an **upsert** operation: if the same identity already exists, it updates; otherwise it creates.
 
 ## When to Use This
 
@@ -75,8 +75,8 @@ curl -X POST "https://api.tinyhumans.ai/memory/insert" \
 {% tab title="TypeScript" %}
 
 ```ts
-// npm install @tinyhumansai/neocortex
-import { TinyHumanMemoryClient } from "@tinyhumansai/neocortex";
+// npm install @tinyhumansai/tinycortex
+import { TinyHumanMemoryClient } from "@tinyhumansai/tinycortex";
 
 async function main() {
   // 1) Read API token from environment.
@@ -149,7 +149,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/tinyhumansai/neocortex-sdk-go/tinyhumans"
+	"github.com/tinyhumansai/tinycortex-sdk-go/tinyhumans"
 )
 
 func main() {

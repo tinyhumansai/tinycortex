@@ -1,10 +1,10 @@
 # Getting an API Key
 
-Neocortex is currently in **closed alpha**. To get an API key:
+TinyCortex is currently in **closed alpha**. To get an API key:
 
 1. **Request access:** Send an email to [founders@tinyhumans.ai](mailto:founders@tinyhumans.ai) with a brief description of your use case.
 2. **Get approved:** We'll review your request and get back to you.
-3. **Receive your key:** Once approved, you'll receive an API key that works with all Neocortex SDKs and integrations.
+3. **Receive your key:** Once approved, you'll receive an API key that works with all TinyCortex SDKs and integrations.
 
 Your API key is used to authenticate with the TinyHumans API. Keep it secret, don't commit it to version control or expose it in client-side code.
 

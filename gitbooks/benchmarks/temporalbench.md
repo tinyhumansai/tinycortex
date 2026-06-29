@@ -10,13 +10,13 @@ Questions are categorized into 5 temporal reasoning types. Each method ingests t
 
 ## Methods Compared
 
-neocortex\_v1, directfeed, e2graphrag, mem0, supermemory
+tinycortex\_v1, directfeed, e2graphrag, mem0, supermemory
 
 ## Results
 
 <div align="center"><img src="../.gitbook/assets/chart_temporalbench.png" alt="TemporalBench Accuracy" width="700"></div>
 
-| Question Type | Neocortex | Best Competitor | Competitor |
+| Question Type | TinyCortex | Best Competitor | Competitor |
 | ------------- | --------- | --------------- | ---------- |
 | Recency       | **100%**  | 80%             | directfeed |
 | Interval      | 78%       | **97%**         | directfeed |
@@ -26,4 +26,4 @@ neocortex\_v1, directfeed, e2graphrag, mem0, supermemory
 
 ## Analysis
 
-Neocortex achieves **perfect accuracy on recency questions** (100%), directly demonstrating the effectiveness of its Ebbinghaus time-decay model. Recent memories naturally have higher retention scores. The directfeed method (feeding full context to the LLM) performs well on interval and sequence questions where having the complete timeline helps, but this approach doesn't scale beyond context window limits.
+TinyCortex achieves **perfect accuracy on recency questions** (100%), directly demonstrating the effectiveness of its Ebbinghaus time-decay model. Recent memories naturally have higher retention scores. The directfeed method (feeding full context to the LLM) performs well on interval and sequence questions where having the complete timeline helps, but this approach doesn't scale beyond context window limits.

@@ -10,13 +10,13 @@ Standard retrieval-augmented generation quality which is answer correctness, fai
 
 ## Methods Compared
 
-neocortex\_v1, fastgraphrag, gemini\_vdb, mem0, supermemory
+tinycortex\_v1, fastgraphrag, gemini\_vdb, mem0, supermemory
 
 ## Results
 
 <div align="center"><img src="../.gitbook/assets/chart_ragas.png" alt="RAGAS Benchmark Scores" width="700"></div>
 
-| Metric             | Neocortex | Best Competitor | Competitor  |
+| Metric             | TinyCortex | Best Competitor | Competitor  |
 | ------------------ | --------- | --------------- | ----------- |
 | Answer Relevancy   | **0.97**  | 0.88            | supermemory |
 | Context Precision  | **0.80**  | 0.78            | supermemory |
@@ -26,5 +26,5 @@ neocortex\_v1, fastgraphrag, gemini\_vdb, mem0, supermemory
 
 ## Analysis
 
-Neocortex achieves the highest **Answer Relevancy** score by a significant margin (0.97 vs 0.88) and is competitive on **Context Precision**. The graph-based retrieval ensures that returned context is highly relevant to the query, even when the answer requires cross-story reasoning.
+TinyCortex achieves the highest **Answer Relevancy** score by a significant margin (0.97 vs 0.88) and is competitive on **Context Precision**. The graph-based retrieval ensures that returned context is highly relevant to the query, even when the answer requires cross-story reasoning.
 

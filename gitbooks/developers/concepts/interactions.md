@@ -1,6 +1,6 @@
 # Interactions
 
-Not all memories are equal. **Interactions** are the signals that tell Neocortex what matters.
+Not all memories are equal. **Interactions** are the signals that tell TinyCortex what matters.
 
 ## How It Works
 
@@ -19,7 +19,7 @@ Higher-signal interactions (like building on a memory) reinforce it more than pa
 
 ## Why It Matters
 
-The interaction model means Neocortex **gets smarter over time**. The more your application uses the memory, the better it becomes at surfacing what's relevant.
+The interaction model means TinyCortex **gets smarter over time**. The more your application uses the memory, the better it becomes at surfacing what's relevant.
 
 A piece of knowledge that gets recalled frequently becomes more durable. A fact that was ingested once and never accessed again naturally fades exactly like how human memory works.
 

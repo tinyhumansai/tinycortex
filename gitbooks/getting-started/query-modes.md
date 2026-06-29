@@ -1,6 +1,6 @@
 # Query Modes
 
-Neocortex provides several `QueryParam` presets that control the quality/cost/speed tradeoff for queries.
+TinyCortex provides several `QueryParam` presets that control the quality/cost/speed tradeoff for queries.
 
 ## Presets
 
@@ -11,7 +11,7 @@ Neocortex provides several `QueryParam` presets that control the quality/cost/sp
 | `economy()` | 0.01 | 32 | 4 | High-volume / batch queries |
 
 ```python
-from neocortex import QueryParam
+from tinycortex import QueryParam
 
 # General-purpose — good quality at reasonable cost
 response = rag.query("Who are the investors?", params=QueryParam.balanced())

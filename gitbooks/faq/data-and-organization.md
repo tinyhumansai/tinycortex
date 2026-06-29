@@ -10,7 +10,7 @@ See [Namespaces](../developers/concepts/namespaces.md).
 
 ### How does deduplication work?
 
-Ingest is an upsert operation. Same `(namespace, key)` = update, not duplicate. Beyond key-based dedup, Neocortex also performs semantic deduplication during compression, merging near-duplicate content across sources.
+Ingest is an upsert operation. Same `(namespace, key)` = update, not duplicate. Beyond key-based dedup, TinyCortex also performs semantic deduplication during compression, merging near-duplicate content across sources.
 
 ### Can I delete specific memories?
 

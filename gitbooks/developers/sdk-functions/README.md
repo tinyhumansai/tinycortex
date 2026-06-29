@@ -1,10 +1,10 @@
 # SDK Functions
 
-This section documents SDK setup and core Neocortex memory operations across TypeScript, Python, Go, Rust, Java, C++, and cURL.
+This section documents SDK setup and core TinyCortex memory operations across TypeScript, Python, Go, Rust, Java, C++, and cURL.
 
 ## Get API Access
 
-Neocortex is currently in closed alpha.
+TinyCortex is currently in closed alpha.
 
 1. Request access: email [founders@tinyhumans.ai](mailto:founders@tinyhumans.ai) with your use case.
 2. Wait for approval.
@@ -26,11 +26,11 @@ Never expose server API keys in frontend/browser code or commit them to git.
 {% tabs %}
 {% tab title="TypeScript" %}
 ```bash
-npm install @tinyhumansai/neocortex
+npm install @tinyhumansai/tinycortex
 ```
 
 ```ts
-import { TinyHumanMemoryClient } from "@tinyhumansai/neocortex";
+import { TinyHumanMemoryClient } from "@tinyhumansai/tinycortex";
 const client = new TinyHumanMemoryClient({ token: process.env.TINYHUMANS_TOKEN ?? "" });
 ```
 {% endtab %}
@@ -49,7 +49,7 @@ client = api.TinyHumanMemoryClient(token=os.getenv("TINYHUMANS_TOKEN"))
 
 {% tab title="Go" %}
 ```bash
-go get github.com/tinyhumansai/neocortex-sdk-go
+go get github.com/tinyhumansai/tinycortex-sdk-go
 ```
 
 ```go

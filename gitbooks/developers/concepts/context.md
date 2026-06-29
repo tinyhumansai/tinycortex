@@ -32,7 +32,7 @@ messages = [
 ]
 ```
 
-## Or Let Neocortex Handle It
+## Or Let TinyCortex Handle It
 
 If you don't want to manage the LLM call yourself, use `recall_with_llm`  it fetches context and queries the LLM in one step:
 

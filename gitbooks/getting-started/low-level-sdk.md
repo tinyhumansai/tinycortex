@@ -1,6 +1,6 @@
-# Neocortex GraphRAG (Local)
+# TinyCortex GraphRAG (Local)
 
-The Neocortex GraphRAG SDK gives you full control over a local knowledge graph. Extract entities and relations from documents and query the graph directly.
+The TinyCortex GraphRAG SDK gives you full control over a local knowledge graph. Extract entities and relations from documents and query the graph directly.
 
 ## Prerequisites
 
@@ -8,7 +8,7 @@ The Neocortex GraphRAG SDK gives you full control over a local knowledge graph. 
 - Python 3.9+
 
 ```bash
-pip install neocortex python-dotenv
+pip install tinycortex python-dotenv
 ```
 
 ## Initialize GraphRAG
@@ -16,7 +16,7 @@ pip install neocortex python-dotenv
 Create a `GraphRAG` instance with domain-specific configuration:
 
 ```python
-from neocortex import GraphRAG, QueryParam
+from tinycortex import GraphRAG, QueryParam
 
 rag = GraphRAG(
     working_dir="./db/my_project",
@@ -51,7 +51,7 @@ print(f"Chunks:    {num_chunks}")
 
 ## Query the Graph
 
-Ask natural-language questions. Neocortex retrieves relevant entities, relations, and text chunks, then generates an answer.
+Ask natural-language questions. TinyCortex retrieves relevant entities, relations, and text chunks, then generates an answer.
 
 ```python
 response = rag.query(
@@ -84,4 +84,4 @@ for chunk, score in response.context.chunks:
 ## Next Steps
 
 - [Query Modes](query-modes.md) — Explore presets and advanced retrieval options
-- [Example notebooks](https://github.com/tinyhumans/neocortex-docs/tree/main/examples/notebooks) — Full working examples
+- [Example notebooks](https://github.com/tinyhumans/tinycortex-docs/tree/main/examples/notebooks) — Full working examples

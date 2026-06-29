@@ -2,15 +2,15 @@
 
 ### Where is my data stored?
 
-Neocortex's architecture processes data on-device with AES-256-GCM encryption. Raw data never leaves the source. Only compressed, structured representations (entities, relations, embeddings, metadata) are processed server-side.
+TinyCortex's architecture processes data on-device with AES-256-GCM encryption. Raw data never leaves the source. Only compressed, structured representations (entities, relations, embeddings, metadata) are processed server-side.
 
 ### Is my data used to train models?
 
 No. Your data is never used to train AI models.
 
-### Can I self-host Neocortex?
+### Can I self-host TinyCortex?
 
-Neocortex MK1 is [open source](https://github.com/tinyhumansai/neocortex). For managed hosting or enterprise needs, reach out to [founders@tinyhumans.ai](mailto:founders@tinyhumans.ai) for more information.
+TinyCortex MK1 is [open source](https://github.com/tinyhumansai/tinycortex). For managed hosting or enterprise needs, reach out to [founders@tinyhumans.ai](mailto:founders@tinyhumans.ai) for more information.
 
 ***
 

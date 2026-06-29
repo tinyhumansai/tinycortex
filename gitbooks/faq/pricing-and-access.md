@@ -1,6 +1,6 @@
 # Pricing & Access
 
-### How much does Neocortex cost?
+### How much does TinyCortex cost?
 
 Current pricing for the managed API:
 

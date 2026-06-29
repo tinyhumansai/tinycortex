@@ -4,7 +4,7 @@
 The OpenClaw plugin is **coming soon**. This page will be updated once the plugin is released.
 {% endhint %}
 
-The OpenClaw plugin adds Neocortex memory to agents built with the [OpenClaw](https://openclaw.ai) framework. Your agents will be able to ingest, recall, and manage memory as part of their tool-calling workflow — with no changes to your existing agent logic.
+The OpenClaw plugin adds TinyCortex memory to agents built with the [OpenClaw](https://openclaw.ai) framework. Your agents will be able to ingest, recall, and manage memory as part of their tool-calling workflow — with no changes to your existing agent logic.
 
 ## What to Expect
 

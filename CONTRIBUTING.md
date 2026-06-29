@@ -1,6 +1,6 @@
-# Contributing to Neocortex
+# Contributing to TinyCortex
 
-Thank you for your interest in contributing to **Neocortex** — the AI memory system that forgets noise and remembers what matters. We welcome contributions to documentation, packages (3rd party integrations), benchmarks, and examples.
+Thank you for your interest in contributing to **TinyCortex** — the AI memory system that forgets noise and remembers what matters. We welcome contributions to documentation, packages (3rd party integrations), benchmarks, and examples.
 
 ## Table of Contents
 
@@ -20,8 +20,8 @@ By participating in this project, you agree to be respectful and constructive. W
 1. **Fork and clone the repository**
 
    ```bash
-   git clone https://github.com/YOUR_USERNAME/neocortex-docs.git
-   cd neocortex-docs
+   git clone https://github.com/YOUR_USERNAME/tinycortex-docs.git
+   cd tinycortex-docs
    ```
 
 2. **Set up your environment**
@@ -43,7 +43,7 @@ By participating in this project, you agree to be respectful and constructive. W
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `packages/`   | **All 3rd party integrations.** Each subfolder is a separate integration. |
 | `benchmarks/` | Benchmark notebooks (RAGAS, BABILong, TemporalBench, Vending-Bench, LoCoMo, HotPotQA, etc.) and `nb_helpers/`                                           |
-| `examples/`            | Example notebooks and scenarios for using Neocortex                                                                                                     |
+| `examples/`            | Example notebooks and scenarios for using TinyCortex                                                                                                     |
 | `gitbooks/`            | Documentation (getting started, how memory works)                                                                                                       |
 | `helpers/`             | Shared adapters, chunking, and types used by benchmarks                                                                                                 |
 | `scripts/`             | Corpus download, test set generation, evaluation, charting                                                                                              |

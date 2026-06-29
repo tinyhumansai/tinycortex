@@ -4,7 +4,7 @@
 This use case is a **work in progress**. We're actively building and refining it with early partners.
 {% endhint %}
 
-Most AI assistants start every conversation from zero. A Neocortex-powered personal assistant remembers your preferences, habits, past requests, and context so it gets better the more you use it.
+Most AI assistants start every conversation from zero. A TinyCortex-powered personal assistant remembers your preferences, habits, past requests, and context so it gets better the more you use it.
 
 ## How It Works
 

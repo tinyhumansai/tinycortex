@@ -1,16 +1,16 @@
 # Benchmarks
 
-Benchmark results for **Neocortex Mark 1** (`mk1`). All benchmarks compare Neocortex against other memory and RAG methods.
+Benchmark results for **TinyCortex Mark 1** (`mk1`). All benchmarks compare TinyCortex against other memory and RAG methods.
 
 ## Why Benchmarks Matter
 
-Memory systems are only as good as the answers they help produce. These benchmarks test Neocortex across four dimensions: retrieval quality, temporal reasoning, needle-in-a-haystack recall, and real-world decision-making.
+Memory systems are only as good as the answers they help produce. These benchmarks test TinyCortex across four dimensions: retrieval quality, temporal reasoning, needle-in-a-haystack recall, and real-world decision-making.
 
 ## Methods Compared
 
 | Method | Type |
 | --- | --- |
-| **neocortex\_v1** | GraphRAG with time-decay and interaction weighting |
+| **tinycortex\_v1** | GraphRAG with time-decay and interaction weighting |
 | fastgraphrag | Graph-based RAG |
 | e2graphrag | Graph-based RAG |
 | gemini\_vdb | Vector database (Gemini embeddings) |
@@ -29,7 +29,7 @@ Memory systems are only as good as the answers they help produce. These benchmar
 
 ## Summary Results
 
-| Benchmark | What It Measures | Neocortex Headline |
+| Benchmark | What It Measures | TinyCortex Headline |
 | --- | --- | --- |
 | [RAGAS](ragas.md) | Retrieval quality | **0.97** Answer Relevancy |
 | [TemporalBench](temporalbench.md) | Temporal reasoning | **100%** recency accuracy |

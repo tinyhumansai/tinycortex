@@ -1,6 +1,6 @@
-# Neocortex Benchmarks
+# TinyCortex Benchmarks
 
-Benchmark results for Neocortex Mark 1 (`mk1`). All benchmarks compare Neocortex against other memory and RAG methods including vector databases, FastGraphRAG, Mem0, SuperMemory, and directfeed (raw context window).
+Benchmark results for TinyCortex Mark 1 (`mk1`). All benchmarks compare TinyCortex against other memory and RAG methods including vector databases, FastGraphRAG, Mem0, SuperMemory, and directfeed (raw context window).
 
 ---
 
@@ -10,14 +10,14 @@ Benchmark results for Neocortex Mark 1 (`mk1`). All benchmarks compare Neocortex
 
 **Methodology:** 50 questions generated from the complete Sherlock Holmes corpus (4 types: inference, multi-hop, cross-story, analytical). Evaluated using [RAGAS 0.4.x](https://docs.ragas.io/) with GPT-4o as the judge model. Each method ingests the same chunked corpus, then answers all questions. RAGAS scores are computed per-question and aggregated.
 
-**Methods compared:** neocortex_v1, fastgraphrag, gemini_vdb, mem0, supermemory
+**Methods compared:** tinycortex_v1, fastgraphrag, gemini_vdb, mem0, supermemory
 
 <div align="center">
 <img src=".github/images/chart_ragas.png" alt="RAGAS Benchmark Scores" width="700"/>
 </div>
 
 **Key results:**
-| Metric | Neocortex | Best Competitor | Competitor |
+| Metric | TinyCortex | Best Competitor | Competitor |
 | ------ | --------- | --------------- | ---------- |
 | Answer Relevancy | **0.97** | 0.88 | supermemory |
 | Context Precision | **0.75** | 0.76 | supermemory |
@@ -25,7 +25,7 @@ Benchmark results for Neocortex Mark 1 (`mk1`). All benchmarks compare Neocortex
 | Answer Correctness | 0.57 | **0.59** | gemini_vdb |
 | Context Recall | 0.62 | **0.70** | gemini_vdb |
 
-Neocortex achieves the highest Answer Relevancy score by a significant margin (0.97 vs 0.88) and is competitive on Context Precision. The graph-based retrieval ensures that returned context is highly relevant to the query, even when the answer requires cross-story reasoning.
+TinyCortex achieves the highest Answer Relevancy score by a significant margin (0.97 vs 0.88) and is competitive on Context Precision. The graph-based retrieval ensures that returned context is highly relevant to the query, even when the answer requires cross-story reasoning.
 
 ---
 
@@ -35,14 +35,14 @@ Neocortex achieves the highest Answer Relevancy score by a significant margin (0
 
 **Methodology:** Questions are categorized into 5 temporal reasoning types. Each method ingests time-stamped events and is evaluated on accuracy per question type.
 
-**Methods compared:** neocortex_v1, directfeed, e2graphrag, mem0, supermemory
+**Methods compared:** tinycortex_v1, directfeed, e2graphrag, mem0, supermemory
 
 <div align="center">
 <img src=".github/images/chart_temporalbench.png" alt="TemporalBench Accuracy" width="700"/>
 </div>
 
 **Key results:**
-| Question Type | Neocortex | Best Competitor | Competitor |
+| Question Type | TinyCortex | Best Competitor | Competitor |
 | ------------- | --------- | --------------- | ---------- |
 | Recency | **100%** | 80% | directfeed |
 | Interval | 68% | **97%** | directfeed |
@@ -50,7 +50,7 @@ Neocortex achieves the highest Answer Relevancy score by a significant margin (0
 | State at Time | 60% | **80%** | e2graphrag |
 | Sequence | 30% | **80%** | directfeed |
 
-Neocortex achieves **perfect accuracy on recency questions** (100%), directly demonstrating the effectiveness of its Ebbinghaus time-decay model — recent memories naturally have higher retention scores. The directfeed method (feeding full context to the LLM) performs well on interval and sequence questions where having the complete timeline helps, but this approach doesn't scale beyond context window limits.
+TinyCortex achieves **perfect accuracy on recency questions** (100%), directly demonstrating the effectiveness of its Ebbinghaus time-decay model — recent memories naturally have higher retention scores. The directfeed method (feeding full context to the LLM) performs well on interval and sequence questions where having the complete timeline helps, but this approach doesn't scale beyond context window limits.
 
 ---
 
@@ -60,14 +60,14 @@ Neocortex achieves **perfect accuracy on recency questions** (100%), directly de
 
 **Methodology:** Facts are inserted at various positions within contexts of 4k, 8k, 16k, and 128k tokens. Methods must retrieve the correct fact to answer a question. Accuracy is measured per context length.
 
-**Methods compared:** neocortex_v1, directfeed
+**Methods compared:** tinycortex_v1, directfeed
 
 <div align="center">
 <img src=".github/images/heatmap_babilong.png" alt="BABILong Heatmap" width="600"/>
 </div>
 
 **Key results:**
-| Context Length | Neocortex | directfeed |
+| Context Length | TinyCortex | directfeed |
 | -------------- | --------- | ---------- |
 | 4k | **33%** | 0% |
 | 8k | 0% | 0% |
@@ -75,7 +75,7 @@ Neocortex achieves **perfect accuracy on recency questions** (100%), directly de
 | 128k | 0% | 0% |
 | **Overall** | **11%** | **0%** |
 
-Neocortex is the **only method that successfully retrieves needles**, scoring 33% at the 4k context length. While absolute accuracy is still low, this demonstrates the advantage of graph-based indexing over raw context window approaches — the knowledge graph can locate specific entities even when surrounded by large volumes of distractor text. Directfeed scores 0% across all context lengths.
+TinyCortex is the **only method that successfully retrieves needles**, scoring 33% at the 4k context length. While absolute accuracy is still low, this demonstrates the advantage of graph-based indexing over raw context window approaches — the knowledge graph can locate specific entities even when surrounded by large volumes of distractor text. Directfeed scores 0% across all context lengths.
 
 ---
 
@@ -85,7 +85,7 @@ Neocortex is the **only method that successfully retrieves needles**, scoring 33
 
 **Methodology:** Each method provides the agent's memory layer. The agent receives daily sales data and must make restocking and pricing decisions. Performance is measured by cumulative Profit & Loss (P&L) over 30 simulated days.
 
-**Methods compared:** neocortex_v1, mem0, scratchpad, supermemory
+**Methods compared:** tinycortex_v1, mem0, scratchpad, supermemory
 
 <div align="center">
 <img src=".github/images/chart_vendingbench.png" alt="Vending-Bench P&L" width="700"/>
@@ -94,12 +94,12 @@ Neocortex is the **only method that successfully retrieves needles**, scoring 33
 **Key results:**
 | Method | Final P&L (Day 30) |
 | ------ | ------------------- |
-| **neocortex_v1** | **~$295** |
+| **tinycortex_v1** | **~$295** |
 | scratchpad | ~$285 |
 | supermemory | ~$215 |
 | mem0 | ~$5 |
 
-Neocortex achieves the **highest cumulative P&L by day 30** (~$295). The interaction-weighted memory ensures the agent prioritizes learning from high-signal events (successful sales, pricing changes) while forgetting noise (random daily fluctuations). Mem0 barely breaks even, suggesting that without structured memory, the agent cannot learn from past decisions effectively.
+TinyCortex achieves the **highest cumulative P&L by day 30** (~$295). The interaction-weighted memory ensures the agent prioritizes learning from high-signal events (successful sales, pricing changes) while forgetting noise (random daily fluctuations). Mem0 barely breaks even, suggesting that without structured memory, the agent cannot learn from past decisions effectively.
 
 ---
 
@@ -116,7 +116,7 @@ bash scripts/download_corpus.sh
 python run.py
 
 # Run specific methods
-python run.py --methods neocortex,vdb --max-questions 10
+python run.py --methods tinycortex,vdb --max-questions 10
 
 # View results
 python scripts/chart.py --chart bar

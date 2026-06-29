@@ -12,7 +12,7 @@ gensim>=4.3.0
 # Pin scipy so pip uses pre-built wheels (avoids building from source + OpenBLAS on macOS)
 scipy>=1.14.0
 
-# --- This project (neocortex) ---
+# --- This project (tinycortex) ---
 # Install from repo root:  pip install -e .
 
 # --- fast_graphrag (separate package, used by some external framework benchmarks) ---

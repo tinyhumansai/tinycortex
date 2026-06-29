@@ -4,7 +4,7 @@
 This use case is a **work in progress**. We're actively building and refining it with early partners.
 {% endhint %}
 
-Every company has scattered knowledge across docs, Slack threads, Notion pages, wikis, and people's heads. A Neocortex-powered KB agent ingests all of it and builds a memory that understands your organization, not just your documents.
+Every company has scattered knowledge across docs, Slack threads, Notion pages, wikis, and people's heads. A TinyCortex-powered KB agent ingests all of it and builds a memory that understands your organization, not just your documents.
 
 ## How It Works
 

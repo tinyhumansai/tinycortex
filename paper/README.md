@@ -1,4 +1,4 @@
-# Neocortex (Draft)
+# TinyCortex (Draft)
 
 Building Artificial Consciousness with a High-Throughput Context System
 
@@ -34,7 +34,7 @@ Building Artificial Consciousness with a High-Throughput Context System
 
 Large language models are good at short tasks, but they still struggle with long-term coherence and adaptation. Most systems retrieve information, answer, and move on.
 
-present **Neocortex**, a simple ongoing intelligence loop built on top of memory. The loop continuously processes experience, learns from feedback, forgets low-value noise, and updates a persistent internal state over time. has two components: **(1)** a memory layer and **(2)** a consciousness loop. Together they provide persistent context and continuous adaptation.
+present **TinyCortex**, a simple ongoing intelligence loop built on top of memory. The loop continuously processes experience, learns from feedback, forgets low-value noise, and updates a persistent internal state over time. has two components: **(1)** a memory layer and **(2)** a consciousness loop. Together they provide persistent context and continuous adaptation.
 
 **Current result.** In internal usage, this approach improves continuity across sessions and helps the system adapt faster to a user’s evolving context. Our claim is practical: stronger feedback, learning, and forgetting dynamics can move AI systems closer to consciousness-like behavior and, over time, to AGI-level adaptability.
 
@@ -44,11 +44,11 @@ Modern LLMs are strong at local reasoning but weak at long-horizon coherence. Th
 
 This shifts the design focus from “more context” to “better memory control.” Practical systems must decide which evidence to admit, which evidence to decay, and which state transitions to preserve as durable history.
 
-Neocortex is explicitly two things: a memory layer and a consciousness loop. The memory layer provides durable context; the consciousness loop provides continuous adaptation through feedback, learning, and forgetting. Together, they transform stored context into evolving intelligence.
+TinyCortex is explicitly two things: a memory layer and a consciousness loop. The memory layer provides durable context; the consciousness loop provides continuous adaptation through feedback, learning, and forgetting. Together, they transform stored context into evolving intelligence.
 
 Human memory provides a useful engineering analogy. Biological systems handle continuous noisy input through selective gating, reinforcement by use, and time-based forgetting. Most current LLM memory stacks implement storage and retrieval well, but still under-specify these three control functions: **what to keep**, **what to strengthen**, and **what to update over time**.
 
-We introduce **Neocortex**, an architecture for conscious intelligence designed around those control functions. It combines:
+We introduce **TinyCortex**, an architecture for conscious intelligence designed around those control functions. It combines:
 
 - Semantic and graph retrieval for topical and relational recall;
 
@@ -110,7 +110,7 @@ This yields a concrete strategy: encode candidate memories at write time, then u
 
 ## Conscious and Subconscious Processing
 
-Another useful distinction is conscious versus subconscious processing. The conscious layer is task-facing and prompt-responsive. The subconscious layer is continuous and background: it consolidates experience, updates associations, and reweights salience between explicit tasks. This supports a key design choice in Neocortex: recall quality depends on both query-time retrieval and ongoing maintenance cycles.
+Another useful distinction is conscious versus subconscious processing. The conscious layer is task-facing and prompt-responsive. The subconscious layer is continuous and background: it consolidates experience, updates associations, and reweights salience between explicit tasks. This supports a key design choice in TinyCortex: recall quality depends on both query-time retrieval and ongoing maintenance cycles.
 
 # Consciousness Loop
 
@@ -154,11 +154,11 @@ Thoughts produced in Phase 2 are also **written back** as durable memory artifa
 
 This loop separates expensive context accumulation from cheap continuous cognition. Periodic recall, lightweight prompting, and explicit write-back maintain evolving internal state without requiring a heavy model call at every interaction.
 
-More importantly, this loop creates system-level traits associated with conscious intelligence: **feedback** (actions and outcomes alter future weights), **learning** (useful patterns are reinforced into latent state), and **forgetting** (noise decays unless revalidated). In this view, Neocortex is not merely a memory layer; it is a practical control mechanism for adaptive intelligence growth.
+More importantly, this loop creates system-level traits associated with conscious intelligence: **feedback** (actions and outcomes alter future weights), **learning** (useful patterns are reinforced into latent state), and **forgetting** (noise decays unless revalidated). In this view, TinyCortex is not merely a memory layer; it is a practical control mechanism for adaptive intelligence growth.
 
 # Implementation & Results
 
-We implement Neocortex as a custom memory stack coupled to a lightweight LLM within the loop above. We then modify the inference layer of an open-source LLM runtime to consume Neocortex recall packets and write back thought/memory updates each cycle.
+We implement TinyCortex as a custom memory stack coupled to a lightweight LLM within the loop above. We then modify the inference layer of an open-source LLM runtime to consume TinyCortex recall packets and write back thought/memory updates each cycle.
 
 <figure id="fig:consciousness-architecture" data-latex-placement="H">
 <p><img src="figures/consciousness-architecture.png" style="height:36.0%" alt="image" /> <span id="fig:consciousness-architecture" data-label="fig:consciousness-architecture"></span></p>
@@ -184,7 +184,7 @@ Current evidence is primarily qualitative. Formal benchmarking, including ablati
 
 # Conclusion
 
-Prior work including Titans/MIRAS, GraphRAG, and MemoryBank demonstrates the importance of structured memory and retention-aware mechanisms. Neocortex extends this direction with an operational conscious-intelligence loop that integrates ingestion, interval recall, action policy, and write-back reweighting in one production workflow.
+Prior work including Titans/MIRAS, GraphRAG, and MemoryBank demonstrates the importance of structured memory and retention-aware mechanisms. TinyCortex extends this direction with an operational conscious-intelligence loop that integrates ingestion, interval recall, action policy, and write-back reweighting in one production workflow.
 
 Biological inspiration from the human brain (Purkinje-style endogenous activity, Ebbinghaus-style decay, and conscious/subconscious separation) maps to three engineering requirements: selective integration, principled forgetting, and continuous consolidation.
 

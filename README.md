@@ -1,12 +1,12 @@
 <div align="center">
 <img src="./docs/images/graph.png" style="max-width: 400px"/>
-<h1>Neocortex AI Memory 🧠 - Your Second Brain</h1>
+<h1>TinyCortex AI Memory 🧠 - Your Second Brain</h1>
 
 **Human-like AI Memory  ◦  10Mn+ Token Context ◦ 0.2$/Mn tokens** ◦ **Conscious Recall**
 
-[Discord](https://discord.com/invite/k23Kn8nK) • [Reddit](https://www.reddit.com/r/tinyhumansai/) • [X](https://x.com/tinyhumansai) • [Docs](https://tinyhumans.gitbook.io/neocortex/)
+[Discord](https://discord.com/invite/k23Kn8nK) • [Reddit](https://www.reddit.com/r/tinyhumansai/) • [X](https://x.com/tinyhumansai) • [Docs](https://tinyhumans.gitbook.io/tinycortex/)
 
-#### [Benchmarks](./benchmarks/README.md)  •   [Getting Started](#-getting-started)  •   [Documentation](https://tinyhumans.gitbook.io/neocortex/)  •   [Get your API key](https://tinyhumans.ai) 
+#### [Benchmarks](./benchmarks/README.md)  •   [Getting Started](#-getting-started)  •   [Documentation](https://tinyhumans.gitbook.io/tinycortex/)  •   [Get your API key](https://tinyhumans.ai) 
 
 _NOTE: That this model is currently in closed alpha. To get access [reach out to us](mailto:founders@tinyhumans.ai)_
 
@@ -16,11 +16,11 @@ Read the paper - ([Markdown](./paper/README.md) / [PDF](./paper/out/main.pdf))
 
 The human brain is a master at compression. It doesn't try to remember every passing detail; instead, it aggressively prunes noise to maintain a sharp, focused, and easily accessible recall of what truly matters. In contrast, traditional AI memory systems try to remember everything. They retrieve whatever is _similar_—but similar doesn't mean important. The result? Your AI drowns in stale, irrelevant context that degrades every response.
 
-Inspired by how the human brain works, **Neocortex** takes a similar approach to AI memory: it **intelligently forgets noise**. Just like how you don't remember every sentence you've ever read or everything happens every day in your life, Neocortex lets low-value memories naturally decay while reinforcing the knowledge that matters — the things you interact with, recall, and build upon.
+Inspired by how the human brain works, **TinyCortex** takes a similar approach to AI memory: it **intelligently forgets noise**. Just like how you don't remember every sentence you've ever read or everything happens every day in your life, TinyCortex lets low-value memories naturally decay while reinforcing the knowledge that matters — the things you interact with, recall, and build upon.
 
 The result? an AI memory system that can chop through over 10 million tokens accurately at speeds of upto 4000 tokens/second, stays lean and focused, and gets smarter with every interaction.
 
-Neocortex ranks extremely high scores on [RAGAS](https://www.ragas.io/), [Babilong](https://github.com/booydar/babilong/), [Vending Bench](https://andonlabs.com/evals/vending-bench-2), [LoCoMo](https://github.com/snap-research/locomo) and [HotPotQA](https://hotpotqa.github.io/)
+TinyCortex ranks extremely high scores on [RAGAS](https://www.ragas.io/), [Babilong](https://github.com/booydar/babilong/), [Vending Bench](https://andonlabs.com/evals/vending-bench-2), [LoCoMo](https://github.com/snap-research/locomo) and [HotPotQA](https://hotpotqa.github.io/)
 
 # 🎯 Core Features
 
@@ -38,11 +38,11 @@ Not all memories are equal. Views, reactions, replies, and content creation all 
 
 ## Low Latency, Low Cost, High Quality
 
-There's no compromise on speed and quality when processing data with Neocortex. Everything is processed at low costs and low latency, while maintain high benchmarks.
+There's no compromise on speed and quality when processing data with TinyCortex. Everything is processed at low costs and low latency, while maintain high benchmarks.
 
 ## Conscious Recall
 
-Conscious recall is a Neocortex feature that proactively surfaces the most relevant memories for a given moment, instead of waiting for an explicit query.
+Conscious recall is a TinyCortex feature that proactively surfaces the most relevant memories for a given moment, instead of waiting for an explicit query.
 
 It continuously tracks what a user has done recently which includes conversations, actions, and signals; and combines that with time-based decay to decide which memories should stay “top of mind.”
 
@@ -50,7 +50,7 @@ When your agent needs context, conscious recall pulls forward the memories that 
 
 # ⚡ Getting Started
 
-Neocortex ships with SDKs for [Python](./packages/sdk-python), [TypeScript/JavaScript](./packages/sdk-typescript), [Go](./packages/sdk-golang), [Rust](./packages/sdk-rust), [Dart](./packages/sdk-dart), [C++](./packages/sdk-cpp), [C#](./packages/sdk-csharp), and [Java](./packages/sdk-java), plus plugins for [LangGraph](./packages/plugin-langgraph), [OpenClaw](./packages/plugin-openclaw), [ElevenLabs](./packages/plugin-elevenlabs), [CrewAI](./packages/plugin-crewai), [Raycast](./packages/plugin-raycast), [Agno](./packages/plugin-agno) [Pipecat](./packages/plugin-pipecat), [Mastra](./packages/plugin-mastra), [Autogen](./packages/plugin-autogen) and more.
+TinyCortex ships with SDKs for [Python](./packages/sdk-python), [TypeScript/JavaScript](./packages/sdk-typescript), [Go](./packages/sdk-golang), [Rust](./packages/sdk-rust), [Dart](./packages/sdk-dart), [C++](./packages/sdk-cpp), [C#](./packages/sdk-csharp), and [Java](./packages/sdk-java), plus plugins for [LangGraph](./packages/plugin-langgraph), [OpenClaw](./packages/plugin-openclaw), [ElevenLabs](./packages/plugin-elevenlabs), [CrewAI](./packages/plugin-crewai), [Raycast](./packages/plugin-raycast), [Agno](./packages/plugin-agno) [Pipecat](./packages/plugin-pipecat), [Mastra](./packages/plugin-mastra), [Autogen](./packages/plugin-autogen) and more.
 
 See [packages/README.md](./packages/README.md) for details about all the SDKs/Plugins available to use along with documentation and examples.
 
@@ -81,13 +81,13 @@ print(response.text) # The user prefers dark mode
 
 # Demo Products
 
-Explore Neocortex in action through a set of real-time demo experiences that show how the memory layer behaves under live usage.
+Explore TinyCortex in action through a set of real-time demo experiences that show how the memory layer behaves under live usage.
 
 <!-- ![Demo products screenshot](./.github/images/demo.png) -->
 
 - **Real-time chat assistant** – A conversational UI that continuously writes and recalls memories so the assistant remembers users across sessions.
-- **Live activity memory feed** – A stream of events (page views, actions, and signals) flowing into Neocortex, letting you inspect how memories are created, updated, and decayed over time.
-- **Agentic decision demo** – A simple agent that uses Neocortex to make stateful decisions over many steps, highlighting how long-horizon context is preserved.
+- **Live activity memory feed** – A stream of events (page views, actions, and signals) flowing into TinyCortex, letting you inspect how memories are created, updated, and decayed over time.
+- **Agentic decision demo** – A simple agent that uses TinyCortex to make stateful decisions over many steps, highlighting how long-horizon context is preserved.
 
 # Usage with LLMs
 
@@ -99,19 +99,19 @@ Provide context to your LLM by using a dedicated **context** role instead of stu
 
 ### RAGAS — Retrieval Quality (Sherlock Holmes Corpus)
 
-Standard RAG quality metrics evaluated using [RAGAS](https://docs.ragas.io/). Neocortex leads in **Answer Relevancy (0.97)** and **Context Precision (0.75)**, outperforming FastGraphRAG, Gemini VDB, Mem0, and SuperMemory.
+Standard RAG quality metrics evaluated using [RAGAS](https://docs.ragas.io/). TinyCortex leads in **Answer Relevancy (0.97)** and **Context Precision (0.75)**, outperforming FastGraphRAG, Gemini VDB, Mem0, and SuperMemory.
 
 ![ragas](.github/images/chart_ragas.png)
 
 ### TemporalBench — Temporal Reasoning
 
-Accuracy across ordering, state-at-time, recency, interval, and sequence questions. Neocortex achieves **100% on recency questions** — correctly surfacing the most recent events thanks to its time-decay memory model.
+Accuracy across ordering, state-at-time, recency, interval, and sequence questions. TinyCortex achieves **100% on recency questions** — correctly surfacing the most recent events thanks to its time-decay memory model.
 
 ![chart_temporalbench](.github/images/chart_temporalbench.png)
 
 ### Vending-Bench — Agentic Decision-Making
 
-An agent manages a simulated vending machine business over 30 days. Neocortex achieves the **highest cumulative P&L (~$295 by day 30)** — better memory leads to better decisions over time.
+An agent manages a simulated vending machine business over 30 days. TinyCortex achieves the **highest cumulative P&L (~$295 by day 30)** — better memory leads to better decisions over time.
 
 ![chart_vendingbench](.github/images/chart_vendingbench.png)
 
@@ -122,11 +122,11 @@ An agent manages a simulated vending machine business over 30 days. Neocortex ac
 _Like contributing towards AGI 🧠? Give this repo a star and spread the love ❤️_
 
 <p align="center">
-  <a href="https://www.star-history.com/#tinyhumansai/neocortex&type=date&legend=top-left">
+  <a href="https://www.star-history.com/#tinyhumansai/tinycortex&type=date&legend=top-left">
     <picture>
-     <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=tinyhumansai/neocortex&type=date&theme=dark&legend=top-left" />
-     <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=tinyhumansai/neocortex&type=date&legend=top-left" />
-     <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=tinyhumansai/neocortex&type=date&legend=top-left" />
+     <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=tinyhumansai/tinycortex&type=date&theme=dark&legend=top-left" />
+     <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=tinyhumansai/tinycortex&type=date&legend=top-left" />
+     <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=tinyhumansai/tinycortex&type=date&legend=top-left" />
     </picture>
   </a>
 </p>
@@ -135,6 +135,6 @@ _Like contributing towards AGI 🧠? Give this repo a star and spread the love �
 
 Show some love and end up in the hall of fame
 
-<a href="https://github.com/tinyhumansai/neocortex/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=tinyhumansai/neocortex" alt="NeoCortex contributors" />
+<a href="https://github.com/tinyhumansai/tinycortex/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=tinyhumansai/tinycortex" alt="TinyCortex contributors" />
 </a>

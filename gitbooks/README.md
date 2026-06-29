@@ -2,13 +2,13 @@
 description: The memory layer for AI agents. Scales to 1B+ tokens.
 ---
 
-# Introducing Neocortex 🧠
+# Introducing TinyCortex 🧠
 
 Every AI memory system you've used does the same thing: store everything, retrieve by similarity, hope for the best.
 
 The outcome: Your agent drowns in stale context. Responses degrade. Costs inflate. You end up writing custom pruning logic at 2am.
 
-Neocortex takes a fundamentally different approach. Inspired by how the human brain actually works, it **intelligently forgets noise** so your AI only reasons over what matters. Low-value memories decay naturally over time. Knowledge your users interact with gets reinforced and rises to the top. It doesn't require manual cleanup and there is no context window anxiety.
+TinyCortex takes a fundamentally different approach. Inspired by how the human brain actually works, it **intelligently forgets noise** so your AI only reasons over what matters. Low-value memories decay naturally over time. Knowledge your users interact with gets reinforced and rises to the top. It doesn't require manual cleanup and there is no context window anxiety.
 
 The result: an AI memory system that processes over **1 billion tokens**, stays lean and focused, and gets smarter with every interaction.
 
@@ -18,9 +18,9 @@ For a deployment serving 100,000 users with ongoing conversation history:
 | ---------------------------------------------- | ---------------------- |
 | Frontier model context (everything in-context) | \~$90,000              |
 | Standard RAG pipeline                          | \~$2.40                |
-| **Neocortex**                                  | **\~$0.72**            |
+| **TinyCortex**                                  | **\~$0.72**            |
 
-The 1,000:1 compression ratio means storage and compute costs grow slowly relative to conversation volume. Neocortex indexes a conversation for $0.0004, compared to $0.0112 for Mem0 (28x lower).
+The 1,000:1 compression ratio means storage and compute costs grow slowly relative to conversation volume. TinyCortex indexes a conversation for $0.0004, compared to $0.0112 for Mem0 (28x lower).
 
 ## Core Features
 
@@ -40,9 +40,9 @@ Not all memories are equal. Views, reactions, replies, and content creation all 
 
 ### Low Latency, Low Cost, High Quality
 
-No compromise on speed and quality when processing data with Neocortex. Everything is processed at low cost and low latency while maintaining high benchmark scores
+No compromise on speed and quality when processing data with TinyCortex. Everything is processed at low cost and low latency while maintaining high benchmark scores
 
-| Metric          | Neocortex  | Nearest Competitor        |
+| Metric          | TinyCortex  | Nearest Competitor        |
 | --------------- | ---------- | ------------------------- |
 | Average latency | \~1.1s     | \~3.6s (Mem0)             |
 | Query cost      | \~$0.00095 | \~$0.00085 (Mem0)         |
@@ -75,8 +75,8 @@ response = client.recall_with_llm(
 print(response.text)  # The user prefers dark mode
 ```
 
-That's it. Ingest memories, recall them with any LLM. Neocortex handles the hard parts: deduplication, decay, graph-based retrieval, and noise pruning.
+That's it. Ingest memories, recall them with any LLM. TinyCortex handles the hard parts: deduplication, decay, graph-based retrieval, and noise pruning.
 
 {% hint style="info" %}
-Neocortex is currently in **closed alpha**. To get access, [reach out to us](mailto:founders@tinyhumans.ai).
+TinyCortex is currently in **closed alpha**. To get access, [reach out to us](mailto:founders@tinyhumans.ai).
 {% endhint %}

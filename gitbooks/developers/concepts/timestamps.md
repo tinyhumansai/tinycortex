@@ -9,9 +9,9 @@ Both are **Unix timestamps in seconds**. If not provided, the system assigns the
 
 ## Why Timestamps Matter
 
-Timestamps power Neocortex's **time-decay model** older memories that aren't accessed naturally lose importance, keeping your memory lean and current.
+Timestamps power TinyCortex's **time-decay model** older memories that aren't accessed naturally lose importance, keeping your memory lean and current.
 
-They also enable **temporal reasoning**. When a user asks "what happened last week?", Neocortex uses timestamps to surface the right memories not just the most semantically similar ones.
+They also enable **temporal reasoning**. When a user asks "what happened last week?", TinyCortex uses timestamps to surface the right memories not just the most semantically similar ones.
 
 ## Example
 
