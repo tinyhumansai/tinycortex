@@ -1,0 +1,35 @@
+name: Feature Request
+description: Propose a TinyAgents capability, API, module, or workflow.
+title: "Feature: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Agent workflow
+      description: What workflow should this unlock?
+      placeholder: "I want to run two specialist agents in parallel and merge their outputs..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed shape
+      description: Describe the API, `.rag` syntax, module, or behavior you imagine.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds or other designs have you considered?
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety, policy, and observability
+      description: Any implications for generated workflows, tools, stores, checkpoints, or events?
+  - type: textarea
+    id: docs
+    attributes:
+      label: Related docs
+      description: Link relevant TinyAgents docs or external references.

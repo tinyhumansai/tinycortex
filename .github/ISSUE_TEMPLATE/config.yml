@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security reports
+    url: https://github.com/tinyhumansai/tinyagents/security/policy
+    about: Please do not report vulnerabilities through public issues.

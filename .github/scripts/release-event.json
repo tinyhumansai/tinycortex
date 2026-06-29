@@ -1,9 +1,0 @@
-{
-  "action": "published",
-  "release": {
-    "tag_name": "v0.0.0",
-    "name": "Release v0.0.0",
-    "draft": false,
-    "prerelease": false
-  }
-}

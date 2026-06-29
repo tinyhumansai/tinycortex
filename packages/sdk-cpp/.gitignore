@@ -1,8 +1,0 @@
-build/
-_deps/
-CMakeCache.txt
-CMakeFiles/
-cmake_install.cmake
-Makefile.cmake
-compile_commands.json
-.cache/
