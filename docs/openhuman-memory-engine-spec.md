@@ -11,6 +11,20 @@ external and local content, canonicalizing it, chunking it, scoring it, writing
 durable markdown and SQLite indexes, building summary trees, retrieving context,
 tracking source diffs, and exposing tools/RPC surfaces to agents and UI clients.
 
+## Ownership Boundary
+
+TinyCortex does not own memory sync. The sync module is an OpenHuman module:
+OpenHuman decides when data should be ingested, owns the upstream trigger path,
+and invokes TinyCortex on demand with already selected source payloads or
+canonical ingest requests. TinyCortex owns the memory engine contracts and
+processing semantics after that boundary: validation, canonical input shapes,
+storage/index contracts, chunking, tree updates, diffing, retrieval, and
+explainable provenance.
+
+In this specification, "ingest" means "process an OpenHuman-supplied memory
+payload through TinyCortex contracts." It does not mean TinyCortex polls user
+apps, owns OAuth/webhook callbacks, or decides when to sync data.
+
 TinyCortex should preserve these core properties:
 
 - Local-first storage: user workspace files and local indexes are authoritative.
@@ -25,8 +39,8 @@ TinyCortex should preserve these core properties:
 
 | Layer              | OpenHuman module                                                       | Responsibility                                                                         |
 | ------------------ | ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Source registry    | `memory_sources`                                                       | Defines what feeds memory and provides reader interfaces.                              |
-| Sync pipelines     | `memory_sync`                                                          | Pulls upstream data from Composio, workspace sources, and MCP.                         |
+| Source registry    | `memory_sources`                                                       | Defines source contracts; OpenHuman owns active sync configuration and triggering.      |
+| Sync pipelines     | `memory_sync`                                                          | Documents pull/on-demand pipeline contracts; OpenHuman owns the sync runner.            |
 | Canonicalization   | `memory_sync/canonicalize`                                             | Converts source payloads to canonical markdown plus metadata.                          |
 | Orchestration      | `memory`                                                               | Coordinates sync, remember, query, ingest, tools, and RPC handlers.                    |
 | Storage primitives | `memory_store`                                                         | Owns content files, chunks, trees, vectors, KV, entities, and unified legacy surfaces. |
@@ -124,6 +138,12 @@ notes, and Drive docs. TinyCortex should make provider expansion non-breaking.
 
 ## Memory Sources
 
+TinyCortex should model memory source records because source identity,
+provenance, validation, and diffing depend on them. It should not own the live
+memory sync process that polls or subscribes to those sources. OpenHuman owns
+runtime sync and calls TinyCortex with source-scoped content when ingestion is
+requested.
+
 `memory_sources` defines configured source entries persisted in `config.toml`
 under `[[memory_sources]]`. Source kinds are:
 
@@ -145,11 +165,15 @@ Reader outputs are:
 - `SourceContent`: `id`, `title`, `body`, `content_type`, and `metadata`.
 - `ContentType`: `markdown`, `html`, or `plaintext`.
 
-Manual source sync emits lifecycle events: requested, fetching, stored,
-ingesting, completed, and failed. Sync returns immediately after queuing work;
-completion is event-driven.
+Manual source sync in OpenHuman emits lifecycle events: requested, fetching,
+stored, ingesting, completed, and failed. For TinyCortex, these are integration
+events at the boundary, not an owned scheduler requirement.
 
 ## Sync Pipelines
+
+The OpenHuman code defines sync pipeline traits and status semantics. TinyCortex
+should preserve the trait-compatible contract for integration and tests, but
+the production sync runner remains OpenHuman-owned.
 
 `memory_sync` owns upstream pull loops. Pipeline kinds are:
 
@@ -167,7 +191,9 @@ Each pipeline implements:
 - `tick(config) -> Result<SyncOutcome>`
 
 `SyncOutcome` includes `records_ingested`, `more_pending`, and optional `note`.
-Pipelines own cursoring and retry policy; orchestration owns cadence.
+In OpenHuman, pipelines own cursoring and retry policy while orchestration owns
+cadence. In TinyCortex, these details are compatibility contracts unless/until
+OpenHuman calls into them directly.
 
 ## Canonicalization
 
@@ -184,6 +210,9 @@ summarization happen downstream.
 
 ## Ingest Pipeline
 
+OpenHuman owns memory sync and decides when this path runs. TinyCortex
+assumes ingestion is invoked on demand with a source-scoped payload.
+
 The ingest path is:
 
 ```text
@@ -199,9 +228,9 @@ source reader or sync provider
   -> update retrieval indexes
 ```
 
-Reader-backed source sync calls the document ingest pipeline. Composio sync
-delegates to provider-specific pipelines that must still land data through the
-same raw markdown, chunk, score, and tree path.
+Reader-backed source sync and Composio sync are OpenHuman sync concerns. When
+they call into TinyCortex, every provider must still land data through the same
+raw markdown, chunk, score, and tree path.
 
 ## Scoring, Extraction, and Embedding
 

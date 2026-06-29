@@ -8,6 +8,14 @@ The source registry answers "what feeds memory?" Sync pipelines answer "how do
 we pull from upstream and land data into memory?" Canonicalizers normalize
 upstream payloads into a common markdown shape for ingestion.
 
+## Ownership Boundary
+
+TinyCortex should preserve source, reader, sync, and canonicalization contracts
+because they define provenance and integration shape. TinyCortex should not own
+memory sync. Live sync is OpenHuman-owned and is responsible for
+polling, webhook/OAuth event handling, source scheduling, and deciding when to
+call TinyCortex on demand.
+
 ## Source Registry
 
 Sources are persisted as `[[memory_sources]]` entries in `config.toml`.
@@ -71,12 +79,15 @@ Reader requirements:
 
 ## Manual Sync
 
-Manual sync should return immediately after queuing/backgrounding work. Progress
-is communicated through memory sync stage events with source id/connection id.
-Stages include requested, fetching, stored, ingesting, completed, and failed.
+Manual sync is an OpenHuman-owned sync behavior. It should return immediately after
+queuing/backgrounding work, and progress is communicated through memory sync
+stage events with source id/connection id. Stages include requested, fetching,
+stored, ingesting, completed, and failed.
 
-Reader-backed sources ingest each item through `memory::ingest_pipeline`.
-Composio-backed sources delegate to `memory_sync::composio::run_connection_sync`.
+Reader-backed sources and Composio-backed sources are sync implementations in
+OpenHuman. Their TinyCortex boundary is the on-demand ingest call: once
+OpenHuman has selected content, it passes source-scoped payloads through the
+TinyCortex ingest/storage/tree contracts.
 
 ## Status and Cost Surfaces
 
@@ -91,6 +102,10 @@ Additional source RPC surfaces include supported toolkits, sync audit log, sync
 cost estimate, monthly cost summary, and all-in/apply-all setup.
 
 ## Sync Pipelines
+
+OpenHuman owns the production sync runner. TinyCortex should treat these
+pipeline types as compatibility contracts and optional adapters, not as proof
+that TinyCortex owns source scheduling.
 
 `SyncPipelineKind` values:
 
@@ -109,7 +124,7 @@ Each pipeline implements:
 Pipelines own pagination, cursors, rate limits, and retries. The orchestrator
 owns cadence.
 
-OpenHuman background loops:
+OpenHuman-owned background loops:
 
 - Composio periodic: 20-minute tick and per-connection interval.
 - Workspace periodic: 20-minute tick; default daily source sync interval.
@@ -153,10 +168,11 @@ Functions:
 
 ```text
 src/memory/sources/
-src/memory/sync/
+src/memory/sync_contracts/
 src/memory/sync/canonicalize/
 ```
 
 Port order: source kind/types/validation, registry patch semantics, reader
-trait and static reader contracts, canonicalizer pure functions, then live sync.
-
+trait and static reader contracts, canonicalizer pure functions, then
+OpenHuman-facing on-demand ingest adapters. Do not port the live sync scheduler
+into TinyCortex.

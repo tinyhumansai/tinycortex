@@ -9,6 +9,15 @@ remember, ingest, query, read RPC, schema registration, and agent-facing tools.
 It must not own raw persistence primitives; all durable storage goes through
 `memory_store` or specialized sibling modules.
 
+## Ownership Boundary
+
+TinyCortex does not own memory sync. OpenHuman owns the sync module and the
+decision to ingest data on demand. TinyCortex should expose the contracts and
+processing path OpenHuman calls after it has selected or fetched source data.
+That means TinyCortex can define ingest request shapes, taint rules, storage
+effects, and retrieval outputs, but it must not become the owner of polling,
+OAuth/webhook callbacks, or "when should this source be sunk?" policy.
+
 ## Public Contract
 
 The high-level `Memory` trait represents a namespace-scoped storage backend:
@@ -42,8 +51,9 @@ Namespace document inputs include `namespace`, `key`, `title`, `content`,
 
 ## Ingest Orchestration
 
-The ingest pipeline accepts canonical source documents and must produce the same
-downstream shape no matter which upstream source produced them:
+The ingest pipeline accepts OpenHuman-supplied canonical source documents and
+must produce the same downstream shape no matter which upstream source produced
+them:
 
 ```text
 canonical source
@@ -56,7 +66,9 @@ canonical source
 ```
 
 The orchestration layer must call storage through stable interfaces. It should
-not open SQLite connections directly except through lower-level helpers.
+not open SQLite connections directly except through lower-level helpers. The
+OpenHuman-owned sync module may trigger this path, but sync itself is outside the
+TinyCortex module boundary.
 
 ## Remember Orchestration
 
@@ -108,7 +120,7 @@ function names, inputs, and outputs.
 src/memory/
   traits.rs
   types.rs
-  ingest/
+  ingest_contracts/
   query/
   read_rpc/
   schemas/
@@ -116,5 +128,5 @@ src/memory/
 ```
 
 Port order: taint and memory entry types, namespace document/retrieval types,
-ingest request contracts, query request/response types, then schema registry.
-
+OpenHuman-facing ingest request contracts, query request/response types, then
+schema registry.
