@@ -1,0 +1,225 @@
+//! Append + cascade-seal tests. Adapted from OpenHuman's `bucket_seal_tests.rs`
+//! to the reduced foundation: the chat-provider summariser becomes
+//! [`ConcatSummariser`] (a deterministic [`Summariser`]), chunk bodies are read
+//! inline from SQLite (no on-disk staging), and the document-subtree /
+//! embedding assertions are dropped (those features are deferred).
+
+use super::*;
+use tempfile::TempDir;
+
+use crate::memory::chunks::upsert_chunks;
+use crate::memory::chunks::{chunk_id, Chunk, Metadata, SourceKind, SourceRef};
+use crate::memory::config::MemoryConfig;
+use crate::memory::tree::registry::get_or_create_tree;
+use crate::memory::tree::store::{self, TreeKind, INPUT_TOKEN_BUDGET, SUMMARY_FANOUT};
+use crate::memory::tree::summarise::ConcatSummariser;
+use chrono::{TimeZone, Utc};
+
+fn test_config() -> (TempDir, MemoryConfig) {
+    let tmp = TempDir::new().unwrap();
+    let cfg = MemoryConfig::new(tmp.path());
+    (tmp, cfg)
+}
+
+fn mk_leaf(id: &str, tokens: u32, ts_ms: i64) -> LeafRef {
+    LeafRef {
+        chunk_id: id.to_string(),
+        token_count: tokens,
+        timestamp: Utc.timestamp_millis_opt(ts_ms).single().unwrap(),
+        content: format!("content for {id}"),
+        entities: vec![],
+        topics: vec![],
+        score: 0.5,
+    }
+}
+
+/// Persist a chat chunk readable by the seal hydrator and return its id.
+fn seed_chunk(
+    cfg: &MemoryConfig,
+    seq: u32,
+    content: &str,
+    tokens: u32,
+    tags: Vec<String>,
+) -> Chunk {
+    let ts = Utc
+        .timestamp_millis_opt(1_700_000_000_000 + seq as i64)
+        .unwrap();
+    let c = Chunk {
+        id: chunk_id(SourceKind::Chat, "slack:#eng", seq, content),
+        content: content.to_string(),
+        metadata: Metadata {
+            source_kind: SourceKind::Chat,
+            source_id: "slack:#eng".into(),
+            owner: "alice".into(),
+            timestamp: ts,
+            time_range: (ts, ts),
+            tags,
+            source_ref: Some(SourceRef::new("slack://x")),
+            path_scope: None,
+        },
+        token_count: tokens,
+        seq_in_source: seq,
+        created_at: ts,
+        partial_message: false,
+    };
+    upsert_chunks(cfg, &[c.clone()]).unwrap();
+    c
+}
+
+#[tokio::test]
+async fn append_below_budget_does_not_seal() {
+    let (_tmp, cfg) = test_config();
+    let tree = get_or_create_tree(&cfg, TreeKind::Source, "slack:#eng").unwrap();
+    let s = ConcatSummariser::new();
+    let leaf = mk_leaf("leaf-1", 100, 1_700_000_000_000);
+    let sealed = append_leaf(&cfg, &tree, &leaf, &s, &LabelStrategy::Empty)
+        .await
+        .unwrap();
+    assert!(sealed.is_empty());
+
+    let buf = store::get_buffer(&cfg, &tree.id, 0).unwrap();
+    assert_eq!(buf.item_ids, vec!["leaf-1".to_string()]);
+    assert_eq!(buf.token_sum, 100);
+    assert_eq!(store::count_summaries(&cfg, &tree.id).unwrap(), 0);
+}
+
+#[tokio::test]
+async fn crossing_budget_triggers_seal() {
+    let (_tmp, cfg) = test_config();
+    let tree = get_or_create_tree(&cfg, TreeKind::Source, "slack:#eng").unwrap();
+    let s = ConcatSummariser::new();
+
+    let per_leaf = INPUT_TOKEN_BUDGET * 6 / 10;
+    let c1 = seed_chunk(&cfg, 0, "substantive chunk content 0", per_leaf, vec![]);
+    let c2 = seed_chunk(&cfg, 1, "substantive chunk content 1", per_leaf, vec![]);
+    let ts = Utc.timestamp_millis_opt(1_700_000_000_000).unwrap();
+
+    let leaf1 = LeafRef {
+        chunk_id: c1.id.clone(),
+        token_count: per_leaf,
+        timestamp: ts,
+        content: c1.content.clone(),
+        entities: vec![],
+        topics: vec![],
+        score: 0.5,
+    };
+    let leaf2 = LeafRef {
+        chunk_id: c2.id.clone(),
+        token_count: per_leaf,
+        timestamp: ts,
+        content: c2.content.clone(),
+        entities: vec![],
+        topics: vec![],
+        score: 0.5,
+    };
+
+    let first = append_leaf(&cfg, &tree, &leaf1, &s, &LabelStrategy::Empty)
+        .await
+        .unwrap();
+    assert!(first.is_empty());
+    let second = append_leaf(&cfg, &tree, &leaf2, &s, &LabelStrategy::Empty)
+        .await
+        .unwrap();
+    assert_eq!(second.len(), 1);
+
+    let summary = store::get_summary(&cfg, &second[0]).unwrap().unwrap();
+    assert_eq!(summary.level, 1);
+    assert_eq!(summary.child_ids, vec![c1.id.clone(), c2.id.clone()]);
+    assert!(summary.token_count > 0);
+
+    assert!(store::get_buffer(&cfg, &tree.id, 0).unwrap().is_empty());
+    let l1 = store::get_buffer(&cfg, &tree.id, 1).unwrap();
+    assert_eq!(l1.item_ids, vec![second[0].clone()]);
+
+    let t = store::get_tree(&cfg, &tree.id).unwrap().unwrap();
+    assert_eq!(t.max_level, 1);
+    assert_eq!(t.root_id.as_deref(), Some(second[0].as_str()));
+    assert!(t.last_sealed_at.is_some());
+
+    // Leaf → parent backlink populated.
+    let parent: Option<String> = crate::memory::chunks::with_connection(&cfg, |conn| {
+        Ok(conn
+            .query_row(
+                "SELECT parent_summary_id FROM mem_tree_chunks WHERE id = ?1",
+                rusqlite::params![c1.id],
+                |r| r.get(0),
+            )
+            .unwrap())
+    })
+    .unwrap();
+    assert_eq!(parent.as_deref(), Some(second[0].as_str()));
+}
+
+#[tokio::test]
+async fn fanout_at_l1_triggers_l2_seal() {
+    let (_tmp, cfg) = test_config();
+    let tree = get_or_create_tree(&cfg, TreeKind::Source, "slack:#eng").unwrap();
+    let s = ConcatSummariser::new();
+
+    let mut all_sealed: Vec<String> = Vec::new();
+    for seq in 0..SUMMARY_FANOUT {
+        let content = format!("substantive chunk content {seq}");
+        let c = seed_chunk(&cfg, seq, &content, INPUT_TOKEN_BUDGET + 1, vec![]);
+        let leaf = LeafRef {
+            chunk_id: c.id.clone(),
+            token_count: c.token_count,
+            timestamp: Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+            content: c.content.clone(),
+            entities: vec![],
+            topics: vec![],
+            score: 0.5,
+        };
+        all_sealed.extend(
+            append_leaf(&cfg, &tree, &leaf, &s, &LabelStrategy::Empty)
+                .await
+                .unwrap(),
+        );
+    }
+
+    // fanout L1 seals + one cascading L2 seal.
+    assert_eq!(all_sealed.len() as u32, SUMMARY_FANOUT + 1);
+    let t = store::get_tree(&cfg, &tree.id).unwrap().unwrap();
+    assert_eq!(t.max_level, 2);
+    assert!(store::get_buffer(&cfg, &tree.id, 1).unwrap().is_empty());
+    let l2 = store::get_buffer(&cfg, &tree.id, 2).unwrap();
+    assert_eq!(l2.item_ids.len(), 1);
+    let l2_summary = store::get_summary(&cfg, &l2.item_ids[0]).unwrap().unwrap();
+    assert_eq!(l2_summary.level, 2);
+    assert_eq!(l2_summary.child_ids.len() as u32, SUMMARY_FANOUT);
+}
+
+#[tokio::test]
+async fn upper_level_does_not_seal_below_fanout() {
+    let (_tmp, cfg) = test_config();
+    let tree = get_or_create_tree(&cfg, TreeKind::Source, "slack:#eng").unwrap();
+    let s = ConcatSummariser::new();
+
+    let stop_before = SUMMARY_FANOUT.saturating_sub(1);
+    for seq in 0..stop_before {
+        let content = format!("c{seq}");
+        let c = seed_chunk(&cfg, seq, &content, INPUT_TOKEN_BUDGET + 1, vec![]);
+        let leaf = LeafRef {
+            chunk_id: c.id.clone(),
+            token_count: c.token_count,
+            timestamp: Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+            content: c.content.clone(),
+            entities: vec![],
+            topics: vec![],
+            score: 0.5,
+        };
+        append_leaf(&cfg, &tree, &leaf, &s, &LabelStrategy::Empty)
+            .await
+            .unwrap();
+    }
+
+    let t = store::get_tree(&cfg, &tree.id).unwrap().unwrap();
+    assert_eq!(t.max_level, 1, "should plateau at L1 below fanout");
+    assert_eq!(
+        store::get_buffer(&cfg, &tree.id, 1).unwrap().item_ids.len() as u32,
+        stop_before
+    );
+    assert_eq!(
+        store::count_summaries(&cfg, &tree.id).unwrap(),
+        stop_before as u64
+    );
+}
