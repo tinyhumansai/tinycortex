@@ -496,7 +496,7 @@ source ids, and taint values.
 Proposed module layout:
 
 ```text
-crates/tinycortex/src/
+src/
   memory/
     types.rs
     traits.rs

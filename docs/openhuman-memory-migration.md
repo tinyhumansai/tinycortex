@@ -1,6 +1,6 @@
 # OpenHuman Memory Migration
 
-This repository now has a Rust workspace rooted at `crates/tinycortex`. The first
+This repository now has a Rust crate rooted at the repository root. The first
 migration target is the memory core: stable contracts, storage primitives, and
 testable in-process behavior before API or UI integrations.
 
@@ -21,8 +21,8 @@ as the current source checkout unless a later branch is chosen.
 
 ## Target Layout
 
-- `crates/tinycortex/src/memory/types.rs`: stable public memory data contracts.
-- `crates/tinycortex/src/memory/store.rs`: backend-agnostic store trait plus
+- `src/memory/types.rs`: stable public memory data contracts.
+- `src/memory/store.rs`: backend-agnostic store trait plus
   simple implementations.
 - Future modules should keep OpenHuman's layer rule: orchestration depends on
   storage, but storage does not depend upward on orchestration.

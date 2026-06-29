@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-TinyCortex is a multi-language SDK and plugin repository with a new Rust core in `crates/tinycortex`. Most integration work still lives under `packages/`. SDKs are named `packages/sdk-<language>` such as `sdk-python`, `sdk-typescript`, `sdk-golang`, `sdk-rust`, `sdk-dart`, `sdk-cpp`, `sdk-csharp`, and `sdk-java`. Integrations are named `packages/plugin-<framework>` such as `plugin-langgraph`, `plugin-codex`, `plugin-mastra`, and `plugin-camelai`. Tests live beside each package in `test/`, `tests/`, or language-native test locations such as `src/test`. Shared docs are in `README.md`, `packages/README.md`, `gitbooks/`, `examples/`, `benchmarks/`, and `paper/`.
+TinyCortex is a multi-language SDK and plugin repository with the Rust core at the repository root in `src/`. Most integration work still lives under `packages/`. SDKs are named `packages/sdk-<language>` such as `sdk-python`, `sdk-typescript`, `sdk-golang`, `sdk-rust`, `sdk-dart`, `sdk-cpp`, `sdk-csharp`, and `sdk-java`. Integrations are named `packages/plugin-<framework>` such as `plugin-langgraph`, `plugin-codex`, `plugin-mastra`, and `plugin-camelai`. Tests live beside each package in `test/`, `tests/`, or language-native test locations such as `src/test`. Shared docs are in `README.md`, `packages/README.md`, `gitbooks/`, `examples/`, `benchmarks/`, and `paper/`.
 
 ## Build, Test, and Development Commands
 
