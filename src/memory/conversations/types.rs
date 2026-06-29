@@ -1,0 +1,86 @@
+//! Wire/storage types for the workspace-backed conversation store: threads,
+//! messages, create requests, and partial-update patches.
+//!
+//! These mirror one-to-one the JSONL records persisted under
+//! `<workspace>/memory/conversations/`. The `camelCase` serde renames and the
+//! `type`/`extraMetadata` wire keys are part of the OpenHuman on-disk contract
+//! and must be preserved byte-for-byte so existing transcripts keep loading.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// A persisted conversation thread, mirroring one entry in `threads.jsonl`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationThread {
+    pub id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_id: Option<i64>,
+    pub is_active: bool,
+    pub message_count: usize,
+    pub last_message_at: String,
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_thread_id: Option<String>,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub personality_id: Option<String>,
+}
+
+/// A single message appended to a thread's JSONL log.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationMessage {
+    pub id: String,
+    pub content: String,
+    #[serde(rename = "type")]
+    pub message_type: String,
+    #[serde(default)]
+    pub extra_metadata: Value,
+    pub sender: String,
+    pub created_at: String,
+}
+
+/// Input payload to create-or-update a thread via
+/// [`ConversationStore::ensure_thread`](super::store::ConversationStore::ensure_thread).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateConversationThread {
+    pub id: String,
+    pub title: String,
+    pub created_at: String,
+    #[serde(default)]
+    pub parent_thread_id: Option<String>,
+    #[serde(default)]
+    pub labels: Option<Vec<String>>,
+    #[serde(default)]
+    pub personality_id: Option<String>,
+}
+
+/// Partial update to apply to a stored message (e.g. rewriting `extraMetadata`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationMessagePatch {
+    #[serde(default)]
+    pub extra_metadata: Option<Value>,
+}
+
+/// A single match returned by
+/// [`ConversationStore::search_cross_thread_messages`](super::store::ConversationStore::search_cross_thread_messages).
+/// Carries the source `thread_id` so the caller can render provenance into the
+/// `[Cross-chat context]` block (issue #1505).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CrossThreadHit {
+    pub thread_id: String,
+    pub message_id: String,
+    pub role: String,
+    pub content: String,
+    pub created_at: String,
+    pub score: f64,
+}
+
+#[cfg(test)]
+#[path = "types_tests.rs"]
+mod tests;
