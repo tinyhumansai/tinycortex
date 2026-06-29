@@ -5,6 +5,17 @@ edition = "2021"
 license = "MIT"
 repository = "https://github.com/tinyhumansai/tinycortex"
 description = "Rust core for the TinyCortex memory system"
+readme = "README.md"
+exclude = [
+    ".github/",
+    ".vscode/",
+    "benchmarks/",
+    "docs/",
+    "examples/",
+    "gitbooks/",
+    "paper/",
+    "requirements.txt",
+]
 
 [dependencies]
 async-trait = "0.1"
