@@ -1,5 +1,7 @@
 use super::*;
-use crate::memory::store::vectors::embedding::EmbeddingBackend;
+use crate::memory::store::vectors::embedding::{
+    format_embedding_signature, EmbeddingBackend, InertEmbedding,
+};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -161,6 +163,32 @@ fn backend_accessor() {
     let store = fake_store(3);
     assert_eq!(store.backend().name(), "fake");
     assert_eq!(store.backend().dimensions(), 3);
+}
+
+#[test]
+fn embedding_signature_format_is_stable() {
+    assert_eq!(
+        format_embedding_signature("openai", "text-embedding-3-small", 1536),
+        "provider=openai;model=text-embedding-3-small;dims=1536"
+    );
+    let backend = FakeEmbedding { dims: 7 };
+    assert_eq!(backend.signature(), "provider=fake;model=fake;dims=7");
+}
+
+#[tokio::test]
+async fn inert_embedding_is_deterministic_zero_vector_mock_backend() {
+    let backend = InertEmbedding::new(3);
+    assert_eq!(backend.name(), "inert");
+    assert_eq!(backend.model_id(), "inert");
+    assert_eq!(backend.dimensions(), 3);
+    assert_eq!(backend.signature(), "provider=inert;model=inert;dims=3");
+
+    let batch = backend.embed(&["alpha", "beta"]).await.unwrap();
+    assert_eq!(batch, vec![vec![0.0, 0.0, 0.0], vec![0.0, 0.0, 0.0]]);
+    assert_eq!(
+        backend.embed_one("single").await.unwrap(),
+        vec![0.0, 0.0, 0.0]
+    );
 }
 
 // ── insert + count ──────────────────────────────────────

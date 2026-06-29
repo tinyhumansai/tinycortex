@@ -1,5 +1,6 @@
 use super::*;
 use crate::memory::store::entity_index::types::{CanonicalEntity, EntityKind};
+use tempfile::TempDir;
 
 fn index() -> EntityIndex {
     EntityIndex::open_in_memory().unwrap()
@@ -14,6 +15,46 @@ fn sample_entity(id: &str) -> CanonicalEntity {
         span_end: (id.len() + 12) as u32,
         score: 1.0,
     }
+}
+
+#[test]
+fn entity_kind_wire_strings_round_trip_and_reject_unknowns() {
+    for (kind, wire, mechanical) in [
+        (EntityKind::Email, "email", true),
+        (EntityKind::Url, "url", true),
+        (EntityKind::Handle, "handle", true),
+        (EntityKind::Hashtag, "hashtag", true),
+        (EntityKind::Person, "person", false),
+        (EntityKind::Organization, "organization", false),
+        (EntityKind::Location, "location", false),
+        (EntityKind::Event, "event", false),
+        (EntityKind::Product, "product", false),
+        (EntityKind::Datetime, "datetime", false),
+        (EntityKind::Technology, "technology", false),
+        (EntityKind::Artifact, "artifact", false),
+        (EntityKind::Quantity, "quantity", false),
+        (EntityKind::Misc, "misc", false),
+        (EntityKind::Topic, "topic", false),
+    ] {
+        assert_eq!(kind.as_str(), wire);
+        assert_eq!(EntityKind::parse(wire).unwrap(), kind);
+        assert_eq!(kind.is_mechanical(), mechanical);
+    }
+
+    assert!(EntityKind::parse("unknown").is_err());
+}
+
+#[test]
+fn open_creates_parent_directories_for_file_backed_index() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("nested/index/entities.sqlite");
+
+    let idx = EntityIndex::open(&db_path).unwrap();
+    idx.index_entity(&sample_entity("alice"), "chunk-1", "leaf", 1000, None)
+        .unwrap();
+
+    assert!(db_path.exists());
+    assert_eq!(idx.count_entity_index().unwrap(), 1);
 }
 
 #[test]
@@ -124,6 +165,26 @@ fn summary_entity_index_kind_is_parseable() {
 }
 
 #[test]
+fn summary_entity_index_skips_identity_for_malformed_ids() {
+    struct MatchEverything;
+    impl SelfIdentity for MatchEverything {
+        fn is_self(&self, _kind: EntityKind, _surface: &str) -> bool {
+            true
+        }
+    }
+
+    let idx =
+        EntityIndex::open_in_memory_with_identity(std::sync::Arc::new(MatchEverything)).unwrap();
+    idx.index_summary_entity_ids(&["not-a-kind".into()], "summary-1", 0.5, 1000, None)
+        .unwrap();
+
+    assert!(
+        idx.lookup_entity("not-a-kind", None).is_err(),
+        "malformed summary kind is stored but remains unparseable on lookup"
+    );
+}
+
+#[test]
 fn list_entity_ids_for_node_orders_by_score() {
     let idx = index();
     let mut high = sample_entity("high");
@@ -134,6 +195,23 @@ fn list_entity_ids_for_node_orders_by_score() {
         .unwrap();
     let ids = idx.list_entity_ids_for_node("chunk-1").unwrap();
     assert_eq!(ids, vec!["email:high".to_string(), "email:low".to_string()]);
+}
+
+#[test]
+fn transaction_indexing_commits_with_outer_work() {
+    let idx = index();
+    let entities = vec![sample_entity("alice"), sample_entity("bob")];
+
+    let indexed = idx
+        .with_transaction(|tx| index_entities_tx(tx, &entities, "chunk-1", "leaf", 1000, None))
+        .unwrap();
+
+    assert_eq!(indexed, 2);
+    assert_eq!(idx.count_entity_index().unwrap(), 2);
+    assert_eq!(
+        idx.list_entity_ids_for_node("chunk-1").unwrap(),
+        vec!["email:alice".to_string(), "email:bob".to_string()]
+    );
 }
 
 #[test]

@@ -51,6 +51,9 @@ pub mod source;
 pub mod types;
 
 #[cfg(test)]
+#[path = "graph_adapter_tests.rs"]
+mod graph_adapter_tests;
+#[cfg(test)]
 pub(crate) mod test_support;
 
 // ── Public re-exports ───────────────────────────────────────────────────────

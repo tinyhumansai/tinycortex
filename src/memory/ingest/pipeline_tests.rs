@@ -3,13 +3,15 @@ use std::sync::Mutex;
 use chrono::{TimeZone, Utc};
 use tempfile::TempDir;
 
-use super::{ingest_chat, ingest_document, ingest_document_versioned};
+use super::{ingest_chat, ingest_document, ingest_document_versioned, ingest_email_with_raw_refs};
 use crate::memory::chunks::{
     count_chunks, get_chunk_lifecycle_status, CHUNK_STATUS_PENDING_EXTRACTION,
 };
+use crate::memory::chunks::{get_chunk_raw_refs, RawRef};
 use crate::memory::config::MemoryConfig;
 use crate::memory::ingest::canonicalize::chat::{ChatBatch, ChatMessage};
 use crate::memory::ingest::canonicalize::document::DocumentInput;
+use crate::memory::ingest::canonicalize::email::{EmailMessage, EmailThread};
 use crate::memory::ingest::types::{NullJobSink, TreeJobSink};
 use crate::memory::score::ScoringConfig;
 
@@ -208,4 +210,72 @@ async fn versioned_document_admits_second_revision() {
     .unwrap();
     assert!(!v2.already_ingested, "a new version must be admitted");
     assert!(v2.chunks_written >= 1);
+}
+
+#[tokio::test]
+async fn ingest_email_with_raw_refs_attaches_archive_refs_to_every_chunk() {
+    let (_tmp, cfg) = test_config();
+    let sink = RecordingJobSink::default();
+    let scoring = ScoringConfig::default_regex_only();
+    let thread = EmailThread {
+        provider: "gmail".into(),
+        thread_subject: "Launch review".into(),
+        messages: vec![
+            EmailMessage {
+                from: "Alice Smith <alice@example.com>".into(),
+                to: vec!["Bob Jones <bob@example.com>".into()],
+                cc: vec![],
+                subject: "Launch review".into(),
+                sent_at: Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+                body: "Alice sent the launch checklist to Bob. Kitchen is north of Garden.".into(),
+                source_ref: Some("gmail://msg-1".into()),
+                list_unsubscribe: None,
+            },
+            EmailMessage {
+                from: "Bob Jones <bob@example.com>".into(),
+                to: vec!["Alice Smith <alice@example.com>".into()],
+                cc: vec![],
+                subject: "Re: Launch review".into(),
+                sent_at: Utc.timestamp_millis_opt(1_700_000_060_000).unwrap(),
+                body: "Bob confirmed the checklist and added staging notes.".into(),
+                source_ref: Some("gmail://msg-2".into()),
+                list_unsubscribe: None,
+            },
+        ],
+    };
+    let raw_refs = vec![
+        RawRef {
+            path: "raw/gmail/thread-1/message-1.md".into(),
+            start: 0,
+            end: Some(128),
+        },
+        RawRef {
+            path: "raw/gmail/thread-1/message-2.md".into(),
+            start: 128,
+            end: None,
+        },
+    ];
+
+    let out = ingest_email_with_raw_refs(
+        &cfg,
+        "gmail:thread-1",
+        "alice",
+        vec!["mock-email".into()],
+        thread,
+        raw_refs.clone(),
+        &sink,
+        &scoring,
+    )
+    .await
+    .unwrap();
+
+    assert!(!out.already_ingested);
+    assert!(out.chunks_written >= 1);
+    assert_eq!(out.extract_jobs_enqueued, out.chunk_ids.len());
+    for chunk_id in &out.chunk_ids {
+        let stored = get_chunk_raw_refs(&cfg, chunk_id).unwrap().unwrap();
+        assert_eq!(stored.len(), raw_refs.len());
+        assert_eq!(stored[0].path, raw_refs[0].path);
+        assert_eq!(stored[1].start, raw_refs[1].start);
+    }
 }
