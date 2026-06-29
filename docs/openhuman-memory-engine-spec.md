@@ -23,18 +23,18 @@ TinyCortex should preserve these core properties:
 
 ## Layer Map
 
-| Layer | OpenHuman module | Responsibility |
-| --- | --- | --- |
-| Source registry | `memory_sources` | Defines what feeds memory and provides reader interfaces. |
-| Sync pipelines | `memory_sync` | Pulls upstream data from Composio, workspace sources, and MCP. |
-| Canonicalization | `memory_sync/canonicalize` | Converts source payloads to canonical markdown plus metadata. |
-| Orchestration | `memory` | Coordinates sync, remember, query, ingest, tools, and RPC handlers. |
-| Storage primitives | `memory_store` | Owns content files, chunks, trees, vectors, KV, entities, and unified legacy surfaces. |
-| Tree mechanics | `memory_tree` | Appends leaves, seals buckets, summarizes, scores, embeds, and retrieves. |
-| Async jobs | `memory_queue` | Runs extraction, append, seal, backfill, stale flush, and document sealing work. |
-| Retrieval | `memory_search`, `memory_tree/retrieval` | Vector, keyword, graph, tree, entity, and hybrid search. |
-| Change tracking | `memory_diff` | Git-backed snapshots, diffs, checkpoints, and read markers per source. |
-| Specialized memory | `memory_goals`, `memory_tools`, `agent_memory`, `memory_conversations` | Agent goals, tool rules, memory-agent retrieval, and conversation logs. |
+| Layer              | OpenHuman module                                                       | Responsibility                                                                         |
+| ------------------ | ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Source registry    | `memory_sources`                                                       | Defines what feeds memory and provides reader interfaces.                              |
+| Sync pipelines     | `memory_sync`                                                          | Pulls upstream data from Composio, workspace sources, and MCP.                         |
+| Canonicalization   | `memory_sync/canonicalize`                                             | Converts source payloads to canonical markdown plus metadata.                          |
+| Orchestration      | `memory`                                                               | Coordinates sync, remember, query, ingest, tools, and RPC handlers.                    |
+| Storage primitives | `memory_store`                                                         | Owns content files, chunks, trees, vectors, KV, entities, and unified legacy surfaces. |
+| Tree mechanics     | `memory_tree`                                                          | Appends leaves, seals buckets, summarizes, scores, embeds, and retrieves.              |
+| Async jobs         | `memory_queue`                                                         | Runs extraction, append, seal, backfill, stale flush, and document sealing work.       |
+| Retrieval          | `memory_search`, `memory_tree/retrieval`                               | Vector, keyword, graph, tree, entity, and hybrid search.                               |
+| Change tracking    | `memory_diff`                                                          | Git-backed snapshots, diffs, checkpoints, and read markers per source.                 |
+| Specialized memory | `memory_goals`, `memory_tools`, `agent_memory`, `memory_conversations` | Agent goals, tool rules, memory-agent retrieval, and conversation logs.                |
 
 ## Core Domain Types
 
@@ -549,4 +549,3 @@ logic before storage side effects:
   embedding-signature property.
 - How much of agent-specific prompt behavior belongs in TinyCortex versus an
   adapter crate.
-
