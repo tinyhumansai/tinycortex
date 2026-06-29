@@ -18,12 +18,22 @@ exclude = [
 ]
 
 [dependencies]
+anyhow = "1"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
+git2 = "0.19"
+parking_lot = "0.12"
+rand = "0.8"
+regex = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 thiserror = "2"
+toml = "0.8"
 uuid = { version = "1", features = ["serde", "v4"] }
+walkdir = "2"
 
 [dev-dependencies]
+tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
