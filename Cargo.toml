@@ -1,40 +1,18 @@
 [package]
 name = "tinycortex"
 version = "0.1.0"
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
-description = "Rust core for the TinyCortex memory system"
-
-[workspace]
-resolver = "2"
-members = [
-    ".",
-    "packages/sdk-rust",
-]
-
-[workspace.package]
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/tinyhumansai/neocortex"
+description = "Rust core for the TinyCortex memory system"
 
-[workspace.dependencies]
-anyhow = "1"
+[dependencies]
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 
-[dependencies]
-async-trait.workspace = true
-chrono.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
-uuid.workspace = true
-
 [dev-dependencies]
-tokio.workspace = true
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
