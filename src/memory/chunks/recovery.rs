@@ -1,0 +1,167 @@
+//! Cold-start error classification, stale-file cleanup, and corrupt-DB
+//! recovery for the chunk SQLite database.
+
+use anyhow::{Context, Result};
+use chrono::Utc;
+use rusqlite::Connection;
+use std::path::{Path, PathBuf};
+
+use super::connection::{drop_cached_connection, get_or_init_connection};
+use super::{db_path_for, SQLITE_BUSY_TIMEOUT};
+use crate::memory::config::MemoryConfig;
+
+// SQLite extended result codes that fire during cold-start WAL/SHM bootstrap
+// races. Extended codes are `SQLITE_IOERR (10) | (sub << 8)`.
+/// `CANTOPEN` — racing the lockfile/WAL creation done by another connection.
+const SQLITE_CANTOPEN: i32 = 14;
+/// `IOERR_TRUNCATE` — the WAL/db is being truncated during bootstrap.
+const SQLITE_IOERR_TRUNCATE: i32 = 1546;
+/// `IOERR_SHMOPEN` — opening a new `-shm` shared-memory segment failed.
+const SQLITE_IOERR_SHMOPEN: i32 = 4618;
+/// `IOERR_SHMSIZE` — the `-shm` file is being resized during bootstrap.
+const SQLITE_IOERR_SHMSIZE: i32 = 4874;
+/// `IOERR_SHMMAP` — mapping a page of the `-shm` wal-index failed.
+const SQLITE_IOERR_SHMMAP: i32 = 5386;
+/// `IOERR_IN_PAGE` — an mmap-page I/O fault, also seen under WAL cold-start.
+const SQLITE_IOERR_IN_PAGE: i32 = 8714;
+
+/// True if `err` (or anything in its cause chain) is one of the SQLite codes
+/// that fire during cold-start WAL/SHM bootstrap races.
+#[allow(dead_code)]
+pub(crate) fn is_transient_cold_start(err: &anyhow::Error) -> bool {
+    fn is_transient_sqlite(e: &(dyn std::error::Error + 'static)) -> bool {
+        if let Some(rusqlite::Error::SqliteFailure(ffi, _)) = e.downcast_ref::<rusqlite::Error>() {
+            return matches!(
+                ffi.extended_code,
+                SQLITE_CANTOPEN
+                    | SQLITE_IOERR_TRUNCATE
+                    | SQLITE_IOERR_SHMOPEN
+                    | SQLITE_IOERR_SHMSIZE
+                    | SQLITE_IOERR_SHMMAP
+                    | SQLITE_IOERR_IN_PAGE
+            );
+        }
+        false
+    }
+    if is_transient_sqlite(err.root_cause()) {
+        return true;
+    }
+    let mut src: Option<&(dyn std::error::Error + 'static)> = Some(err.as_ref());
+    while let Some(cur) = src {
+        if is_transient_sqlite(cur) {
+            return true;
+        }
+        src = cur.source();
+    }
+    false
+}
+
+/// Whether `err` looks like one of the I/O error codes that warrant a
+/// stale-file cleanup + single retry before giving up.
+pub(crate) fn is_io_open_error(err: &anyhow::Error) -> bool {
+    if let Some(rusqlite::Error::SqliteFailure(f, _)) = err.downcast_ref::<rusqlite::Error>() {
+        return matches!(
+            f.extended_code,
+            SQLITE_CANTOPEN
+                | SQLITE_IOERR_TRUNCATE
+                | SQLITE_IOERR_SHMOPEN
+                | SQLITE_IOERR_SHMSIZE
+                | SQLITE_IOERR_SHMMAP
+                | SQLITE_IOERR_IN_PAGE
+        ) || f.code == rusqlite::ErrorCode::CannotOpen;
+    }
+    let msg = format!("{err:#}").to_ascii_lowercase();
+    msg.contains("disk i/o error")
+        || msg.contains("unable to open database file")
+        || msg.contains("xshmmap")
+        || msg.contains("truncate file")
+}
+
+/// Delete stale WAL/SHM side-files (`<db>-shm`, `<db>-wal`) that can block a
+/// clean DB open after a crash. Returns `true` if anything was removed.
+pub(crate) fn try_cleanup_stale_files(db_path: &Path) -> bool {
+    let mut cleaned = false;
+    for suffix in &["-shm", "-wal"] {
+        let side = with_name_suffix(db_path, suffix);
+        if side.exists() && std::fs::remove_file(&side).is_ok() {
+            cleaned = true;
+        }
+    }
+    cleaned
+}
+
+/// Append `suffix` to the *file name* of `path` (so `chunks.db` + `-wal`
+/// = `chunks.db-wal`). SQLite names its side-files this way.
+fn with_name_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut p = path.to_path_buf();
+    let name = p
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    p.set_file_name(format!("{name}{suffix}"));
+    p
+}
+
+/// Run `PRAGMA quick_check(1)` against `db_path` on a fresh, short-lived
+/// connection. `Ok(true)` when the structural scan reports `"ok"`.
+fn quick_check_ok(db_path: &Path) -> Result<bool> {
+    let conn = Connection::open(db_path)
+        .with_context(|| format!("open for quick_check: {}", db_path.display()))?;
+    let _ = conn.busy_timeout(SQLITE_BUSY_TIMEOUT);
+    let result: String = conn
+        .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))
+        .context("running PRAGMA quick_check")?;
+    Ok(result.eq_ignore_ascii_case("ok"))
+}
+
+/// Recover from a `SQLITE_CORRUPT` (malformed image) on the chunk DB.
+///
+/// Quarantines the damaged file (and its WAL/SHM side-files) to a timestamped
+/// `.corrupt-<ts>` copy — preserved, not deleted — then rebuilds an empty
+/// schema so the store resumes instead of wedging indefinitely.
+///
+/// Returns `Ok(true)` when a quarantine + rebuild happened, `Ok(false)` when a
+/// fresh `PRAGMA quick_check` now passes (the earlier failure was transient),
+/// and `Err` when the quarantine rename or the schema rebuild failed.
+#[allow(dead_code)]
+pub(crate) fn recover_corrupt_db(config: &MemoryConfig) -> Result<bool> {
+    let db_path = db_path_for(config);
+
+    // 1. Drop any cached (corrupt) connection + breaker so the OS file handle
+    //    is closed before we rename.
+    drop_cached_connection(config);
+
+    // 2. Re-confirm corruption against the on-disk file. If `quick_check` now
+    //    passes, the image is actually healthy — don't destroy good data.
+    if db_path.exists() && matches!(quick_check_ok(&db_path), Ok(true)) {
+        return Ok(false);
+    }
+
+    // 3. Quarantine the main DB + WAL/SHM side-files to `<name>.corrupt-<ts>`.
+    let ts = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    for suffix in &["", "-wal", "-shm"] {
+        let src = with_name_suffix(&db_path, suffix);
+        if !src.exists() {
+            continue;
+        }
+        let dst = with_name_suffix(&src, &format!(".corrupt-{ts}"));
+        std::fs::rename(&src, &dst).with_context(|| {
+            format!(
+                "failed to quarantine corrupt chunk DB file {} -> {}",
+                src.display(),
+                dst.display()
+            )
+        })?;
+    }
+
+    // 4. Rebuild an empty schema by forcing a fresh open.
+    get_or_init_connection(config)
+        .context("failed to rebuild chunk DB schema after quarantining corrupt DB")?;
+
+    Ok(true)
+}
+
+#[cfg(test)]
+#[path = "recovery_tests.rs"]
+mod tests;
