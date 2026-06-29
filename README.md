@@ -10,7 +10,7 @@
 
 _NOTE: That this model is currently in closed alpha. To get access [reach out to us](mailto:founders@tinyhumans.ai)_
 
-Read the paper - ([Markdown](./paper/README.md) / [PDF](./paper/out/main.pdf))
+Read the paper - [Markdown](./paper/README.md)
 
 </div>
 

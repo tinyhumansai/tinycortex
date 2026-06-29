@@ -1,6 +1,6 @@
 .PHONY: all setup build clean arxiv markdown figures-png
 
-all: build markdown
+all: markdown
 
 setup:
 	./scripts/setup.sh
@@ -8,10 +8,8 @@ setup:
 figures-png:
 	./scripts/export-svgs-to-png.sh
 
-# PDF build (export-svgs-to-png runs inside scripts/build.sh).
 build:
-	./scripts/build.sh
-	echo "Build complete: $$ROOT_DIR/out/main.pdf"
+	@echo "PDF build is disabled for now. Use 'make markdown' to render paper/README.md."
 
 markdown:
 	./scripts/render_markdown.sh
