@@ -42,3 +42,35 @@ as the current source checkout unless a later branch is chosen.
 4. Port queue workers only after persistence and deterministic drain tests exist.
 5. Add OpenHuman-facing on-demand ingest adapters; do not port the live sync
    scheduler into TinyCortex.
+
+## Port Status
+
+The memory engine is ported as the config-driven library under `src/memory/`.
+All modules compile together, are wired into `src/memory/mod.rs`, and ship unit
+tests in sibling `*_tests.rs` files (1000+ tests; `cargo fmt` clean, no warnings).
+
+| Module | OpenHuman source | Notes |
+| --- | --- | --- |
+| `types` / `traits` / `config` / `error` | `memory`, `memory_store` | Shared contracts; `MemoryConfig` drives all tunables. |
+| `chunks` | `memory_store/chunks` | Chunk model, deterministic ids, SQLite chunk store + full `mem_tree_*` schema. |
+| `store` | `memory_store` (content/vectors/kv/entities) | Markdown content store, packed-f32 vector DB, KV, entity occurrence index. |
+| `score` | `memory_tree/score` | Signals, regex/composite extraction, resolver, score store. LLM rater + embedder behind traits. |
+| `tree` | `memory_tree` + `memory_store/trees` | Tree rows, buffers, bucket-seal, summarise, tree-walk read. Summariser/embedder behind traits. |
+| `queue` | `memory_queue` | `mem_tree_jobs` store, dedupe/defer/backoff, worker, LLM gate. Handler work behind `QueueDelegates`. |
+| `retrieval` | `memory_search` + `memory_tree/retrieval` | Hybrid primitives (`query_source/global/topic`, `drill_down`, `fetch_leaves`), config weight profiles. |
+| `ingest` | `memory/ingest_pipeline`, `memory/ingestion`, `memory_sync/canonicalize` | Canonicalizers + on-demand ingest orchestration. Queue enqueue behind a sink trait. |
+| `sources` | `memory_sources` | Registry, contracts, validation, local readers. Network readers are trait seams. |
+| `diff` | `memory_diff` | git2-backed snapshot/diff/checkpoint ledger. Chunk source injected via trait. |
+| `entities` | `memory_entities` | Entity markdown registry, canonicalization, notes-preserving upsert. |
+| `graph` | `memory_graph` | Co-occurrence edges over an injected `EntityOccurrenceIndex`. |
+| `goals` | `memory_goals` | `MEMORY_GOALS.md` store, caps, symlink-escape safety. LLM reflection behind a trait. |
+| `tool_memory` | `memory_tools` | Tool-scoped rules, priority prompt rendering over the `Memory` trait. |
+| `conversations` | `memory_conversations` | JSONL transcript store, inverted index, persistence bus. |
+| `archivist` | `memory_archivist` | Conversation turns → one tree leaf (tool-JSON stripped). Tree-leaf sink injected. |
+
+Per the ownership boundary, the live sync runner, OAuth/webhook callbacks, and
+real LLM/embedding/network backends remain host-owned (OpenHuman) and are
+represented here as injectable traits. Known follow-ups: consolidate the
+`mem_tree_entity_index` access that currently appears in `store`, `score`, and
+`tree`; restore the deferred peripheral surfaces (tree `health`/`nlp`,
+retrieval `fast`/rpc, obsidian/wiki-git content) as host adapters land.
