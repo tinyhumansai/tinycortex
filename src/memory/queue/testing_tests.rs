@@ -51,7 +51,7 @@ async fn drain_runs_the_full_extract_append_seal_pipeline() {
 async fn drain_terminates_on_a_deferred_job() {
     use crate::memory::queue::types::ReembedBackfillPayload;
     let (_tmp, cfg) = test_config();
-    let mut d = RecordingDelegates::admitting();
+    let d = RecordingDelegates::admitting();
     *d.reembed.lock() =
         std::collections::VecDeque::from([ReembedProgress::Wrote { more_pending: true }]);
 

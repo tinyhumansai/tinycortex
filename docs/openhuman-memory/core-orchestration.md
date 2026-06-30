@@ -4,10 +4,14 @@ OpenHuman module: `memory`.
 
 ## Responsibility
 
-`memory` is the orchestration layer over the memory stack. It routes sync,
-remember, ingest, query, read RPC, schema registration, and agent-facing tools.
-It must not own raw persistence primitives; all durable storage goes through
-`memory_store` or specialized sibling modules.
+In OpenHuman, `memory` is the orchestration layer over the memory stack. It
+routes sync, remember, ingest, query, read RPC, schema registration, and
+agent-facing tools. In TinyCortex, `src/memory/` currently provides the shared
+contracts and the lower-level Rust modules those adapters call; host-facing
+`query/`, `read_rpc/`, `schemas/`, and `tools/` adapter directories are not
+ported yet. The layering rule still applies: orchestration must not own raw
+persistence primitives; all durable storage goes through storage modules or
+specialized siblings.
 
 ## Ownership Boundary
 
@@ -26,7 +30,8 @@ The high-level `Memory` trait represents a namespace-scoped storage backend:
 - `store(namespace, key, content, category, session_id)`.
 - `store_with_taint(..., taint)`: required for external sync provenance.
 - `recall(query, limit, RecallOpts)`.
-- deletion/listing/summaries through backend-specific extensions.
+- `recall_relevant_by_vector(...)`: optional vector-only recall; defaults empty.
+- exact `get`, `list`, `forget`, namespace summaries, count, and health check.
 
 `RecallOpts` includes namespace, category, session id, minimum score, and a
 `cross_session` flag. Cross-session recall is scoped by workspace: one workspace
@@ -70,18 +75,26 @@ not open SQLite connections directly except through lower-level helpers. The
 OpenHuman-owned sync module may trigger this path, but sync itself is outside the
 TinyCortex module boundary.
 
+Current TinyCortex ingest lives under `src/memory/ingest/` and composes
+canonicalization, extraction, chunking, score/tree writes, and queue arming.
+Controller/RPC wrappers around ingest are deferred host adapters.
+
 ## Remember Orchestration
 
-`remember.rs` classifies memory input sources such as chat history, uploaded
-data, and LLM-thought memory. Classification should decide route and category
-but not bypass the ingest/storage contracts.
+OpenHuman `remember.rs` classifies memory input sources such as chat history,
+uploaded data, and LLM-thought memory. TinyCortex has not ported a standalone
+remember adapter; host callers should classify route/category before invoking
+the ingest/storage contracts, and classification must not bypass those
+contracts.
 
 ## Query Orchestration
 
-`memory/query` exposes high-level tools that call lower layers:
+OpenHuman `memory/query` exposes high-level tools that call lower layers:
 
 - `memory_tree` / `MemoryTreeTool`: agentic tree walk.
 - `query_source`: query a source tree.
+- `query_global`: reconstruct cross-source digest from source-tree summaries.
+- `query_topic`: reconstruct entity/topic retrieval from the entity index.
 - `cover_window`: cover a time window.
 - `drill_down`: descend summary children.
 - `fetch_leaves`: hydrate raw chunks.
@@ -89,19 +102,24 @@ but not bypass the ingest/storage contracts.
 - `ingest_document`: orchestrator-facing document ingest.
 
 TinyCortex should keep the same boundary: query tools compose retrieval
-primitives but do not own tree persistence.
+primitives but do not own tree persistence. Current TinyCortex exposes these as
+Rust retrieval APIs under `src/memory/retrieval/`; the OpenHuman tool wrappers
+are not ported.
 
 ## Read RPC
 
-`memory/read_rpc` provides read-oriented handlers for admin, chunks, entities,
-graph, and vault/content. These should remain side-effect-light, with explicit
-pagination and concrete ids in responses.
+OpenHuman `memory/read_rpc` provides read-oriented handlers for admin, chunks,
+entities, graph, and vault/content. TinyCortex has the underlying read APIs in
+chunks, entities, graph, retrieval, and content storage, but the read-RPC
+handler layer itself is not ported. When added, it should remain
+side-effect-light, with explicit pagination and concrete ids in responses.
 
 ## Schema and Controller Layer
 
-`memory/schema` and `memory/schemas` register operations for documents, files,
-KV/graph, learning, sync, and tool memory. Controller schemas are part of the
-public contract: generated docs and client tooling depend on stable namespaces,
+OpenHuman `memory/schema` and `memory/schemas` register operations for
+documents, files, KV/graph, learning, sync, and tool memory. TinyCortex does
+not yet port schema registration. Controller schemas remain a future public
+contract: generated docs and client tooling depend on stable namespaces,
 function names, inputs, and outputs.
 
 ## Required Invariants
@@ -120,11 +138,12 @@ function names, inputs, and outputs.
 src/memory/
   traits.rs
   types.rs
-  ingest_contracts/
-  query/
-  read_rpc/
-  schemas/
-  tools/
+  ingest/
+  retrieval/
+  controllers/   # deferred host adapter layer
+  read_rpc/      # deferred host adapter layer
+  schemas/       # deferred host adapter layer
+  tools/         # deferred agent-tool adapter layer
 ```
 
 Port order: taint and memory entry types, namespace document/retrieval types,

@@ -17,7 +17,7 @@
 //!
 //! - Snapshot → git commit (`Snapshot.id` is the commit SHA).
 //! - Checkpoint → annotated tag `ckpt_<uuid>` at HEAD.
-//! - Read marker → ref `refs/openhuman/read/<source_id>`.
+//! - Read marker → ref `refs/openhuman/read/<encoded_source_id>`.
 //! - Diff → git tree diff scoped to a source path.
 //!
 //! See [`ledger`] for the mapping and [`DiffEngine`] for the operations.

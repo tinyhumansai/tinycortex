@@ -17,22 +17,24 @@ Source checkout used for this pass:
 - [Core Orchestration](core-orchestration.md): `memory`, high-level trait,
   ingest, remember, query, and RPC envelope responsibilities.
 - [Storage Primitives](storage-primitives.md): `memory_store`, content,
-  chunks, trees, vectors, KV, unified legacy store, and safety.
+  chunks, trees, vectors, KV, entity index, OpenHuman unified-legacy context,
+  and safety.
 - [Sources, Registry, and Sync](sources-registry-sync.md): `memory_sources`,
   `memory_sync`, canonicalizers, readers, source CRUD, sync status, and the
   OpenHuman-owned sync boundary.
 - [Tree, Queue, and Retrieval](tree-queue-retrieval.md): `memory_tree`,
   `memory_queue`, scoring, embedding, tree IO, and retrieval tools.
 - [Diff Layer](diff-layer.md): `memory_diff`, git ledger, snapshots,
-  checkpoints, read markers, and diff RPC/tool contracts.
+  checkpoints, read markers, and deferred diff RPC/tool adapter contracts.
 - [Entities and Graph](entities-graph.md): `memory_entities` and
   `memory_graph`.
 - [Conversation and Archivist](conversation-archivist.md):
   `memory_conversations` and `memory_archivist`.
 - [Agent, Tool, and Goals Memory](agent-tool-goals-memory.md):
-  `agent_memory`, `memory_tools`, and `memory_goals`.
+  OpenHuman `agent_memory` context plus TinyCortex `memory_tools` and
+  `memory_goals`.
 - [Controller and Tool Registry](controller-tool-registry.md):
-  controller namespaces, RPC surfaces, and agent tool names.
+  deferred controller namespaces, RPC surfaces, and agent tool names.
 - [OpenHuman Code Reference](openhuman-code-reference.md): source-derived
   module inventory, Rust contract sketches, invariants, and migration notes for
   each OpenHuman memory subsystem.

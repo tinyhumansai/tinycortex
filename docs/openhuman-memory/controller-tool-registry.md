@@ -6,14 +6,17 @@ and agent tools under memory modules.
 
 ## Responsibility
 
-The controller registry exposes memory capabilities as JSON-RPC style
+The OpenHuman controller registry exposes memory capabilities as JSON-RPC style
 operations with discoverable schemas. Agent tools expose selected operations to
-LLM agents. TinyCortex must preserve stable names, structured inputs/outputs,
-and machine-readable ids.
+LLM agents. TinyCortex currently provides the underlying domain operations and
+wire-stable data types, but does not yet include a `src/memory/controllers/` or
+`src/memory/tools/` registry. When those host-facing adapters are added, they
+must preserve stable names, structured inputs/outputs, and machine-readable
+ids.
 
 ## Controller Schema Contract
 
-Each controller schema includes:
+Each OpenHuman controller schema includes:
 
 - namespace.
 - function.
@@ -22,9 +25,15 @@ Each controller schema includes:
 - output fields with type, comment, required flag.
 - handler registration matching the schema.
 
-Tests should assert schema lists and registered controllers stay in sync.
+When TinyCortex ports these adapters, tests should assert schema lists and
+registered controllers stay in sync.
 
 ## Memory Sources Namespace
+
+Status in TinyCortex: source entry types, validation, local folder/conversation
+readers, and a TOML-backed registry are ported. Production sync runners,
+provider CRUD controllers, cost estimators, and audit-log RPCs are
+OpenHuman/host-owned surfaces.
 
 Namespace: `memory_sources`.
 
@@ -53,6 +62,10 @@ Inputs include the flattened source fields used by `MemorySourceEntry`:
 
 ## Memory Diff Namespace
 
+Status in TinyCortex: snapshot, diff, checkpoint, read-marker, and cleanup
+domain operations are ported on the git-backed ledger. JSON-RPC schema
+registration is not ported.
+
 Namespace: `memory_diff`.
 
 Functions:
@@ -73,6 +86,10 @@ Outputs must preserve `Snapshot`, `DiffResult`, `CrossSourceDiff`,
 
 ## Memory Goals Namespace
 
+Status in TinyCortex: markdown-backed goals store and deterministic reflection
+driver are ported. JSON-RPC schema registration and LLM tool wrappers are host
+surfaces.
+
 Namespace: `memory_goals`.
 
 Functions:
@@ -88,9 +105,14 @@ a summary string, and the resulting goals document.
 
 ## Memory Tree and Retrieval Namespaces
 
-Retrieval controllers include:
+Status in TinyCortex: retrieval primitives are ported as Rust APIs returning
+wire-stable data shapes. Controller schema registration is not ported.
+
+Retrieval controllers should include:
 
 - source query.
+- global query reconstructed from source-tree summaries.
+- topic query reconstructed from entity-index hits.
 - cover window.
 - entity search.
 - drill down.
@@ -98,9 +120,9 @@ Retrieval controllers include:
 
 Tree/runtime controllers include ingest, list chunks, get chunk, backfill
 status, pipeline status, retry failed, enable/disable, and tree runtime controls
-for summarizer/engine workflows. Exact active function set should be verified
-against current OpenHuman code during port because global/topic tree surfaces
-have drifted.
+for summarizer/engine workflows. Standalone global/topic tree jobs are retired
+in TinyCortex; old `topic_route` and `digest_daily` rows are skipped/purged by
+the queue.
 
 ## Memory Read RPC
 
@@ -115,6 +137,9 @@ Read RPC surfaces cover:
 These should be side-effect-light and pagination-aware.
 
 ## Agent Tools
+
+Status in TinyCortex: the durable tool-memory rule store and prompt renderer
+are ported. Concrete agent-facing tool wrapper structs are not ported.
 
 Known agent-facing memory tools include:
 
@@ -135,7 +160,7 @@ Known agent-facing memory tools include:
 - memory recall/store/forget/doctor tools under `memory/tools`.
 
 Tools should use the same domain operations as RPC handlers. Avoid divergent
-behavior between tool calls and RPC calls.
+behavior between tool calls and RPC calls when the adapter layer is added.
 
 ## Output Requirements
 
@@ -153,10 +178,9 @@ Tool and RPC outputs must retain:
 ## TinyCortex Landing Area
 
 ```text
-src/memory/controllers/
-src/memory/tools/
+src/memory/controllers/   # deferred host adapter layer
+src/memory/tools/         # deferred agent-tool adapter layer
 ```
 
 Port order: schema type definitions, controller registry tests, pure handler
 request/response structs, tool name/schema tests, then handler implementations.
-

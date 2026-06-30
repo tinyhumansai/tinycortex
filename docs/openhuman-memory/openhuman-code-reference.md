@@ -10,6 +10,12 @@ The goal is not to copy OpenHuman wholesale. TinyCortex should preserve the
 contracts and failure semantics first, then reimplement storage and workers with
 small, testable Rust modules.
 
+Current TinyCortex status: many domain contracts and storage primitives are
+ported as Rust APIs, while host-facing controller/schema registries, concrete
+agent tools, production sync runners, and the `agent_memory` adapter layer are
+not local modules yet. Treat those sections as OpenHuman integration context
+unless they point at an implemented `src/memory/*` module.
+
 TinyCortex does not own OpenHuman's memory sync. The OpenHuman application owns
 the sync module, upstream event/polling behavior, and the policy for when data
 is ingested. TinyCortex documents and implements the memory-engine side of that
@@ -20,8 +26,8 @@ ingest requests.
 
 | OpenHuman module | TinyCortex concern | Primary contract |
 | --- | --- | --- |
-| `memory` | Orchestration/RPC policy | high-level `Memory` trait, ingest/query/remember/read RPC |
-| `memory_store` | Persistence substrate | namespace docs, chunks, trees, vectors, KV, unified legacy facade |
+| `memory` | Orchestration/RPC policy | high-level `Memory` trait and shared contracts; RPC/tool adapters are deferred |
+| `memory_store` | Persistence substrate | content, vectors, KV, entity index, and starter store; chunks/trees live in sibling modules |
 | `memory_sources` | Source contracts | source config, validation, item/content reader shapes |
 | `memory_sync` | Sync integration contracts | `SyncPipeline`, canonicalizers, sync status; runner remains OpenHuman-owned |
 | `memory_tree` | Hierarchical summarization | tree read/write IO, bucket seal, retrieval, scoring |
@@ -33,8 +39,8 @@ ingest requests.
 | `memory_archivist` | Episodic archive | per-turn capture, cleaned tree archival |
 | `memory_goals` | Durable goals | markdown-backed ordered goals list |
 | `memory_tools` | Tool-scoped rules | priority rules by tool namespace |
-| `agent_memory` | Agent recall/benchmarking | memory-loader citations and retrieval walk metrics |
-| `memory_search` | Agent search tools | vector, hybrid, chunk context, raw store tools |
+| `agent_memory` | Agent recall/benchmarking | OpenHuman/host adapter context; not a current TinyCortex module |
+| `memory_search` | Agent search tools | OpenHuman tool context; TinyCortex has retrieval/scoring primitives |
 
 ## Source Files Used
 
@@ -75,6 +81,9 @@ OpenHuman's `memory/mod.rs` explicitly states that this layer owns routing and
 policy, not storage: no SQLite tables, markdown vaults, or vectors should live
 here. TinyCortex should keep `memory` as the facade that wires remembering,
 OpenHuman-triggered ingestion, retrieval, and RPC/tool adapters together.
+Current TinyCortex exposes the shared contracts plus `ingest/` and
+`retrieval/` Rust APIs; `query/`, `read_rpc/`, `schemas/`, and `tools/` are
+deferred host adapter layers.
 
 Observed exports:
 
@@ -118,9 +127,12 @@ them into one SQL implementation.
 
 ## `memory_store`: Storage Primitives
 
-`memory_store` is the durable substrate. It owns content files, SQLite indexes,
-vector storage, tree rows, KV rows, entity occurrences, graph relations, and a
-shrinking compatibility facade used by `Memory`.
+`memory_store` is the durable substrate in OpenHuman. In TinyCortex,
+`src/memory/store/` owns content files, generic vectors, KV, safety, and the
+entity occurrence index; chunks and trees are sibling modules
+(`src/memory/chunks/`, `src/memory/tree/`). OpenHuman's shrinking unified
+compatibility facade is migration context, not a current TinyCortex store
+module.
 
 Key namespace document shape:
 
@@ -455,6 +467,12 @@ RPC operations to preserve:
 TinyCortex should keep snapshots independent of the main retrieval index: a
 snapshot is a source-state ledger, not a search result.
 
+TinyCortex's git ledger encodes source ids and item ids before using them as
+git path/ref components. Public snapshot/change payloads retain the original
+logical ids; read markers live under
+`refs/openhuman/read/<encoded_source_id>`. Cleanup prunes checkpoint tags and
+retains snapshot commits as ledger history.
+
 ## `memory_entities` and `memory_graph`
 
 Entities use canonical ids in `<kind>:<value>` form and preserve source handles.
@@ -546,6 +564,10 @@ Boundary rule: conversation history, episodic archive, and tree-ingested
 conversation summaries are related but distinct. TinyCortex should not conflate
 thread JSONL with tree leaves or with recall citations.
 
+TinyCortex stores per-thread conversation messages at
+`threads/<hex(thread_id)>.jsonl` so arbitrary provider thread ids never become
+raw path components.
+
 ## `memory_goals`: Markdown Goals Document
 
 OpenHuman persists goals as `MEMORY_GOALS.md` with one line per stable id.
@@ -561,8 +583,11 @@ Parser/rendering contract:
 - Item line shape is `- [g1] concise goal text`.
 - Unknown prose and malformed lines are ignored.
 - `add` allocates the next unused `g<N>`.
-- `add` and `edit` reject empty and multiline text.
+- `add` and `edit` reject empty, multiline, likely-secret, and likely-PII text.
 - `delete` errors on unknown ids.
+
+TinyCortex reflection abstracts the LLM step behind `GoalsGenerator`; direct
+goal mutations and reflection share the same mutation lock.
 
 This module is a good early TinyCortex port because it is pure parsing,
 rendering, validation, and deterministic id allocation.
@@ -608,6 +633,8 @@ TinyCortex should preserve priority ordering: `critical > high > normal`.
 `agent_memory` contains the agent-facing memory loader and retrieval
 benchmarking types. It should not own persistence. It should consume the memory
 facade and produce citations/context windows.
+This is not currently a TinyCortex module; hosts can layer it over the ported
+retrieval APIs.
 
 Benchmarking contracts:
 
@@ -644,6 +671,9 @@ these as deterministic pure aggregation tests.
 
 `memory_search` consolidates retrieval tools and re-exports lower-level query
 tools from `memory::query` and `memory_store::tools`.
+TinyCortex does not currently have a `memory_search` module; the retrieval
+primitives and scoring profiles live under `src/memory/retrieval/` and
+`src/memory/config.rs`.
 
 Tool families:
 
@@ -693,6 +723,8 @@ level memory tree surface. OpenHuman registers:
 
 TinyCortex should model controller registration as data: schema plus handler.
 This avoids coupling CLI, JSON-RPC, and agent tool exposure to separate lists.
+The controller registry is deferred; current code provides domain operations
+and wire-stable types for future adapters.
 
 ## Migration Checklist
 

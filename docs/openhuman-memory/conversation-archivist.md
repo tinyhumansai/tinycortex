@@ -19,7 +19,9 @@ Storage root:
 Files:
 
 - `threads.jsonl`: append-only thread metadata log with upsert/delete entries.
-- `threads/<thread_id>.jsonl`: message records for each thread.
+- `threads/<hex(thread_id)>.jsonl`: message records for each thread. Thread ids
+  can contain provider separators or user-controlled text, so TinyCortex
+  hex-encodes the UTF-8 thread id bytes before using them as filenames.
 
 A process-wide mutex serializes all on-disk mutations.
 
@@ -48,9 +50,11 @@ and message records without corrupting append-only logs.
 
 ## Event Persistence
 
-`memory_conversations::bus` subscribes to inbound channel events and mirrors
-messages into the store. This makes non-web providers such as Slack or Telegram
-use the same local transcript path as UI-driven threads.
+OpenHuman `memory_conversations::bus` subscribes to inbound channel events and
+mirrors messages into the store. TinyCortex exposes the same persistence
+subscriber as host-wired traits, so a host event bus can forward Slack,
+Telegram, or UI-driven thread events without this crate depending on the
+concrete bus implementation.
 
 ## Search Helpers
 
@@ -88,9 +92,10 @@ Vec<Turn>
 ...
 ```
 
-`archive_to_tree` writes the cleaned blob as one leaf. The chunk id is derived
-from `sha256(session_id || markdown)` truncated to the configured id length in
-OpenHuman.
+`archive_to_tree` writes the cleaned blob as one leaf. In TinyCortex the chunk
+id is `archivist:<sha256(session_id || NUL || markdown)[..32 hex chars]>`;
+OpenHuman's configured id length is the compatibility constraint for any host
+adapter that reuses the batch archivist.
 
 ## Rationale
 
@@ -113,6 +118,7 @@ src/memory/conversations/
 src/memory/archivist/
 ```
 
-Port order: transcript types, JSONL store contracts, tokenizer/index tests,
-archivist clean/compose tests, then tree writer integration.
-
+Current TinyCortex ports the JSONL conversation store, inverted-index search,
+host-wired bus subscriber, archivist clean/compose helpers, per-turn episodic
+capture, and tree writer integration. The source-registry conversation reader is
+a separate legacy-thread reader over `<workspace>/threads/*.json`.

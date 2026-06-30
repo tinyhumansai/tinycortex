@@ -4,14 +4,14 @@
 //! The ledger is a libgit2 repository at `<workspace>/memory_diff/repo`. It is
 //! a *derived* view of the chunk store — the chunk store remains the
 //! authoritative source of memory. Each snapshot materialises a source's
-//! current items as blobs under `<source_id>/` and records them as a commit;
-//! the rest of the tree (other sources) is carried forward from the parent so
-//! HEAD always reflects the whole world. This maps the diff domain onto git's
-//! native primitives:
+//! current items as blobs under an encoded source-id directory and records them
+//! as a commit; the rest of the tree (other sources) is carried forward from
+//! the parent so HEAD always reflects the whole world. This maps the diff
+//! domain onto git's native primitives:
 //!
 //! - **Snapshot**   → commit (`Snapshot.id` is the commit SHA)
 //! - **Checkpoint** → annotated tag `ckpt_<uuid>` at HEAD
-//! - **Read marker**→ ref `refs/openhuman/read/<source_id>` → commit SHA
+//! - **Read marker**→ ref `refs/openhuman/read/<encoded_source_id>` → commit SHA
 //! - **Diff**       → `git diff <from-tree>..<to-tree>` scoped to the source path
 //!
 //! Item identity is the file name: each item is one flat blob whose name is the
@@ -117,14 +117,15 @@ impl Ledger {
             Some(c) => Some(c.tree()?),
             None => None,
         };
+        let source_path = encode_source_id(&meta.source_id);
         let root_oid = {
             let mut tb = self.repo.treebuilder(parent_root.as_ref())?;
             if items.is_empty() {
-                if tb.get(meta.source_id.as_str())?.is_some() {
-                    tb.remove(meta.source_id.as_str())?;
+                if tb.get(source_path.as_str())?.is_some() {
+                    tb.remove(source_path.as_str())?;
                 }
             } else {
-                tb.insert(meta.source_id.as_str(), source_tree_oid, TREE_MODE)?;
+                tb.insert(source_path.as_str(), source_tree_oid, TREE_MODE)?;
             }
             tb.write()?
         };
@@ -233,9 +234,10 @@ impl Ledger {
             None => None,
         };
 
-        let path_prefix = format!("{source_id}/");
+        let encoded_source_id = encode_source_id(source_id);
+        let path_prefix = format!("{encoded_source_id}/");
         let mut opts = DiffOptions::new();
-        opts.pathspec(source_id);
+        opts.pathspec(&encoded_source_id);
         opts.context_lines(3);
         let diff =
             self.repo
@@ -454,7 +456,7 @@ fn signature(at_ms: i64) -> Result<Signature<'static>> {
 }
 
 fn read_marker_ref(source_id: &str) -> String {
-    format!("{READ_MARKER_PREFIX}{}", encode_item_id(source_id))
+    format!("{READ_MARKER_PREFIX}{}", encode_source_id(source_id))
 }
 
 fn build_commit_message(meta: &SnapshotMeta, item_count: u32, taken_at_ms: i64) -> String {
@@ -566,6 +568,13 @@ pub(crate) fn encode_item_id(item_id: &str) -> String {
         }
     }
     out
+}
+
+/// Encode a source id for use as a top-level git tree entry and read-marker
+/// ref component. Same reversible encoding as item ids; kept as a named helper
+/// so call sites make the source-vs-item boundary explicit.
+pub(crate) fn encode_source_id(source_id: &str) -> String {
+    encode_item_id(source_id)
 }
 
 /// Inverse of [`encode_item_id`].

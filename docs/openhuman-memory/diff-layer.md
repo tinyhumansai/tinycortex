@@ -19,7 +19,7 @@ can understand what changed since a sync or since their last read.
 - Snapshot: git commit.
 - Snapshot id: commit SHA.
 - Checkpoint: annotated tag `ckpt_<uuid>`.
-- Read marker: `refs/openhuman/read/<source_id>`.
+- Read marker: `refs/openhuman/read/<encoded_source_id>`.
 - Diff: git tree diff between commit trees scoped to source path.
 
 Each snapshot commit replaces one source subtree and carries other source
@@ -39,8 +39,9 @@ lock because HEAD and parent resolution are read-modify-write operations.
 - `taken_at_ms`
 
 Snapshot metadata rides in commit message trailers. Snapshot content is one
-flat blob per source item under `<source_id>/`; item id is encoded into a
-git-safe path component.
+flat blob per source item under an encoded source-id directory; source id and
+item id are both encoded into git-safe path components. The public
+`Snapshot.source_id` remains the original logical id from commit trailers.
 
 ## Item Diff Model
 
@@ -73,7 +74,8 @@ Snapshot capture:
 3. Group chunk content by item id.
 4. Order content by source id and sequence.
 5. Commit one blob per item into the ledger.
-6. Publish `MemoryDiffSnapshotTaken` event.
+6. Optionally let the host publish a `MemoryDiffSnapshotTaken` event. TinyCortex
+   itself has no event bus in this port.
 
 Manual snapshot uses `SnapshotTrigger::Manual`. Successful source sync should
 call `auto_snapshot_after_sync` with `SnapshotTrigger::Auto`.
@@ -107,6 +109,10 @@ behavior acknowledges reads so repeated calls return only newer changes.
 
 Namespace: `memory_diff`.
 
+This namespace is an OpenHuman/host adapter surface. TinyCortex currently owns
+the git-backed domain engine and Rust operations below; RPC/controller wiring is
+deferred.
+
 Functions:
 
 - `take_snapshot`
@@ -122,9 +128,11 @@ Functions:
 
 ## Agent Tool
 
-`MemoryDiffTool` exposes in-conversation change awareness. Tool output must
-preserve ids, source labels, counts, and item changes. Text diffs should remain
-bounded to avoid overwhelming context.
+OpenHuman `MemoryDiffTool` exposes in-conversation change awareness by wrapping
+the diff engine. TinyCortex keeps the machine-readable domain output the tool
+needs; the agent-tool adapter itself is deferred. Tool output must preserve ids,
+source labels, counts, and item changes. Text diffs should remain bounded to
+avoid overwhelming context.
 
 ## Required Invariants
 
@@ -142,11 +150,14 @@ bounded to avoid overwhelming context.
 src/memory/diff/
   types.rs
   ledger.rs
-  ops.rs
-  rpc.rs
-  tools.rs
+  source.rs
+  snapshot.rs
+  checkpoint.rs
+  diff.rs
+
+src/memory/controllers/   # deferred RPC adapter layer
+src/memory/tools/         # deferred agent-tool adapter layer
 ```
 
 Port order: types and serde tests, item-id encoding, snapshot metadata
 round-trip, in-memory/git tempdir tests, then chunk-store integration.
-

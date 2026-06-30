@@ -1,9 +1,10 @@
 //! Shared wire types for the retrieval primitives.
 //!
 //! These mirror OpenHuman's `memory_tree::retrieval::types`: every primitive
-//! (`query_source`, `query_global`, `query_topic`, `drill_down`,
-//! `cover_window`, `fetch_leaves`) emits the same unified [`RetrievalHit`]
-//! shape so a caller sees one schema regardless of which primitive ran.
+//! (`query_source`, reconstructed `query_global` / `query_topic`,
+//! `drill_down`, `cover_window`, `fetch_leaves`) emits the same unified
+//! [`RetrievalHit`] shape so a caller sees one schema regardless of which
+//! primitive ran.
 //!
 //! Rules of the road:
 //! - All types round-trip through JSON ([`serde::Serialize`] +
@@ -69,8 +70,8 @@ pub struct RetrievalHit {
     pub source_ref: Option<String>,
 }
 
-/// Envelope for the "query" primitives (`query_source`, `query_global`,
-/// `query_topic`, `cover_window`).
+/// Envelope for the query primitives (`query_source`, reconstructed
+/// `query_global` / `query_topic`, `cover_window`).
 ///
 /// `total` is the pre-truncation match count so callers can tell whether a
 /// higher-limit follow-up would return more. `truncated` is

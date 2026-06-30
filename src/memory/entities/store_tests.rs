@@ -131,3 +131,18 @@ fn entity_file_lands_at_expected_path() {
     assert!(path.ends_with("memory_tree/content/entities/person/person_alice.md"));
     assert!(path.exists());
 }
+
+#[test]
+fn put_entity_writes_atomically_without_stale_temp_file() {
+    let (_t, c) = cfg();
+    put_entity(&c, alice()).unwrap();
+
+    let path = entity_path(&c, EntityKind::Person, "person:alice");
+    let dir = path.parent().unwrap();
+    let temp_files: Vec<_> = fs::read_dir(dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(".entity-"))
+        .collect();
+    assert!(temp_files.is_empty());
+}

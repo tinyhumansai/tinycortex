@@ -153,6 +153,7 @@ pub fn reflect(
     context: &str,
     generator: &dyn GoalsGenerator,
 ) -> MemoryEngineResult<ReflectOutcome> {
+    let _guard = store::goals_mutation_lock().lock();
     let mut doc = store::load(&config.workspace)?;
     let first_run = doc.is_empty();
 

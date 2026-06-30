@@ -140,6 +140,27 @@ fn write_preserves_other_top_level_config_keys() {
     assert!(text.contains("[[memory_sources]]"));
 }
 
+#[test]
+fn write_uses_atomic_temp_file_without_leaving_stale_temp() {
+    let (tmp, reg) = registry();
+    reg.add(folder_entry("src_atomic")).unwrap();
+
+    let text = std::fs::read_to_string(reg.path()).unwrap();
+    assert!(text.contains("src_atomic"));
+
+    let stale_temp_files: Vec<_> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".config.toml.tmp-")
+        })
+        .collect();
+    assert!(stale_temp_files.is_empty());
+}
+
 // ── Composio upsert ──
 
 #[test]

@@ -95,7 +95,13 @@ impl SourceRegistry {
         Ok(self.list()?.into_iter().find(|s| s.id == id))
     }
 
-    /// Persist the full source list, preserving any other top-level config keys.
+    /// Persist the full source list, preserving any other top-level config
+    /// keys.
+    ///
+    /// Writes are atomic: the new TOML is written to a same-directory temp file
+    /// and then renamed over the config. This keeps a failed/crashed write from
+    /// leaving a truncated `config.toml`, matching the OpenHuman source
+    /// registry contract.
     fn write_all(&self, entries: &[MemorySourceEntry]) -> Result<()> {
         let mut table = self.read_table()?;
         let value = toml::Value::try_from(entries).context("failed to encode memory_sources")?;
@@ -107,9 +113,50 @@ impl SourceRegistry {
                     .with_context(|| format!("failed to create {}", parent.display()))?;
             }
         }
-        std::fs::write(&self.path, text)
-            .with_context(|| format!("failed to write {}", self.path.display()))?;
+        self.atomic_write(text.as_bytes())?;
         Ok(())
+    }
+
+    fn atomic_write(&self, bytes: &[u8]) -> Result<()> {
+        let parent = self
+            .path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let filename = self
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| anyhow!("config path has no file name: {}", self.path.display()))?;
+        let tmp_path = parent.join(format!(
+            ".{filename}.tmp-{}",
+            uuid::Uuid::new_v4().as_simple()
+        ));
+
+        let write_result = (|| -> Result<()> {
+            {
+                let mut file = std::fs::File::create(&tmp_path)
+                    .with_context(|| format!("failed to create {}", tmp_path.display()))?;
+                use std::io::Write;
+                file.write_all(bytes)
+                    .with_context(|| format!("failed to write {}", tmp_path.display()))?;
+                file.sync_all()
+                    .with_context(|| format!("failed to sync {}", tmp_path.display()))?;
+            }
+            std::fs::rename(&tmp_path, &self.path).with_context(|| {
+                format!(
+                    "failed to atomically replace {} with {}",
+                    self.path.display(),
+                    tmp_path.display()
+                )
+            })?;
+            Ok(())
+        })();
+
+        if write_result.is_err() {
+            let _ = std::fs::remove_file(&tmp_path);
+        }
+        write_result
     }
 
     /// Validate and add a new source. Fails if the id already exists.

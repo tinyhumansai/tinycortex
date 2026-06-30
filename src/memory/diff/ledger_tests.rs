@@ -43,6 +43,31 @@ fn encode_decode_round_trips() {
 }
 
 #[test]
+fn source_ids_are_encoded_for_git_tree_paths() {
+    let (ledger, _dir) = temp_ledger();
+    let source_id = "mem_src:src/a";
+    let from = ledger
+        .commit_snapshot(&meta(source_id), &items(&[("a", "alpha")]), 1000)
+        .unwrap();
+    let to = ledger
+        .commit_snapshot(
+            &meta(source_id),
+            &items(&[("a", "alpha v2"), ("b", "beta")]),
+            2000,
+        )
+        .unwrap();
+
+    assert_eq!(to.source_id, source_id);
+    let (changes, summary) = ledger
+        .compute_changes(Some(&from.id), &to.id, source_id, 2, false)
+        .unwrap();
+    assert_eq!(summary.added, 1);
+    assert_eq!(summary.modified, 1);
+    assert!(changes.iter().any(|change| change.item_id == "a"));
+    assert!(changes.iter().any(|change| change.item_id == "b"));
+}
+
+#[test]
 fn commit_and_list_snapshots() {
     let (ledger, _dir) = temp_ledger();
     assert!(ledger.list_snapshots(None, 10).unwrap().is_empty());
@@ -197,6 +222,20 @@ fn read_marker_set_and_get() {
         Some(snap.id.as_str())
     );
     assert_eq!(ledger.get_read_marker("src_b").unwrap(), None);
+}
+
+#[test]
+fn read_marker_accepts_provider_style_source_ids() {
+    let (ledger, _dir) = temp_ledger();
+    let source_id = "gmail:user@example.com/thread/1";
+    let snap = ledger
+        .commit_snapshot(&meta(source_id), &items(&[("a", "x")]), 1000)
+        .unwrap();
+    ledger.set_read_marker(source_id, &snap.id).unwrap();
+    assert_eq!(
+        ledger.get_read_marker(source_id).unwrap().as_deref(),
+        Some(snap.id.as_str())
+    );
 }
 
 #[test]

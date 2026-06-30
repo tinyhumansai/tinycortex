@@ -54,6 +54,21 @@ fn add_and_edit_reject_multiline_text() {
 }
 
 #[test]
+fn add_and_edit_reject_secret_or_pii_text() {
+    let mut doc = GoalsDoc::default();
+    assert!(doc
+        .add("follow up with alice@example.com about launch")
+        .is_err());
+    assert!(doc
+        .add("rotate api_key=sk-abcdefghijklmnopqrstuvwxyz123456")
+        .is_err());
+
+    let id = doc.add("ship the memory engine").unwrap();
+    assert!(doc.edit(&id, "call +14155551212 tomorrow").is_err());
+    assert_eq!(doc.items[0].text, "ship the memory engine");
+}
+
+#[test]
 fn edit_updates_known_id_and_rejects_unknown() {
     let mut doc = GoalsDoc::default();
     let id = doc.add("old").unwrap();

@@ -42,13 +42,13 @@ TinyCortex should preserve these core properties:
 | Source registry    | `memory_sources`                                                       | Defines source contracts; OpenHuman owns active sync configuration and triggering.      |
 | Sync pipelines     | `memory_sync`                                                          | Documents pull/on-demand pipeline contracts; OpenHuman owns the sync runner.            |
 | Canonicalization   | `memory_sync/canonicalize`                                             | Converts source payloads to canonical markdown plus metadata.                          |
-| Orchestration      | `memory`                                                               | Coordinates sync, remember, query, ingest, tools, and RPC handlers.                    |
-| Storage primitives | `memory_store`                                                         | Owns content files, chunks, trees, vectors, KV, entities, and unified legacy surfaces. |
+| Orchestration      | `memory`                                                               | Provides shared contracts plus ingest/retrieval Rust APIs; host RPC/tool adapters are deferred. |
+| Storage primitives | `memory_store`                                                         | Owns content files, chunks, trees, vectors, KV, and entities; OpenHuman unified legacy surfaces are migration context. |
 | Tree mechanics     | `memory_tree`                                                          | Appends leaves, seals buckets, summarizes, scores, embeds, and retrieves.              |
 | Async jobs         | `memory_queue`                                                         | Runs extraction, append, seal, backfill, stale flush, and document sealing work.       |
 | Retrieval          | `memory_search`, `memory_tree/retrieval`                               | Vector, keyword, graph, tree, entity, and hybrid search.                               |
 | Change tracking    | `memory_diff`                                                          | Git-backed snapshots, diffs, checkpoints, and read markers per source.                 |
-| Specialized memory | `memory_goals`, `memory_tools`, `agent_memory`, `memory_conversations` | Agent goals, tool rules, memory-agent retrieval, and conversation logs.                |
+| Specialized memory | `memory_goals`, `memory_tools`, `agent_memory`, `memory_conversations` | Agent goals, tool rules, OpenHuman/host memory-agent retrieval, and conversation logs. |
 
 ## Core Domain Types
 
@@ -99,21 +99,26 @@ Score breakdown fields are `keyword_relevance`, `vector_similarity`,
 - `chunks/`: SQLite chunk rows with metadata, lifecycle, raw markdown pointers,
   chunking logic, and source back-pointers.
 - `trees/`: summary tree rows, buffers, hotness, tree registry, and summary nodes.
-- `vectors/`: local vector DB with packed `f32` embeddings and cosine search.
+- `vectors/`: local vector DB with packed `f32` embeddings, cosine search, and
+  stored provider/dimension metadata.
 - `kv.rs`: global and namespace-scoped JSON key-value records.
 - `entities.rs`: entity occurrence index over tree nodes.
-- `unified/`: legacy shrinking surface for documents, events, segments, profile,
-  graph relations, and query behavior still used by the generic `Memory` trait.
+- OpenHuman `unified/`: legacy shrinking surface for documents, events,
+  segments, profile, graph relations, and query behavior still used by the
+  OpenHuman generic `Memory` trait; not a current TinyCortex store module.
 - `retrieval/`: facade over tree walk, vector, keyword, and param/tag retrieval.
 - `safety/`: PII and memory safety helpers.
 
 Memory kinds are: `raw`, `chunk`, `entity`, `tree`, `vector`, `kv`, and
-`contact`. Adding a new kind requires a catalog entry, vector compatibility,
-Obsidian/markdown compatibility, and retrieval delegation.
+`contact`, where `contact` is currently a raw archive item kind rather than a
+standalone address-book store. Adding a new kind requires a catalog entry,
+vector compatibility, Obsidian/markdown compatibility, and retrieval delegation.
 
 ### Content Invariants
 
-- Markdown body bytes are immutable after write.
+- Chunk markdown body bytes are immutable after write; sealed summary rows are
+  immutable, while stale summary markdown files may be replaced during restage
+  to keep body hashes aligned with SQLite.
 - SQLite stores pointers such as `content_path` and `content_sha256`.
 - Mutable metadata should be restricted to front matter fields such as tags.
 - Body keyword search should use markdown files, not duplicate body indexes.
@@ -263,11 +268,19 @@ Tests use inert zero embeddings.
 
 ## Summary Trees
 
-Tree kinds are:
+Tree storage keeps the OpenHuman tree-kind wire catalog:
 
 - `source`: one tree per ingest source.
-- `topic`: per-entity/topic trees.
-- `global`: cross-source/global digest trees.
+- `topic`: legacy/optional per-entity topic tree scope.
+- `global`: legacy/optional cross-source digest tree scope.
+
+Current TinyCortex behavior treats `source` trees as the primary persisted
+summary hierarchy. Standalone `topic` and `global` trees are compatibility
+surfaces rather than required active stores: `query_topic` reconstructs
+entity/topic retrieval from the entity index, and `query_global` reconstructs a
+time-window digest by scanning source-tree summaries. Older queue jobs from the
+retired standalone global/topic pipeline, such as `topic_route` and
+`digest_daily`, must be skipped or purged without crashing migrations.
 
 A tree includes `id`, `kind`, `scope`, optional `root_id`, `max_level`,
 `status`, `created_at`, and optional `last_sealed_at`. Status is `active` or
@@ -331,8 +344,10 @@ The retrieval layer exposes deterministic primitives and leaves composition to
 the caller or memory agent:
 
 - `query_source`: source-tree retrieval with optional semantic reranking.
-- `query_global`: cross-source digest over a time window.
-- `query_topic`: entity/topic-scoped retrieval.
+- `query_global`: cross-source digest over a time window, reconstructed from
+  source-tree summaries.
+- `query_topic`: entity/topic-scoped retrieval, reconstructed from the entity
+  occurrence index plus hydrated source-tree nodes.
 - `search_entities`: fuzzy lookup over the entity index.
 - `drill_down`: descend summary children by BFS and optional semantic rerank.
 - `fetch_leaves`: hydrate raw chunks by id, capped per request.
@@ -356,8 +371,11 @@ Mapping:
 
 - Snapshot -> git commit.
 - Checkpoint -> annotated tag `ckpt_<uuid>`.
-- Read marker -> ref `refs/openhuman/read/<source_id>`.
+- Read marker -> ref `refs/openhuman/read/<encoded_source_id>`.
 - Diff -> git tree diff scoped to a source path.
+
+Source ids and item ids are encoded before becoming git path/ref components;
+the original logical ids remain in snapshot metadata and tool/RPC payloads.
 
 Snapshot fields:
 
@@ -380,7 +398,8 @@ Required operations:
 - mark one or more sources read.
 - create/list checkpoints.
 - diff all sources since a checkpoint.
-- cleanup old snapshots.
+- cleanup old checkpoint tags while retaining snapshot commits as ledger
+  history.
 
 The chunk store remains authoritative; the git ledger is rebuildable derived
 state used for change awareness.
@@ -418,7 +437,8 @@ co-occurring entities, neighbors, and grouping by weight.
 ```
 
 Thread metadata is appended to `threads.jsonl`; messages live in
-`threads/<thread_id>.jsonl`. A process-wide mutex serializes disk mutation.
+`threads/<hex(thread_id)>.jsonl` so arbitrary provider/thread ids never become
+raw path components. A process-wide mutex serializes disk mutation.
 This storage is transcript persistence, not semantic memory indexing.
 
 `memory_archivist` converts conversation turns into tree leaves:
@@ -433,7 +453,7 @@ to prevent noisy provider-specific data from distorting embeddings.
 
 ## Agent Memory
 
-`agent_memory` owns the specialist retrieval agent. It combines:
+OpenHuman `agent_memory` owns the specialist retrieval agent. It combines:
 
 - vector search.
 - keyword search over raw content files.
@@ -452,8 +472,9 @@ memory_tree/content/
   wiki/summaries/
 ```
 
-The memory agent should remain a consumer of retrieval tools, not the owner of
-storage mechanics.
+TinyCortex does not currently include a local `agent_memory` module. Hosts can
+layer this agent over TinyCortex retrieval APIs; the agent should remain a
+consumer of retrieval tools, not the owner of storage mechanics.
 
 ## Tool Memory
 
@@ -463,7 +484,9 @@ source, tags, and timestamps.
 
 Priorities are normal, high, and critical. Sources include user-explicit,
 post-turn, and programmatic. Critical/high rules are rendered into prompt
-sections so they survive compression. Agent tools can list and upsert rules.
+sections so they survive compression. The current TinyCortex module provides
+the durable rule store and renderer; concrete agent tools can list and upsert
+rules when the host adapter layer is added.
 
 ## Goals Memory
 
@@ -486,16 +509,19 @@ Constraints:
 - maximum 8 items.
 - maximum rendered size 2,000 chars.
 - each goal is single-line.
+- likely secrets or PII are rejected.
 - mutations serialize through a lock.
 - path validation must reject symlink escapes outside the workspace.
 
-Goals can be mutated by RPC/tools or by a turn-based `goals_agent` that uses
-goals tools plus memory recall. Reflection should make minimal changes unless
-the list is empty, in which case it populates an initial set.
+OpenHuman goals can be mutated by RPC/tools or by a turn-based `goals_agent`
+that uses goals tools plus memory recall. TinyCortex exposes direct store
+wrappers plus a deterministic reflection driver behind `GoalsGenerator`.
+Reflection should make minimal changes unless the list is empty, in which case
+it populates an initial set.
 
 ## RPC and Tool Surfaces
 
-The memory engine exposes controller schemas and handlers for:
+OpenHuman exposes controller schemas and handlers for:
 
 - memory initialization, query, recall, store, forget, doctor, and read RPC.
 - memory tree retrieval and ingest operations.
@@ -507,6 +533,10 @@ The memory engine exposes controller schemas and handlers for:
 Agent-facing tools must use the same underlying contracts as RPC handlers where
 possible. Tool outputs should preserve machine-readable ids, counts, scores,
 source ids, and taint values.
+
+TinyCortex currently provides the domain operations and wire-stable types those
+handlers need. The concrete controller/schema/agent-tool registry layer is a
+deferred host adapter surface.
 
 ## Security and Safety Requirements
 
@@ -522,33 +552,35 @@ source ids, and taint values.
 
 ## TinyCortex Target Modules
 
-Proposed module layout:
+Current module layout:
 
 ```text
 src/
   memory/
+    config.rs
+    error.rs
     types.rs
     traits.rs
-    store/
-      content.rs
-      chunks.rs
-      trees.rs
-      vectors.rs
-      kv.rs
-    sources/
-    sync/
-    ingest/
-    score/
-    tree/
-    queue/
-    retrieval/
+    archivist/
+    chunks/
+    conversations/
     diff/
     entities/
-    graph/
     goals/
+    graph/
+    ingest/
+    queue/
+    retrieval/
+    score/
+    sources/
+    store/
+      content/
+      entity_index/
+      kv.rs
+      safety.rs
+      vectors/
     tool_memory/
-    conversations/
-    archivist/
+    tree/
 ```
 
 The first implementation milestone should port pure types and deterministic
@@ -570,11 +602,13 @@ logic before storage side effects:
 - Whether TinyCortex should keep OpenHuman's legacy `unified` store surface or
   immediately model documents, chunks, graph relations, and episodes as
   separate stores.
-- Whether topic/global trees remain active targets or are represented as
-  optional extensions, given retired queue kinds in newer OpenHuman code.
+- Whether standalone topic/global trees should ever be reintroduced as optional
+  extensions; the current implementation reconstructs those projections from
+  source trees and the entity index.
 - Whether the git-backed diff ledger should be mandatory or pluggable behind a
   trait for non-git embedded deployments.
-- Whether embedding dimension should remain fixed at 768 or become a stored
-  embedding-signature property.
+- Whether all embedding callers should converge on a single signature type; the
+  current implementation already treats dimension as stored metadata/signature,
+  not as a fixed global constant.
 - How much of agent-specific prompt behavior belongs in TinyCortex versus an
   adapter crate.

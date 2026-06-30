@@ -103,3 +103,30 @@ fn reflect_skips_unknown_id_edits_and_deletes() {
     assert_eq!(outcome.skipped, 1);
     assert_eq!(outcome.goals.items[0].text, "kept and updated");
 }
+
+#[test]
+fn reflect_skips_secret_or_pii_goal_proposals() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = MemoryConfig::new(tmp.path());
+    store::add(tmp.path(), "ship the memory engine").unwrap();
+
+    struct UnsafeGenerator;
+    impl GoalsGenerator for UnsafeGenerator {
+        fn propose(&self, doc: &GoalsDoc, _ctx: &str, _first: bool) -> Vec<GoalMutation> {
+            vec![
+                GoalMutation::Add {
+                    text: "email alice@example.com about launch".to_string(),
+                },
+                GoalMutation::Edit {
+                    id: doc.items[0].id.clone(),
+                    text: "rotate api_key=sk-abcdefghijklmnopqrstuvwxyz123456".to_string(),
+                },
+            ]
+        }
+    }
+
+    let outcome = reflect(&cfg, "ctx", &UnsafeGenerator).unwrap();
+    assert_eq!(outcome.applied, 0);
+    assert_eq!(outcome.skipped, 2);
+    assert_eq!(outcome.goals.items[0].text, "ship the memory engine");
+}

@@ -17,22 +17,32 @@ as the current source checkout unless a later branch is chosen.
 - `memory/`: orchestration for query, remember, OpenHuman-triggered ingest, and
   RPC surfaces.
 - `memory_store/`: storage primitives for content, chunks, trees, vectors, KV,
-  entities, and the shrinking unified store.
+  entities, and the shrinking unified store. TinyCortex splits those across
+  `store/`, `chunks/`, and `tree/`; the unified store is migration context.
 - `memory_tree/`: tree mechanics, summary sealing, retrieval, scoring, and
   entity extraction.
-- `memory_queue/`: SQLite-backed async jobs for extraction, append, seal, topic
-  routing, digests, and stale flushes.
+- `memory_queue/`: SQLite-backed async jobs for extraction, append, seal,
+  re-embed backfill, document sealing, and stale flushes. Old topic/digest jobs
+  are retired and migration-safe.
 - `memory_search/`, `memory_graph/`, `memory_entities/`, `memory_sources/`:
   specialized retrieval, graph, source contracts, and validation layers.
 
 ## Target Layout
 
-- `src/memory/types.rs`: stable public memory data contracts.
-- `src/memory/store.rs`: backend-agnostic store trait plus
-  simple implementations.
-- Future modules should keep OpenHuman's layer rule: orchestration depends on
-  storage, but storage does not depend upward on orchestration. The OpenHuman
-  memory sync module remains outside this crate.
+The memory engine now lives under `src/memory/` as cohesive modules:
+
+- `types.rs`, `traits.rs`, `config.rs`, `error.rs`: stable shared contracts.
+- `store/`: content, generic vectors, KV, safety helpers, entity index, and the
+  starter store.
+- `chunks/`, `tree/`, `queue/`, `retrieval/`, `score/`: chunk/tree pipeline.
+- `sources/` and `ingest/`: source contracts, local readers, canonicalizers,
+  and on-demand ingest orchestration.
+- `diff/`, `entities/`, `graph/`, `goals/`, `tool_memory/`,
+  `conversations/`, `archivist/`: specialized memory surfaces.
+
+Future host adapters should keep OpenHuman's layer rule: orchestration depends
+on storage, but storage does not depend upward on orchestration. The OpenHuman
+memory sync module remains outside this crate.
 
 ## Migration Order
 
@@ -47,7 +57,8 @@ as the current source checkout unless a later branch is chosen.
 
 The memory engine is ported as the config-driven library under `src/memory/`.
 All modules compile together, are wired into `src/memory/mod.rs`, and ship unit
-tests in sibling `*_tests.rs` files (1000+ tests; `cargo fmt` clean, no warnings).
+tests in sibling `*_tests.rs` files (1000+ tests; `cargo fmt` and `cargo test`
+are the current validation gates).
 
 | Module | OpenHuman source | Notes |
 | --- | --- | --- |
@@ -70,7 +81,7 @@ tests in sibling `*_tests.rs` files (1000+ tests; `cargo fmt` clean, no warnings
 
 Per the ownership boundary, the live sync runner, OAuth/webhook callbacks, and
 real LLM/embedding/network backends remain host-owned (OpenHuman) and are
-represented here as injectable traits. Known follow-ups: consolidate the
-`mem_tree_entity_index` access that currently appears in `store`, `score`, and
-`tree`; restore the deferred peripheral surfaces (tree `health`/`nlp`,
-retrieval `fast`/rpc, obsidian/wiki-git content) as host adapters land.
+represented here as injectable traits. Known follow-ups: consolidate legacy
+`score::store` entity-index helpers around `store::entity_index`; restore the
+deferred peripheral surfaces (tree `health`/`nlp`, retrieval RPC/fast paths,
+obsidian/wiki-git content, controller/tool registries) as host adapters land.

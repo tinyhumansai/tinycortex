@@ -1,6 +1,8 @@
 //! JSONL-backed thread and message store. Thread metadata lives in
 //! `threads.jsonl` (append-only upsert/delete log); each thread's messages
-//! are appended to a per-thread JSONL file under `threads/<id>.jsonl`.
+//! are appended to a per-thread JSONL file under
+//! `threads/<hex(thread_id)>.jsonl` so arbitrary provider ids remain
+//! filesystem-safe.
 //!
 //! All on-disk mutations serialise through a single process-wide mutex so
 //! concurrent RPC handlers don't interleave writes.

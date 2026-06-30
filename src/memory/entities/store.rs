@@ -7,10 +7,12 @@
 //! those edits on the next programmatic write.
 
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
+use uuid::Uuid;
 
 use crate::memory::config::MemoryConfig;
 use crate::memory::entities::canonical::slugify_id;
@@ -57,9 +59,39 @@ pub fn put_entity(config: &MemoryConfig, mut entity: Entity) -> Result<Entity> {
 
     entity.updated_at = Utc::now();
     let bytes = compose(&entity, &existing_notes).into_bytes();
-    fs::write(&path, &bytes)
-        .with_context(|| format!("failed to write entity {}", path.display()))?;
+    write_entity_atomic(&path, &bytes)?;
     Ok(entity)
+}
+
+fn write_entity_atomic(path: &PathBuf, bytes: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .with_context(|| format!("entity path has no parent: {}", path.display()))?;
+    let tmp_path = parent.join(format!(".entity-{}.tmp", Uuid::new_v4()));
+
+    let write_result = (|| -> Result<()> {
+        {
+            let mut file = fs::File::create(&tmp_path)
+                .with_context(|| format!("failed to create {}", tmp_path.display()))?;
+            file.write_all(bytes)
+                .with_context(|| format!("failed to write {}", tmp_path.display()))?;
+            file.sync_all()
+                .with_context(|| format!("failed to sync {}", tmp_path.display()))?;
+        }
+        fs::rename(&tmp_path, path).with_context(|| {
+            format!(
+                "failed to atomically replace {} with {}",
+                path.display(),
+                tmp_path.display()
+            )
+        })?;
+        Ok(())
+    })();
+
+    if write_result.is_err() {
+        let _ = fs::remove_file(&tmp_path);
+    }
+    write_result
 }
 
 /// Read an entity by canonical id. Returns `Ok(None)` when the file is absent.

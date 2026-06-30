@@ -66,16 +66,28 @@ Reader output:
 - `SourceContent`: `id`, `title`, `body`, `content_type`, `metadata`.
 - `ContentType`: `markdown`, `html`, `plaintext`.
 
-Reader requirements:
+TinyCortex currently ships local readers only:
 
 - Folder reader: glob files, default markdown pattern, 10 MB cap, path traversal
   guard.
-- GitHub reader: commits, issues, PRs via `gh` CLI or public REST fallback.
-- RSS reader: RSS/Atom item extraction.
-- Web page reader: fetch URL and optionally select content by CSS selector.
-- Conversation reader: local conversation source integration.
-- Composio reader: connection placeholder; provider-driven sync owns real fetch.
-- Twitter reader: placeholder until credentials/API path exist.
+- Conversation reader: local legacy-thread source integration over
+  `<workspace>/threads/*.json`; this is separate from the JSONL conversation
+  store under `memory/conversations/`.
+
+The network-backed source kinds remain part of the registry and validation
+contract, but their live fetchers are OpenHuman/host-owned sync adapters:
+
+- GitHub reader adapter: commits, issues, PRs via `gh` CLI or public REST
+  fallback.
+- RSS reader adapter: RSS/Atom item extraction.
+- Web page reader adapter: fetch URL and optionally select content by CSS
+  selector.
+- Composio reader adapter: provider-driven sync owns real fetch.
+- Twitter reader adapter: placeholder until credentials/API path exist.
+
+In TinyCortex, `reader_for` should return a local reader for `folder` and
+`conversation`, and `None` for network-backed kinds so the host can route them
+through its sync runner.
 
 ## Manual Sync
 
@@ -156,6 +168,11 @@ behavior so interrupted syncs do not strand raw files.
 
 Namespace: `memory_sources`.
 
+This namespace is an OpenHuman/host adapter surface. TinyCortex currently owns
+the registry, validation, local reader trait, and local folder/conversation
+readers; controller functions that schedule sync, expose audit/cost status, or
+call network readers are deferred to the host sync layer.
+
 Functions:
 
 - `list`, `get`, `add`, `update`, `remove`
@@ -168,8 +185,8 @@ Functions:
 
 ```text
 src/memory/sources/
-src/memory/sync_contracts/
-src/memory/sync/canonicalize/
+  readers/
+src/memory/ingest/canonicalize/
 ```
 
 Port order: source kind/types/validation, registry patch semantics, reader

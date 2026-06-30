@@ -11,8 +11,10 @@
 //!
 //! - [`query_source`] — per-source-tree summary retrieval (optional semantic
 //!   rerank).
-//! - [`query_global`] — cross-source digest over an explicit time window.
-//! - [`query_topic`] — entity/topic-scoped retrieval over the entity index.
+//! - [`query_global`] — cross-source digest over an explicit time window,
+//!   reconstructed from source-tree summaries.
+//! - [`query_topic`] — entity/topic-scoped retrieval reconstructed from the
+//!   entity index plus hydrated source-tree nodes.
 //! - [`search_entities`] — fuzzy `LIKE` lookup over the entity index.
 //! - [`drill_down`] — descend a summary's `child_ids` (BFS, optional rerank).
 //! - [`cover_window`] — minimum-node cover of a `[since, until]` window.

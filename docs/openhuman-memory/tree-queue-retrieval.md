@@ -70,20 +70,23 @@ Extractor contract:
 
 Embedding contract:
 
-- fixed vector length in OpenHuman: 768.
+- historical fixed vector length in OpenHuman: 768.
 - default Ollama endpoint/model: local `nomic-embed-text`.
 - inert zero-vector implementation for tests.
 - packing/unpacking helpers for SQLite BLOB storage.
 - cosine similarity short-circuits zero magnitude to 0.
 
-TinyCortex should consider storing embedding model/dimension/signature with
-each embedding for future backfill.
+TinyCortex stores embedding identity in two places: the generic vector DB
+records provider and dimensions in `store_meta`, while chunk-tree embeddings
+live in per-model sidecars keyed by `model_signature` (`model@dim`) and store
+each row's dimension. Re-embed tombstones record rows that cannot be backfilled
+for a given signature.
 
 ## Queue Jobs
 
 `memory_queue` stores jobs in `mem_tree_jobs`. Required fields include kind,
-payload JSON, status, attempts, claim token/lock metadata, availability time,
-last error, and dedupe key.
+payload JSON, status, attempts, lock metadata, availability time, last error,
+dedupe key, typed failure reason/class, and lifecycle timestamps.
 
 Job kinds:
 
@@ -107,8 +110,10 @@ Handler outcomes:
 - `Defer { until_ms, reason }`
 
 `Defer` reschedules without burning retry attempts. LLM-bound jobs must take a
-global concurrency semaphore. Workers must recover stale locks at startup and
-settle jobs using claim tokens so stale workers cannot overwrite newer claims.
+global concurrency semaphore. Workers must purge retired job kinds and recover
+stale locks at startup. Settlement is guarded by the claimed row snapshot
+(`attempts` plus `started_at_ms`) so a stale worker cannot overwrite a newer
+claim.
 
 ## Queue Payloads
 
@@ -117,9 +122,10 @@ Core payloads:
 - `ExtractChunkPayload { chunk_id }`
 - `AppendBufferPayload { node, target }`
 - `SealPayload { tree_id, level, force_now_ms }`
-- `FlushStalePayload { max_age_secs }`
-- re-embed and document-seal payloads for embedding backfill and per-document
-  version rollups.
+- `FlushStalePayload { max_age_secs }`, deduped by caller-supplied 3-hour UTC
+  block.
+- `ReembedBackfillPayload { signature }`
+- `SealDocumentPayload { tree_scope, doc_id, version_ms, chunk_ids }`
 
 `NodeRef` can be a leaf chunk or summary node. Append targets can identify a
 source tree by source id or a topic tree by tree id. Dedupe keys must suppress
@@ -130,15 +136,17 @@ only active duplicate work.
 Retrieval controller functions:
 
 - `query_source`: source-tree summary retrieval.
+- `query_global`: reconstructed cross-source digest from source-tree summaries.
+- `query_topic`: reconstructed entity/topic retrieval from the entity index and
+  hydrated source-tree nodes.
 - `cover_window`: select context covering a time window.
 - `search_entities`: fuzzy lookup over entity index.
 - `drill_down`: descend summary children.
 - `fetch_leaves`: hydrate raw chunk leaves.
 
-OpenHuman README also documents global/topic retrieval surfaces; newer code
-shows global/topic behavior has been partially retired. TinyCortex should make
-global/topic retrieval extension points explicit and test whether they are
-active before porting.
+OpenHuman also had standalone global/topic tree jobs. Those job kinds are
+retired here: old rows are skipped on claim and purged at worker bootstrap, and
+the current global/topic query surfaces are projections over source trees.
 
 ## Hybrid Search
 
@@ -153,10 +161,11 @@ Hybrid search should surface component scores and final score.
 
 ## Runtime and Health
 
-`memory_tree/tree_runtime` provides runtime ingestion, engine, bus, store, CLI,
-and schemas. `memory_tree/health` provides doctor checks. TinyCortex should
-preserve doctor-style diagnostics for queues, embeddings, tree stores, and
-content roots.
+TinyCortex ports the `memory_tree/tree_runtime` engine, summariser abstraction,
+types, and filesystem-backed runtime store. OpenHuman's RPC/CLI/bus/schema
+surfaces and `memory_tree/health` doctor checks are not local modules yet.
+TinyCortex should preserve doctor-style diagnostics for queues, embeddings,
+tree stores, and content roots when those host-facing surfaces are added.
 
 ## TinyCortex Landing Area
 
@@ -165,10 +174,8 @@ src/memory/tree/
 src/memory/queue/
 src/memory/score/
 src/memory/retrieval/
-src/memory/search/
 ```
 
 Port order: tree/queue/retrieval types, scoring signal pure functions, entity
 resolver, embedding math/packing, in-memory tree tests, then SQLite queue and
 worker implementation.
-

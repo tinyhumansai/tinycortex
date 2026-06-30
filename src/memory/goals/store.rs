@@ -38,7 +38,7 @@ pub const GOALS_FILE_MAX_CHARS: usize = 2000;
 pub const GOALS_MAX_ITEMS: usize = 8;
 
 /// Serialises `load → mutate → save` sequences across all callers.
-fn goals_mutation_lock() -> &'static Mutex<()> {
+pub(super) fn goals_mutation_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
