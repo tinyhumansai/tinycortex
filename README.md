@@ -8,9 +8,9 @@
 [![docs.rs](https://img.shields.io/docsrs/tinycortex)](https://docs.rs/tinycortex)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-[Discord](https://discord.tinyhumans.ai) • [Reddit](https://www.reddit.com/r/tinyhumansai/) • [X](https://x.com/tinyhumansai) • [Wiki](../../wiki) • [Docs](https://tinyhumans.gitbook.io/tinycortex/)
+[Discord](https://discord.tinyhumans.ai) • [Reddit](https://www.reddit.com/r/tinyhumansai/) • [X](https://x.com/tinyhumansai) • [Docs](https://tinyhumans.gitbook.io/tinycortex/)
 
-#### [Benchmarks](#-benchmarks) • [Getting Started](#-getting-started) • [Architecture](../../wiki/Architecture-Overview) • [Read the paper](./paper/README.md)
+#### [Benchmarks](#-benchmarks) • [Getting Started](#-getting-started) • [Architecture](https://tinyhumans.gitbook.io/tinycortex/) • [Read the paper](./paper/README.md)
 
 </div>
 
@@ -75,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-The `InMemoryMemoryStore` is the simple reference backend. The full engine — content store, chunking, scoring, summary trees, vector/keyword/graph/hybrid retrieval, the diff ledger, and the async job queue — lives under the [`memory`](https://docs.rs/tinycortex/latest/tinycortex/memory/) module. See the **[Wiki](../../wiki)** for the architecture, concepts, and end-to-end ingest walkthroughs.
+The `InMemoryMemoryStore` is the simple reference backend. The full engine — content store, chunking, scoring, summary trees, vector/keyword/graph/hybrid retrieval, the diff ledger, and the async job queue — lives under the [`memory`](https://docs.rs/tinycortex/latest/tinycortex/memory/) module. See the **[documentation](https://tinyhumans.gitbook.io/tinycortex/)** for the architecture, concepts, and end-to-end ingest walkthroughs.
 
 # 🧩 How It Works
 
@@ -102,7 +102,7 @@ source payload
 | **Conversations / Archivist** | Transcript storage and conversion of turns into summary-tree leaves                          |
 | **Queue**                     | Async jobs: extract, append, seal, flush-stale, re-embed, seal-document                      |
 
-Full details live in the **[Architecture Overview](../../wiki/Architecture-Overview)**.
+Full details live in the **[documentation](https://tinyhumans.gitbook.io/tinycortex/)**.
 
 # 📈 Benchmarks
 
@@ -124,11 +124,11 @@ An agent runs a simulated vending-machine business over 30 days. TinyCortex achi
 
 ![chart_vendingbench](docs/images/chart_vendingbench.png)
 
-See the [Benchmarks wiki](../../wiki/Benchmarks) to reproduce these on your own corpus.
+See [`benchmarks/`](./benchmarks/README.md) to reproduce these on your own corpus.
 
 # 📚 Documentation
 
-- **[Wiki](../../wiki)** — architecture, concepts, getting started, and FAQ
+- **[Documentation (GitBook)](https://tinyhumans.gitbook.io/tinycortex/)** — architecture, concepts, getting started, and FAQ
 - **[docs.rs/tinycortex](https://docs.rs/tinycortex)** — generated API reference
 - **[The paper](./paper/README.md)** — the research behind the memory model
 - **[CONTRIBUTING.md](./CONTRIBUTING.md)** — how to build, test, and contribute

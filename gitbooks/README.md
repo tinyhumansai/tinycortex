@@ -1,82 +1,65 @@
 ---
-description: The memory layer for AI agents. Scales to 1B+ tokens.
+description: The local-first AI memory engine — a Rust crate that learns what matters and forgets the noise.
 ---
 
-# Introducing TinyCortex 🧠
+# Introduction
 
-Every AI memory system you've used does the same thing: store everything, retrieve by similarity, hope for the best.
+# TinyCortex 🧠
 
-The outcome: Your agent drowns in stale context. Responses degrade. Costs inflate. You end up writing custom pruning logic at 2am.
+**TinyCortex** is a local-first AI memory engine, shipped as the open-source Rust crate [`tinycortex`](https://crates.io/crates/tinycortex). It gives your agents a memory that works the way a brain does: it **intelligently forgets noise** so the model only reasons over what matters.
 
-TinyCortex takes a fundamentally different approach. Inspired by how the human brain actually works, it **intelligently forgets noise** so your AI only reasons over what matters. Low-value memories decay naturally over time. Knowledge your users interact with gets reinforced and rises to the top. It doesn't require manual cleanup and there is no context window anxiety.
+Every AI memory system you have used does the same thing — store everything, retrieve by similarity, hope for the best. The outcome is an agent that drowns in stale context: responses degrade and costs inflate. TinyCortex takes the opposite approach. Low-value memories **decay** over time, while the knowledge your users recall and interact with is **reinforced** and rises to the top. There is no manual cleanup and no context-window anxiety.
 
-The result: an AI memory system that processes over **1 billion tokens**, stays lean and focused, and gets smarter with every interaction.
-
-For a deployment serving 100,000 users with ongoing conversation history:
-
-| Approach                                       | Cost per user per year |
-| ---------------------------------------------- | ---------------------- |
-| Frontier model context (everything in-context) | \~$90,000              |
-| Standard RAG pipeline                          | \~$2.40                |
-| **TinyCortex**                                  | **\~$0.72**            |
-
-The 1,000:1 compression ratio means storage and compute costs grow slowly relative to conversation volume. TinyCortex indexes a conversation for $0.0004, compared to $0.0112 for Mem0 (28x lower).
-
-## Core Features
-
-### Intelligent Noise Filtering
-
-Memories that aren't accessed naturally decay over time. Frequently recalled knowledge becomes more durable. The system stays lean on its own without manual cleanup and intervention.
-
-<div align="center"><img src=".gitbook/assets/AppleEmailGraph.gif" alt="Memory Decay Simulation" width="700"></div>
-
-### Interaction-Aware
-
-Not all memories are equal. Views, reactions, replies, and content creation all signal what matters. Knowledge people engage with rises to the top; ignored information fades away.
-
-
-
-<div align="center"><img src=".gitbook/assets/BobMemoryDecayVideo.gif" alt="Interaction Graph" width="700"></div>
-
-### Low Latency, Low Cost, High Quality
-
-No compromise on speed and quality when processing data with TinyCortex. Everything is processed at low cost and low latency while maintaining high benchmark scores
-
-| Metric          | TinyCortex  | Nearest Competitor        |
-| --------------- | ---------- | ------------------------- |
-| Average latency | \~1.1s     | \~3.6s (Mem0)             |
-| Query cost      | \~$0.00095 | \~$0.00085 (Mem0)         |
-| Index cost      | \~$0.0005  | \~$0.014 (Mem0, 28x more) |
-
-## Quick Start
-
-```bash
-pip install tinyhumansai
-```
-
-```python
-import tinyhumansai as api
-
-client = api.TinyHumanMemoryClient("YOUR_APIKEY_HERE")
-
-# Store a memory
-client.ingest_memory({
-    "key": "user-preference-theme",
-    "content": "User prefers dark mode",
-    "namespace": "preferences",
-    "metadata": {"source": "onboarding"},
-})
-
-# Ask a question using stored memory
-response = client.recall_with_llm(
-    prompt="What is the user's preference for theme?",
-    api_key="OPENAI_API_KEY"
-)
-print(response.text)  # The user prefers dark mode
-```
-
-That's it. Ingest memories, recall them with any LLM. TinyCortex handles the hard parts: deduplication, decay, graph-based retrieval, and noise pruning.
+The engine ingests content, canonicalizes and chunks it, scores what is worth keeping, and **compresses** it into a hierarchical summary tree. Retrieval then serves a focused, explainable slice of long-term history — vector, keyword, graph, and tree search combined — instead of a noisy dump of everything ever stored.
 
 {% hint style="info" %}
-TinyCortex is currently in **closed alpha**. To get access, [reach out to us](mailto:founders@tinyhumans.ai).
+This documentation covers the **open-source Rust crate**. The hosted TinyCortex platform (managed API, language SDKs) is a separate product in **closed alpha** — [reach out](mailto:founders@tinyhumans.ai) for access. Crate-only vs. hosted-only capabilities are called out throughout.
 {% endhint %}
+
+## Quickstart
+
+```bash
+cargo add tinycortex
+```
+
+```rust
+use tinycortex::memory::{InMemoryMemoryStore, MemoryInput, MemoryQuery, MemoryStore};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let store = InMemoryMemoryStore::new();
+
+    store
+        .insert(MemoryInput::new("preferences", "User prefers dark mode"))
+        .await?;
+
+    let hits = store.search(MemoryQuery::text("theme preference")).await?;
+    for hit in hits {
+        println!("{:.3}  {}", hit.score, hit.record.content);
+    }
+    Ok(())
+}
+```
+
+See **[Getting Started](getting-started.md)** for the full walkthrough, or jump to the **[Architecture Overview](architecture.md)** to understand how the engine fits together.
+
+## Why TinyCortex
+
+* **Intelligent noise filtering** — memories that are not accessed decay; frequently recalled knowledge becomes durable. The store stays lean on its own.
+* **Interaction-aware** — views, replies, reactions, and authored content all signal what matters.
+* **Local-first & inspectable** — markdown files are the source of truth; SQLite, vectors, summary trees, and a git ledger are rebuildable derived indexes.
+* **Explainable retrieval** — every hit carries a score breakdown across graph, vector, keyword, and freshness signals.
+* **Provenance & safety** — every item carries source identity and a security `taint` (internal vs. external-sync).
+
+## Where to go next
+
+| If you want to… | Read |
+| --------------- | ---- |
+| Install and run your first store | [Getting Started](getting-started.md) |
+| Understand the layered design | [Architecture Overview](architecture.md) |
+| Learn the vocabulary (namespaces, taint, decay, recall) | [Core Concepts](core-concepts.md) |
+| See how memories are compressed into a tree | [Memory Tree & Compression](memory-tree.md) |
+| Query memory | [Retrieval](retrieval.md) |
+| Read the generated API reference | [docs.rs/tinycortex](https://docs.rs/tinycortex) |
+
+[Discord](https://discord.tinyhumans.ai) • [Reddit](https://www.reddit.com/r/tinyhumansai/) • [X](https://x.com/tinyhumansai) • [crates.io](https://crates.io/crates/tinycortex)
