@@ -1,5 +1,5 @@
 <div align="center">
-<img src="./docs/images/graph.png" style="max-width: 400px"/>
+<img src="./docs/images/image-neocortex.png" style="max-width: 400px"/>
 <h1>TinyCortex AI Memory 🧠 - Your Second Brain</h1>
 
 **Human-like AI Memory  ◦  10Mn+ Token Context ◦ 0.2$/Mn tokens** ◦ **Conscious Recall**
