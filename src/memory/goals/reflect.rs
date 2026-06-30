@@ -30,11 +30,22 @@ use super::types::GoalsDoc;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GoalMutation {
     /// Append a new goal with this text.
-    Add { text: String },
+    Add {
+        /// Goal body to append.
+        text: String,
+    },
     /// Replace the text of the goal addressed by `id`.
-    Edit { id: String, text: String },
+    Edit {
+        /// Id of the goal to edit.
+        id: String,
+        /// Replacement goal body.
+        text: String,
+    },
     /// Remove the goal addressed by `id`.
-    Delete { id: String },
+    Delete {
+        /// Id of the goal to remove.
+        id: String,
+    },
 }
 
 /// Abstraction over the LLM-driven reflection step.

@@ -106,7 +106,12 @@ pub enum JobOutcome {
     /// `available_at_ms = until_ms` (UTC milliseconds) with `attempts` reverted
     /// to its pre-claim value so the failure budget is not touched. `reason` is
     /// recorded in `last_error` for visibility.
-    Defer { until_ms: i64, reason: String },
+    Defer {
+        /// UTC-millisecond instant to reschedule the row to.
+        until_ms: i64,
+        /// Human-readable reason recorded in `last_error`.
+        reason: String,
+    },
 }
 
 /// Lifecycle states persisted on `mem_tree_jobs.status`. Workers transition
@@ -114,10 +119,17 @@ pub enum JobOutcome {
 /// actions (none surfaced yet).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobStatus {
+    /// Claimable: waiting for a worker (wire string `ready`).
     Ready,
+    /// Claimed and in flight under a lease (wire string `running`).
     Running,
+    /// Settled successfully (wire string `done`).
     Done,
+    /// Settled as failed after exhausting retries or on an unrecoverable
+    /// classification (wire string `failed`).
     Failed,
+    /// Cancelled by explicit admin action (wire string `cancelled`); reserved,
+    /// no producer yet.
     Cancelled,
 }
 
@@ -214,8 +226,16 @@ impl std::error::Error for JobFailure {}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NodeRef {
-    Leaf { chunk_id: String },
-    Summary { summary_id: String },
+    /// A leaf chunk (wire tag `leaf`), identified by its chunk id.
+    Leaf {
+        /// Chunk row id of the leaf.
+        chunk_id: String,
+    },
+    /// A sealed summary node (wire tag `summary`), identified by its summary id.
+    Summary {
+        /// Summary-tree row id of the node.
+        summary_id: String,
+    },
 }
 
 impl NodeRef {
@@ -229,8 +249,11 @@ impl NodeRef {
     }
 }
 
+/// Payload for [`JobKind::ExtractChunk`]: the single chunk to run extraction
+/// and admission over.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExtractChunkPayload {
+    /// Chunk row id to extract.
     pub chunk_id: String,
 }
 
@@ -248,13 +271,26 @@ impl ExtractChunkPayload {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AppendTarget {
-    Source { source_id: String },
-    Topic { tree_id: String },
+    /// Append into the source tree keyed by `source_id` (wire tag `source`).
+    Source {
+        /// Source id whose tree receives the node.
+        source_id: String,
+    },
+    /// Append into a specific topic tree keyed by `tree_id` (wire tag `topic`),
+    /// since a node may fan out to many topic trees.
+    Topic {
+        /// Topic-tree id that receives the node.
+        tree_id: String,
+    },
 }
 
+/// Payload for [`JobKind::AppendBuffer`]: which node to append and into which
+/// tree's L0 buffer.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppendBufferPayload {
+    /// The leaf or summary node to push into the buffer.
     pub node: NodeRef,
+    /// Destination tree for the append.
     pub target: AppendTarget,
 }
 
@@ -273,9 +309,12 @@ impl AppendBufferPayload {
     }
 }
 
+/// Payload for [`JobKind::Seal`]: seal exactly one buffer level of one tree.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SealPayload {
+    /// Tree whose buffer level is sealed.
     pub tree_id: String,
+    /// Buffer level to seal (0-based; L0 is the leaf buffer).
     pub level: u32,
     /// When `Some`, the seal handler bypasses the buffer-budget check and
     /// force-seals — used by the time-based flush path. The wall-clock is
@@ -295,6 +334,8 @@ impl SealPayload {
     }
 }
 
+/// Payload for [`JobKind::FlushStale`]: scan stale buffers and enqueue seals
+/// for any past the age cap.
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct FlushStalePayload {
     /// Override the configured default flush age. Optional so the scheduler can
@@ -369,15 +410,26 @@ impl SealDocumentPayload {
 /// callers parse it lazily based on `kind`.
 #[derive(Clone, Debug)]
 pub struct Job {
+    /// Row id (primary key in `mem_tree_jobs`).
     pub id: String,
+    /// Job discriminator selecting the handler and payload shape.
     pub kind: JobKind,
+    /// Raw JSON payload, parsed lazily by the handler based on `kind`.
     pub payload_json: String,
+    /// Optional dedupe key backing the partial unique index that suppresses
+    /// duplicate in-flight enqueues; `None` disables dedupe for this row.
     pub dedupe_key: Option<String>,
+    /// Current lifecycle state.
     pub status: JobStatus,
+    /// Failed attempts so far (incremented on each retryable error).
     pub attempts: u32,
+    /// Attempt budget; once `attempts` reaches it the job is settled `failed`.
     pub max_attempts: u32,
+    /// Earliest UTC ms at which the row may be claimed (delayed/retried work).
     pub available_at_ms: i64,
+    /// Lease expiry in UTC ms while `running`; reclaimable once past.
     pub locked_until_ms: Option<i64>,
+    /// Freeform last-error text for visibility; not machine-readable.
     pub last_error: Option<String>,
     /// Typed failure code (e.g. `"budget_exhausted"`) set when a job is marked
     /// `failed` with a classified reason; `None` otherwise. Distinct from the
@@ -386,8 +438,11 @@ pub struct Job {
     /// Failure class (`"transient"` | `"unrecoverable"`) paired with
     /// `failure_reason`; `None` until a classified failure is recorded.
     pub failure_class: Option<String>,
+    /// Row creation time in UTC ms.
     pub created_at_ms: i64,
+    /// UTC ms when the row was first claimed; `None` until it runs.
     pub started_at_ms: Option<i64>,
+    /// UTC ms when the row reached a terminal status; `None` until settled.
     pub completed_at_ms: Option<i64>,
 }
 
@@ -395,12 +450,16 @@ pub struct Job {
 /// Keeps producers from having to mint timestamps and ids by hand.
 #[derive(Clone, Debug)]
 pub struct NewJob {
+    /// Job discriminator selecting the handler and payload shape.
     pub kind: JobKind,
+    /// Raw JSON payload, parsed lazily by the handler based on `kind`.
     pub payload_json: String,
+    /// Optional dedupe key; `Some` opts the enqueue into in-flight suppression.
     pub dedupe_key: Option<String>,
     /// `None` means "available immediately." Set this for delayed jobs
     /// (retries, scheduled work).
     pub available_at_ms: Option<i64>,
+    /// Attempt budget override; `None` lets the store apply its default.
     pub max_attempts: Option<u32>,
 }
 

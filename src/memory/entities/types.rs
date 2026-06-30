@@ -20,20 +20,38 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntityKind {
+    /// A named individual. Wire string `"person"`.
     Person,
+    /// A company, team, or institution. Wire string `"organization"`.
     Organization,
+    /// A subject or theme. Wire string `"topic"`.
     Topic,
+    /// An email address (mechanical kind). Wire string `"email"`.
     Email,
+    /// A URL (mechanical kind). Wire string `"url"`.
     Url,
+    /// A source-specific handle such as a social/user id (mechanical kind).
+    /// Wire string `"handle"`.
     Handle,
+    /// A `#hashtag` (mechanical kind). Wire string `"hashtag"`.
     Hashtag,
+    /// A place. Wire string `"location"`.
     Location,
+    /// An occurrence in time. Wire string `"event"`.
     Event,
+    /// A product or offering. Wire string `"product"`.
     Product,
+    /// A date or timestamp reference (mechanical kind). Wire string
+    /// `"datetime"`.
     Datetime,
+    /// A tool, language, framework, or other technology. Wire string
+    /// `"technology"`.
     Technology,
+    /// A produced artifact (file, document, output). Wire string `"artifact"`.
     Artifact,
+    /// A measured amount or numeric quantity. Wire string `"quantity"`.
     Quantity,
+    /// Catch-all for entities matching no other kind. Wire string `"misc"`.
     Misc,
 }
 

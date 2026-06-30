@@ -8,11 +8,17 @@ use serde::{Deserialize, Serialize};
 /// for diagnostics.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ScoreSignals {
+    /// Length signal derived from the chunk's token count.
     pub token_count: f32,
+    /// Lexical-diversity signal derived from the count of distinct words.
     pub unique_words: f32,
+    /// Contribution from structural/front-matter metadata on the source.
     pub metadata_weight: f32,
+    /// Contribution from the source's provenance/authority.
     pub source_weight: f32,
+    /// Direct-engagement signal from user interaction with the chunk.
     pub interaction: f32,
+    /// Signal proportional to the density of extracted entities in the chunk.
     pub entity_density: f32,
     /// LLM-derived importance rating in `[0.0, 1.0]`. `0.0` when no LLM
     /// signal is available — combined with `SignalWeights::llm_importance = 0.0`
@@ -34,12 +40,21 @@ pub struct ScoreSignals {
 /// metadata/source weights, well below the interaction-direct signal).
 #[derive(Clone, Debug)]
 pub struct SignalWeights {
+    /// Multiplier for [`ScoreSignals::token_count`]. Default `1.0`.
     pub token_count: f32,
+    /// Multiplier for [`ScoreSignals::unique_words`]. Default `1.0`.
     pub unique_words: f32,
+    /// Multiplier for [`ScoreSignals::metadata_weight`]. Default `1.5`.
     pub metadata_weight: f32,
+    /// Multiplier for [`ScoreSignals::source_weight`]. Default `1.5`.
     pub source_weight: f32,
+    /// Multiplier for [`ScoreSignals::interaction`]. Default `3.0` — the
+    /// strongest signal, reflecting direct user engagement.
     pub interaction: f32,
+    /// Multiplier for [`ScoreSignals::entity_density`]. Default `1.0`.
     pub entity_density: f32,
+    /// Multiplier for [`ScoreSignals::llm_importance`]. Default `0.0`
+    /// (disabled); see [`SignalWeights::with_llm_enabled`].
     pub llm_importance: f32,
 }
 

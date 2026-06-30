@@ -21,15 +21,24 @@ use serde::{Deserialize, Serialize};
 #[non_exhaustive]
 pub enum EntityKind {
     // Mechanical
+    /// Email address span, e.g. `a@b.com`.
     Email,
+    /// URL / URI span.
     Url,
+    /// `@`-prefixed mention or handle.
     Handle,
+    /// `#`-prefixed hashtag.
     Hashtag,
     // Semantic — emitted by the LLM extractor.
+    /// Named person.
     Person,
+    /// Company, team, or other named organisation.
     Organization,
+    /// Named place or geographic location.
     Location,
+    /// Named happening: meeting, launch, incident, milestone.
     Event,
+    /// Named product or offering.
     Product,
     /// Temporal expressions: "Friday", "Q2 2026", "EOD tomorrow", "next sprint".
     Datetime,
@@ -41,6 +50,7 @@ pub enum EntityKind {
     Artifact,
     /// Amounts / metrics / money: "$5K", "20/min", "10k tokens", "52 chunks".
     Quantity,
+    /// Catch-all for named references that fit no other semantic kind.
     Misc,
     // Thematic — scorer-surfaced topics (hashtag-like short phrases or
     // LLM-extracted themes). Promoted into the canonical entity stream
@@ -48,6 +58,8 @@ pub enum EntityKind {
     // same way they route on people/orgs. A chunk saying "Phoenix
     // migration ships Friday" emits `topic:phoenix` and `topic:migration`
     // in addition to any emails/hashtags the mechanical extractors find.
+    /// Scorer-surfaced theme; resolver promotes it into the canonical entity
+    /// stream so topic trees route on themes like they do on people/orgs.
     Topic,
 }
 
@@ -104,11 +116,13 @@ impl EntityKind {
 /// One extracted span from a chunk's content.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExtractedEntity {
+    /// Classification of the span.
     pub kind: EntityKind,
     /// Surface form as it appears in the chunk.
     pub text: String,
     /// Character offsets `[start, end)` into the chunk text.
     pub span_start: u32,
+    /// Exclusive end offset; see [`Self::span_start`].
     pub span_end: u32,
     /// Extractor confidence `[0.0, 1.0]`. Regex = 1.0; model-based = output.
     pub score: f32,
@@ -119,6 +133,7 @@ pub struct ExtractedEntity {
 pub struct ExtractedTopic {
     /// Normalised topic text (lowercase, no leading `#`).
     pub label: String,
+    /// Extractor confidence `[0.0, 1.0]`.
     pub score: f32,
 }
 
@@ -132,7 +147,9 @@ pub struct ExtractedTopic {
 /// pre-LLM Phase 2 exactly when LLM is disabled.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ExtractedEntities {
+    /// Spans found by the mechanical and/or semantic extractors.
     pub entities: Vec<ExtractedEntity>,
+    /// Topic candidates surfaced by the scorer/summariser.
     pub topics: Vec<ExtractedTopic>,
     /// Optional LLM-rated importance in `[0.0, 1.0]` for this chunk.
     /// `None` means no LLM signal is available.

@@ -98,6 +98,7 @@ pub struct MemoryEntry {
     /// Optional relevance / confidence score (typically 0.0–1.0).
     pub score: Option<f64>,
     /// Provenance taint. See [`MemoryTaint`].
+    /// Provenance taint; unknown persisted values decode as `external_sync`.
     #[serde(default)]
     pub taint: MemoryTaint,
 }
@@ -105,9 +106,13 @@ pub struct MemoryEntry {
 /// Optional filters for recall.
 #[derive(Debug, Default, Clone)]
 pub struct RecallOpts<'a> {
+    /// Restrict recall to this namespace; `None` falls back to [`GLOBAL_NAMESPACE`].
     pub namespace: Option<&'a str>,
+    /// Restrict recall to entries of this category.
     pub category: Option<MemoryCategory>,
+    /// Restrict recall to entries scoped to this session.
     pub session_id: Option<&'a str>,
+    /// Drop hits scoring below this threshold (typically 0.0–1.0).
     pub min_score: Option<f64>,
     /// When `true`, include conversational hits from other sessions in the same
     /// workspace alongside the namespace recall.
@@ -117,7 +122,9 @@ pub struct RecallOpts<'a> {
 /// Summary row for agent-side namespace discovery.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NamespaceSummary {
+    /// Namespace identifier.
     pub namespace: String,
+    /// Number of memory entries currently stored in the namespace.
     pub count: usize,
     /// RFC3339 timestamp of the most recent update in the namespace, if any.
     pub last_updated: Option<String>,
@@ -126,22 +133,34 @@ pub struct NamespaceSummary {
 /// Input payload for upserting a namespace-scoped memory document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NamespaceDocumentInput {
+    /// Target namespace for the document.
     pub namespace: String,
+    /// Stable upsert key; reusing a key updates the existing document.
     pub key: String,
+    /// Human-readable title.
     pub title: String,
+    /// Document body.
     pub content: String,
+    /// Origin of the content (e.g. `chat`, `gmail`, `notion`).
     pub source_type: String,
+    /// Caller-defined priority label.
     pub priority: String,
+    /// Free-form tags for filtering.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Arbitrary structured metadata carried alongside the document.
     #[serde(default)]
     pub metadata: serde_json::Value,
+    /// Category label (see [`MemoryCategory`] wire strings).
     pub category: String,
+    /// Optional session scope.
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Explicit document id; generated when absent.
     #[serde(default)]
     pub document_id: Option<String>,
     /// Provenance taint; defaults to [`MemoryTaint::Internal`] for legacy JSON.
+    /// Provenance taint; unknown persisted values decode as `external_sync`.
     #[serde(default)]
     pub taint: MemoryTaint,
 }
@@ -149,10 +168,15 @@ pub struct NamespaceDocumentInput {
 /// One ranked retrieval result for a namespace text query.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NamespaceQueryResult {
+    /// Upsert key of the matched document.
     pub key: String,
+    /// Matched content.
     pub content: String,
+    /// Relevance score for this hit.
     pub score: f64,
+    /// Category label of the matched document.
     pub category: String,
+    /// Provenance taint; unknown persisted values decode as `external_sync`.
     #[serde(default)]
     pub taint: MemoryTaint,
 }
@@ -161,29 +185,48 @@ pub struct NamespaceQueryResult {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryItemKind {
+    /// A namespace-scoped memory document (`memory_docs` row).
     Document,
+    /// A key/value record.
     Kv,
+    /// An episodic / conversational memory.
     Episodic,
+    /// A discrete event entry.
     Event,
 }
 
 /// Persisted form of a memory document as stored in `memory_docs`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredMemoryDocument {
+    /// Unique document id.
     pub document_id: String,
+    /// Owning namespace.
     pub namespace: String,
+    /// Stable upsert key.
     pub key: String,
+    /// Human-readable title.
     pub title: String,
+    /// Document body.
     pub content: String,
+    /// Origin of the content (e.g. `chat`, `gmail`).
     pub source_type: String,
+    /// Caller-defined priority label.
     pub priority: String,
+    /// Free-form tags.
     pub tags: Vec<String>,
+    /// Arbitrary structured metadata.
     pub metadata: serde_json::Value,
+    /// Category label.
     pub category: String,
+    /// Optional session scope.
     pub session_id: Option<String>,
+    /// Creation time as a Unix timestamp (seconds).
     pub created_at: f64,
+    /// Last-update time as a Unix timestamp (seconds).
     pub updated_at: f64,
+    /// Path, relative to the vault root, of the authoritative markdown file.
     pub markdown_rel_path: String,
+    /// Provenance taint; unknown persisted values decode as `external_sync`.
     #[serde(default)]
     pub taint: MemoryTaint,
 }
@@ -191,58 +234,93 @@ pub struct StoredMemoryDocument {
 /// A single KV row, namespace-scoped or global (when `namespace` is `None`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryKvRecord {
+    /// Owning namespace, or `None` for a global row.
     pub namespace: Option<String>,
+    /// KV key.
     pub key: String,
+    /// Stored JSON value.
     pub value: serde_json::Value,
+    /// Last-update time as a Unix timestamp (seconds).
     pub updated_at: f64,
 }
 
 /// A graph edge (subject — predicate → object) plus accumulated evidence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphRelationRecord {
+    /// Owning namespace, or `None` for a global relation.
     pub namespace: Option<String>,
+    /// Edge subject (head entity).
     pub subject: String,
+    /// Relation type linking subject to object.
     pub predicate: String,
+    /// Edge object (tail entity).
     pub object: String,
+    /// Arbitrary structured attributes attached to the edge.
     pub attrs: serde_json::Value,
+    /// Last-update time as a Unix timestamp (seconds).
     pub updated_at: f64,
+    /// Number of independent observations supporting this edge.
     pub evidence_count: u32,
+    /// Optional ordering hint among sibling relations.
     pub order_index: Option<i64>,
+    /// Documents that contributed evidence for this edge.
     pub document_ids: Vec<String>,
+    /// Chunks that contributed evidence for this edge.
     pub chunk_ids: Vec<String>,
 }
 
 /// Per-signal contribution to a hit's final score, for ranking explainers.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RetrievalScoreBreakdown {
+    /// Lexical / keyword match contribution.
     pub keyword_relevance: f64,
+    /// Vector (cosine) similarity contribution.
     pub vector_similarity: f64,
+    /// Graph-proximity contribution.
     pub graph_relevance: f64,
+    /// Episodic-recall contribution.
     pub episodic_relevance: f64,
+    /// Recency contribution.
     pub freshness: f64,
+    /// Weighted combination of the above signals; the value used for ranking.
     pub final_score: f64,
 }
 
 /// A single ranked retrieval hit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NamespaceMemoryHit {
+    /// Identifier of the matched item (interpretation depends on [`Self::kind`]).
     pub id: String,
+    /// Which kind of stored item this hit refers to.
     pub kind: MemoryItemKind,
+    /// Owning namespace.
     pub namespace: String,
+    /// Upsert key of the matched item.
     pub key: String,
+    /// Title, when the item has one.
     pub title: Option<String>,
+    /// Matched content.
     pub content: String,
+    /// Category label.
     pub category: String,
+    /// Origin of the content, when known.
     pub source_type: Option<String>,
+    /// Last-update time as a Unix timestamp (seconds).
     pub updated_at: f64,
+    /// Final ranking score; mirrors [`RetrievalScoreBreakdown::final_score`].
     pub score: f64,
+    /// Per-signal explanation of how [`Self::score`] was derived.
     pub score_breakdown: RetrievalScoreBreakdown,
+    /// Source document id, when the hit resolves to a document.
     #[serde(default)]
     pub document_id: Option<String>,
+    /// Source chunk id, when the hit resolves to a chunk.
     #[serde(default)]
     pub chunk_id: Option<String>,
+    /// Graph relations that reinforced this hit's ranking.
     #[serde(default)]
     pub supporting_relations: Vec<GraphRelationRecord>,
+    /// Provenance taint; unknown persisted values decode as `external_sync`.
     #[serde(default)]
     pub taint: MemoryTaint,
 }
@@ -250,9 +328,13 @@ pub struct NamespaceMemoryHit {
 /// Aggregated retrieval result for a namespace: rendered context plus hits.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NamespaceRetrievalContext {
+    /// Namespace the retrieval ran against.
     pub namespace: String,
+    /// Originating query text, if any.
     pub query: Option<String>,
+    /// Rendered, ready-to-inject context assembled from [`Self::hits`].
     pub context_text: String,
+    /// Ranked hits backing the rendered context.
     pub hits: Vec<NamespaceMemoryHit>,
 }
 

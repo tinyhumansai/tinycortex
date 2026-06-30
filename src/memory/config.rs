@@ -80,9 +80,15 @@ impl Default for EmbeddingConfig {
 /// Summary-tree budgets and sealing behavior.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TreeConfig {
+    /// Max input tokens fed into one summarisation pass (see [`INPUT_TOKEN_BUDGET`]).
     pub input_token_budget: u32,
+    /// Max tokens a summary may emit (see [`OUTPUT_TOKEN_BUDGET`]).
     pub output_token_budget: u32,
+    /// Number of summary siblings accumulated before a bucket seals into a parent
+    /// (see [`SUMMARY_FANOUT`]).
     pub summary_fanout: u32,
+    /// Age, in seconds, after which an unsealed buffer is force-flushed
+    /// (see [`DEFAULT_FLUSH_AGE_SECS`]).
     pub flush_age_secs: u64,
 }
 
@@ -100,9 +106,13 @@ impl Default for TreeConfig {
 /// Named hybrid-retrieval weight profiles (graph / vector / keyword / freshness).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct WeightProfile {
+    /// Weight on graph/co-occurrence proximity signal.
     pub graph: f64,
+    /// Weight on dense vector (cosine) similarity signal.
     pub vector: f64,
+    /// Weight on lexical/keyword match signal.
     pub keyword: f64,
+    /// Weight on recency; `0.0` disables freshness boosting.
     pub freshness: f64,
 }
 
@@ -165,8 +175,11 @@ impl Default for RetrievalConfig {
 /// Per-sync budget ceilings, enforceable when a host requests ingest.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SyncBudgetConfig {
+    /// Token ceiling per ingest run; `None` leaves token spend unbounded.
     pub max_tokens_per_sync: Option<u64>,
+    /// USD cost ceiling per ingest run; `None` leaves cost unbounded.
     pub max_cost_per_sync_usd: Option<f64>,
+    /// How many days back a source sync may reach; `None` imposes no horizon.
     pub sync_depth_days: Option<u32>,
 }
 

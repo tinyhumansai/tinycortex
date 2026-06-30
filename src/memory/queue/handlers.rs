@@ -66,7 +66,9 @@ pub struct AppendDecision {
 /// A stale buffer that `flush_stale` should force-seal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StaleBuffer {
+    /// Physical tree id of the stale buffer to force-seal.
     pub tree_id: String,
+    /// Buffer level (0 = leaf L0; higher = summary tiers).
     pub level: u32,
 }
 
@@ -74,7 +76,10 @@ pub struct StaleBuffer {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReembedProgress {
     /// A batch was embedded; `more_pending` drives `Defer` vs `Done`.
-    Wrote { more_pending: bool },
+    Wrote {
+        /// Whether more rows remain to re-embed (drives `Defer` vs `Done`).
+        more_pending: bool,
+    },
     /// The signature space is fully covered — finish the chain.
     Covered,
     /// No usable embeddings provider — skip (rows stay re-embeddable).

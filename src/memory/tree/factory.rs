@@ -24,8 +24,11 @@ pub const GLOBAL_SCOPE: &str = "global";
 /// High-level tree profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreeProfile {
+    /// Per-source tree: scope is a source id; labels are re-extracted at seal.
     Source,
+    /// Per-topic tree: scope is the topic; the scope already pins the theme.
     Topic,
+    /// Singleton cross-source tree; scope is always [`GLOBAL_SCOPE`].
     Global,
 }
 
@@ -37,6 +40,7 @@ pub struct TreeFactory<'a> {
 }
 
 impl<'a> TreeFactory<'a> {
+    /// Build a [`TreeProfile::Source`] factory scoped to `scope` (a source id).
     pub fn source(scope: impl Into<Cow<'a, str>>) -> Self {
         Self {
             profile: TreeProfile::Source,
@@ -44,6 +48,7 @@ impl<'a> TreeFactory<'a> {
         }
     }
 
+    /// Build a [`TreeProfile::Topic`] factory scoped to `scope` (a topic).
     pub fn topic(scope: impl Into<Cow<'a, str>>) -> Self {
         Self {
             profile: TreeProfile::Topic,
@@ -51,6 +56,8 @@ impl<'a> TreeFactory<'a> {
         }
     }
 
+    /// Build the singleton [`TreeProfile::Global`] factory, scoped to
+    /// [`GLOBAL_SCOPE`].
     pub fn global() -> Self {
         Self {
             profile: TreeProfile::Global,
@@ -58,6 +65,8 @@ impl<'a> TreeFactory<'a> {
         }
     }
 
+    /// Reconstruct the factory matching an existing [`Tree`] row, deriving the
+    /// profile from its [`TreeKind`] and reusing its scope.
     pub fn from_tree(tree: &'a Tree) -> Self {
         match tree.kind {
             TreeKind::Source => Self::source(tree.scope.as_str()),
@@ -66,10 +75,12 @@ impl<'a> TreeFactory<'a> {
         }
     }
 
+    /// This factory's high-level [`TreeProfile`].
     pub fn profile(&self) -> TreeProfile {
         self.profile
     }
 
+    /// The underlying [`TreeKind`] wire enum for this profile.
     pub fn kind(&self) -> TreeKind {
         match self.profile {
             TreeProfile::Source => TreeKind::Source,
@@ -78,6 +89,7 @@ impl<'a> TreeFactory<'a> {
         }
     }
 
+    /// The canonical scope string identifying this tree within its kind.
     pub fn scope(&self) -> &str {
         self.scope.as_ref()
     }

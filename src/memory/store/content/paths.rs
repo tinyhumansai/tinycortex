@@ -63,7 +63,11 @@ pub enum SummaryDiskLayout<'a> {
     /// A node inside one document's versioned subtree —
     /// `source-<scope>/docs/<doc_slug>/v-<version_ms>/L<level>/…`.
     DocSubtree {
+        /// Slug identifying the document within the source tree; re-slugified
+        /// via [`slugify_source_id`] before use in the path.
         doc_slug: &'a str,
+        /// Document version as epoch milliseconds. `None` routes the node into a
+        /// `v-unversioned` folder instead of `v-<version_ms>`.
         version_ms: Option<i64>,
     },
     /// A cross-document merge-tier node — `source-<scope>/merge/L<level>/…`.

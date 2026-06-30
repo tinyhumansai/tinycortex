@@ -109,12 +109,25 @@ async fn resolve_labels(
 /// A single leaf being appended to an L0 buffer.
 #[derive(Clone, Debug)]
 pub struct LeafRef {
+    /// Persisted chunk id this leaf points at; used as the buffer `item_id` and
+    /// deduped on append.
     pub chunk_id: String,
+    /// Chunk token count; added to the L0 buffer's `token_sum` to drive the
+    /// token-budget seal gate.
     pub token_count: u32,
+    /// Chunk timestamp; folded into the buffer's `oldest_at` and the sealed
+    /// summary's time range.
     pub timestamp: DateTime<Utc>,
+    /// Raw chunk text, hydrated as a summariser input at seal time.
     pub content: String,
+    /// Canonical entity ids carried up to the parent under
+    /// [`LabelStrategy::UnionFromChildren`].
     pub entities: Vec<String>,
+    /// Topic labels carried up to the parent under
+    /// [`LabelStrategy::UnionFromChildren`].
     pub topics: Vec<String>,
+    /// Chunk relevance score; the sealed summary takes the max over its inputs
+    /// (clamped to `>= 0.0`).
     pub score: f32,
 }
 

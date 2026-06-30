@@ -53,18 +53,35 @@ impl NodeKind {
 /// (chunks for L1, summaries for L2+).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RetrievalHit {
+    /// Machine-readable id of the node: a chunk id for leaves, a summary-node
+    /// id for summaries. Stable and globally unique.
     pub node_id: String,
+    /// Discriminates leaf vs summary (see [`NodeKind`]).
     pub node_kind: NodeKind,
+    /// Id of the provenance tree, or empty for bare leaves not yet sealed into
+    /// any tree.
     pub tree_id: String,
+    /// Kind of the provenance tree; [`TreeKind::Source`] for leaves.
     pub tree_kind: TreeKind,
+    /// Human-readable tree scope (e.g. `slack:#eng`); empty for bare leaves.
     pub tree_scope: String,
+    /// Tree level: `0` for leaf chunks, `≥ 1` for summary nodes.
     pub level: u32,
+    /// Raw chunk text (leaf) or sealed summary text (summary).
     pub content: String,
+    /// Canonical entity ids referenced by this node; empty on leaves.
     pub entities: Vec<String>,
+    /// Topic tags for this node (leaf chunk tags or summary topics).
     pub topics: Vec<String>,
+    /// Inclusive start of the node's time coverage.
     pub time_range_start: DateTime<Utc>,
+    /// Inclusive end of the node's time coverage.
     pub time_range_end: DateTime<Utc>,
+    /// Retrieval score for this hit; meaning depends on the primitive that
+    /// produced it (higher = more relevant).
     pub score: f32,
+    /// Ids one level down (chunks for L1 summaries, summaries for L2+); empty on
+    /// leaves.
     pub child_ids: Vec<String>,
     /// Populated for leaves (chunk back-pointer); `None` for summaries.
     pub source_ref: Option<String>,
@@ -78,8 +95,11 @@ pub struct RetrievalHit {
 /// `total > hits.len()`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct QueryResponse {
+    /// Matched hits, already filtered and sorted, capped at the caller's limit.
     pub hits: Vec<RetrievalHit>,
+    /// Total matches before truncation (may exceed `hits.len()`).
     pub total: usize,
+    /// `true` when `total > hits.len()`, i.e. a higher limit would return more.
     pub truncated: bool,
 }
 
@@ -173,6 +193,7 @@ pub fn leaf_tree_placeholder(_source_kind: SourceKind) -> TreeKind {
 pub struct EntityMatch {
     /// Canonical id (e.g. `email:alice@example.com`, `topic:phoenix`).
     pub canonical_id: String,
+    /// Entity classification (see [`EntityKind`]); preserved wire string.
     pub kind: EntityKind,
     /// Example surface form that matched — useful for UI display.
     pub surface: String,

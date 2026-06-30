@@ -61,21 +61,29 @@ impl SourceKind {
 #[non_exhaustive]
 pub enum DataSource {
     // ── Chat transcripts (grouped by channel/group) ────────────────────
+    /// Discord channel/server messages. Feeds [`SourceKind::Chat`].
     Discord,
+    /// Telegram chat/group messages. Feeds [`SourceKind::Chat`].
     Telegram,
+    /// WhatsApp chat/group messages. Feeds [`SourceKind::Chat`].
     Whatsapp,
 
     // ── Agent conversations (stored as durable memory) ────────────────
+    /// Agent conversation transcripts persisted as durable memory. Feeds [`SourceKind::Chat`].
     Conversation,
 
     // ── Email threads (grouped by thread) ──────────────────────────────
+    /// Gmail thread. Feeds [`SourceKind::Email`].
     Gmail,
     /// Catch-all for non-Gmail providers (Outlook, FastMail, generic IMAP, …).
     OtherEmail,
 
     // ── Documents (no grouping) ────────────────────────────────────────
+    /// Notion page. Feeds [`SourceKind::Document`].
     Notion,
+    /// Meeting notes document. Feeds [`SourceKind::Document`].
     MeetingNotes,
+    /// Google Drive document. Feeds [`SourceKind::Document`].
     DriveDocs,
 }
 

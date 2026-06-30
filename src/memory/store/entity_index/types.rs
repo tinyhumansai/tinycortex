@@ -17,15 +17,24 @@ use serde::{Deserialize, Serialize};
 #[non_exhaustive]
 pub enum EntityKind {
     // Mechanical
+    /// Email address (`user@host`).
     Email,
+    /// Web URL / link.
     Url,
+    /// At-mention handle: "@alice".
     Handle,
+    /// Hashtag token: "#release".
     Hashtag,
     // Semantic — emitted by the LLM extractor.
+    /// Named individual.
     Person,
+    /// Company / team / institution.
     Organization,
+    /// Place or geographic reference.
     Location,
+    /// Named happening or meeting.
     Event,
+    /// Named product or offering.
     Product,
     /// Temporal expressions: "Friday", "Q2 2026", "EOD tomorrow".
     Datetime,
@@ -35,6 +44,7 @@ pub enum EntityKind {
     Artifact,
     /// Amounts / metrics / money: "$5K", "20/min", "10k tokens".
     Quantity,
+    /// Catch-all for references not fitting another kind.
     Misc,
     /// Scorer-surfaced themes promoted into the canonical entity stream.
     Topic,

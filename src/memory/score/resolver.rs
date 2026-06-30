@@ -15,11 +15,21 @@ use crate::memory::score::extract::{EntityKind, ExtractedEntities};
 /// plus a stable `canonical_id` suitable for indexing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CanonicalEntity {
+    /// Stable index key in `kind:normalised-surface` wire form (see
+    /// [`canonical_id_for`]). Deterministic: identical surfaces collapse here.
     pub canonical_id: String,
+    /// Entity classification carried through unchanged from extraction;
+    /// promoted topics are tagged [`EntityKind::Topic`].
     pub kind: EntityKind,
+    /// Raw surface form as it appeared in the chunk (pre-normalisation).
     pub surface: String,
+    /// Byte offset of the occurrence's start within the source chunk; `0` for
+    /// topic rows, which have no span.
     pub span_start: u32,
+    /// Byte offset of the occurrence's end within the source chunk; `0` for
+    /// topic rows, which have no span.
     pub span_end: u32,
+    /// Extractor confidence carried through from the source entity/topic.
     pub score: f32,
 }
 

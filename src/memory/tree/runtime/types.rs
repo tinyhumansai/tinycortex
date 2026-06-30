@@ -11,10 +11,15 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeLevel {
+    /// Single tree root; aggregates all years. Wire string `"root"`.
     Root,
+    /// One node per calendar year. Wire string `"year"`.
     Year,
+    /// One node per calendar month. Wire string `"month"`.
     Month,
+    /// One node per calendar day. Wire string `"day"`.
     Day,
+    /// Leaf level; one node per hour, where raw content lands. Wire string `"hour"`.
     Hour,
 }
 
@@ -73,15 +78,25 @@ impl NodeLevel {
 /// A single node in the summary tree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TreeNode {
+    /// Path-style hierarchical id, e.g. `"2024/03/15/09"` or `"root"`.
     pub node_id: String,
+    /// Namespace owning this tree (isolates independent trees).
     pub namespace: String,
+    /// Hierarchical level this node sits at.
     pub level: NodeLevel,
+    /// Id of the parent node; `None` only for the root.
     pub parent_id: Option<String>,
+    /// Rolled-up summary text for this node.
     pub summary: String,
+    /// Estimated token count of [`Self::summary`]; bounded by [`NodeLevel::max_tokens`].
     pub token_count: u32,
+    /// Number of direct children rolled into this node.
     pub child_count: u32,
+    /// Creation timestamp (UTC).
     pub created_at: DateTime<Utc>,
+    /// Last-update timestamp (UTC).
     pub updated_at: DateTime<Utc>,
+    /// Optional opaque metadata blob; omitted from serialization when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<String>,
 }
@@ -89,21 +104,31 @@ pub struct TreeNode {
 /// Metadata about an entire tree within a namespace.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TreeStatus {
+    /// Namespace the tree belongs to.
     pub namespace: String,
+    /// Total number of nodes across all levels.
     pub total_nodes: u64,
+    /// Number of populated levels (tree height).
     pub depth: u32,
+    /// Timestamp of the earliest ingested entry, if any.
     pub oldest_entry: Option<DateTime<Utc>>,
+    /// Timestamp of the most recent ingested entry, if any.
     pub newest_entry: Option<DateTime<Utc>>,
+    /// When the tree was last (re)built or sealed.
     pub last_run_at: Option<DateTime<Utc>>,
 }
 
 /// Input for appending raw content to the ingestion buffer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestRequest {
+    /// Target namespace to append content into.
     pub namespace: String,
+    /// Raw content to buffer for summarization.
     pub content: String,
+    /// Event time used to derive the hour leaf; defaults to ingestion time when absent.
     #[serde(default)]
     pub timestamp: Option<DateTime<Utc>>,
+    /// Optional structured metadata carried alongside the content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
 }
@@ -111,7 +136,9 @@ pub struct IngestRequest {
 /// Result of a tree query at a specific node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResult {
+    /// The node addressed by the query.
     pub node: TreeNode,
+    /// Direct children of [`Self::node`], for drill-down navigation.
     pub children: Vec<TreeNode>,
 }
 

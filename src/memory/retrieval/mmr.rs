@@ -12,14 +12,23 @@ pub struct MmrCandidate<'a> {
     /// Caller-side index, echoed back on the result so the candidate can be
     /// resolved to its original record.
     pub index: usize,
+    /// Candidate embedding; must share dimensionality with the query vector and
+    /// every other candidate, since cosine similarity is computed pairwise.
     pub embedding: &'a [f32],
+    /// Precomputed relevance of this candidate to the query (typically a cosine
+    /// score). Higher is more relevant; weighted by `lambda` in the MMR formula.
     pub relevance: f64,
 }
 
 /// Result of MMR selection: the original index and its MMR score.
 #[derive(Debug, Clone)]
 pub struct MmrResult {
+    /// Caller-side index echoed from the chosen [`MmrCandidate::index`], used to
+    /// resolve the result back to its original record.
     pub index: usize,
+    /// The MMR score at the step this item was selected:
+    /// `lambda · relevance − (1 − lambda) · max_similarity(c, selected)`.
+    /// Not comparable across runs with different `lambda`.
     pub score: f64,
 }
 

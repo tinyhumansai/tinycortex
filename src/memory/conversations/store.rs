@@ -45,7 +45,11 @@ mod ops;
 #[path = "store_index.rs"]
 mod index;
 
+/// Filename of the append-only thread metadata log, relative to the
+/// `memory/conversations` root.
 pub(super) const THREADS_FILENAME: &str = "threads.jsonl";
+/// Subdirectory (relative to the `memory/conversations` root) holding the
+/// per-thread message JSONL files, named `<hex(thread_id)>.jsonl`.
 pub(super) const THREAD_MESSAGES_DIR: &str = "threads";
 
 /// Serialises every on-disk mutation so concurrent handlers can't interleave
@@ -91,7 +95,9 @@ static CONVERSATION_INDEX_CACHE: LazyLock<Mutex<HashMap<PathBuf, InvertedIndex>>
 /// Counts returned by [`ConversationStore::purge_threads`] — how much was deleted.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ConversationPurgeStats {
+    /// Number of threads removed.
     pub thread_count: usize,
+    /// Total messages removed across all purged threads.
     pub message_count: usize,
 }
 
@@ -119,6 +125,8 @@ impl ConversationStore {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub(super) enum ThreadLogEntry {
+    /// Create-or-replace the metadata for `thread_id`. The latest `Upsert`
+    /// wins when the log is folded; `op` wire string is `upsert`.
     Upsert {
         thread_id: String,
         title: String,
@@ -131,6 +139,8 @@ pub(super) enum ThreadLogEntry {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         personality_id: Option<String>,
     },
+    /// Tombstone removing `thread_id` from the folded state; `op` wire string
+    /// is `delete`.
     Delete {
         thread_id: String,
         deleted_at: String,
@@ -155,9 +165,13 @@ pub(super) enum ThreadLogEntry {
 /// Folded current state for a single thread, derived from the log.
 #[derive(Debug, Clone)]
 pub(super) struct ThreadIndexEntry {
+    /// Human-readable thread title from the latest `Upsert`.
     pub(super) title: String,
+    /// Thread creation timestamp from the first `Upsert`.
     pub(super) created_at: String,
+    /// Parent thread id for nested/threaded conversations, if any.
     pub(super) parent_thread_id: Option<String>,
+    /// Folded labels (already normalised/inferred) bucketing this thread.
     pub(super) labels: Vec<String>,
     /// Folded message count. `None` means we have no `MessageAppended` /
     /// `Stats` history for this thread yet (legacy data) — `list_threads`
@@ -165,6 +179,7 @@ pub(super) struct ThreadIndexEntry {
     pub(super) message_count: Option<usize>,
     /// Timestamp of the newest message, or `None` if unknown (legacy).
     pub(super) last_message_at: Option<String>,
+    /// Personality/persona id bound to this thread, if any.
     pub(super) personality_id: Option<String>,
 }
 

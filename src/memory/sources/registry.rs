@@ -300,42 +300,61 @@ pub(crate) fn upsert_composio_entry_in_place(
 /// Partial update payload for a source entry. Absent fields are left unchanged.
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct MemorySourcePatch {
+    /// New human-readable label for the source.
     #[serde(default)]
     pub label: Option<String>,
+    /// Toggle whether the source participates in sync.
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// Composio toolkit slug (e.g. `gmail`, `slack`).
     #[serde(default)]
     pub toolkit: Option<String>,
+    /// Composio connection id this source binds to.
     #[serde(default)]
     pub connection_id: Option<String>,
+    /// Filesystem root for a local-files source.
     #[serde(default)]
     pub path: Option<String>,
+    /// Glob filter applied under [`MemorySourcePatch::path`].
     #[serde(default)]
     pub glob: Option<String>,
+    /// Remote URL for a git/web source.
     #[serde(default)]
     pub url: Option<String>,
+    /// Git branch to track.
     #[serde(default)]
     pub branch: Option<String>,
+    /// Explicit path allowlist within a repo source.
     #[serde(default)]
     pub paths: Option<Vec<String>>,
+    /// Search/filter query string for query-driven sources.
     #[serde(default)]
     pub query: Option<String>,
+    /// Lookback window in days for items to ingest.
     #[serde(default)]
     pub since_days: Option<u32>,
+    /// Cap on the number of items pulled per sync.
     #[serde(default)]
     pub max_items: Option<u32>,
+    /// Source-specific selector (e.g. a Notion database or Slack channel).
     #[serde(default)]
     pub selector: Option<String>,
+    /// Token budget per sync run.
     #[serde(default)]
     pub max_tokens_per_sync: Option<u64>,
+    /// Cost budget per sync run, in USD.
     #[serde(default)]
     pub max_cost_per_sync_usd: Option<f64>,
+    /// History depth in days for tree/summary backfill.
     #[serde(default)]
     pub sync_depth_days: Option<u32>,
+    /// Cap on commits ingested from a git source.
     #[serde(default)]
     pub max_commits: Option<u32>,
+    /// Cap on issues ingested from a repo source.
     #[serde(default)]
     pub max_issues: Option<u32>,
+    /// Cap on pull requests ingested from a repo source.
     #[serde(default)]
     pub max_prs: Option<u32>,
 }

@@ -96,7 +96,10 @@ pub enum VerifyResult {
     /// The on-disk body SHA-256 matches the stored value.
     Ok,
     /// The file exists but the body SHA-256 does not match.
-    Mismatch { actual: String },
+    Mismatch {
+        /// The body SHA-256 actually found on disk.
+        actual: String,
+    },
     /// The file does not exist at the given path.
     Missing,
 }

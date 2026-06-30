@@ -20,14 +20,22 @@ use crate::memory::tree::store::{Tree, TreeKind};
 /// [`LeafRef`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TreeLeafPayload {
+    /// Stable chunk id; ties the leaf back to its chunk store row.
     pub chunk_id: String,
+    /// Token count of [`content`](Self::content); drives buffer/seal sizing.
     pub token_count: u32,
+    /// Source timestamp of the underlying chunk (UTC).
     pub timestamp: DateTime<Utc>,
+    /// Raw leaf text.
     pub content: String,
+    /// Entity ids attached to the leaf; propagated to summaries under
+    /// [`TreeLabelStrategy::Inherit`].
     #[serde(default)]
     pub entities: Vec<String>,
+    /// Topic labels attached to the leaf; propagated like `entities`.
     #[serde(default)]
     pub topics: Vec<String>,
+    /// Importance/relevance score in `[0.0, 1.0]`; defaults to `0.0`.
     #[serde(default)]
     pub score: f32,
 }
@@ -94,9 +102,14 @@ impl TreeLabelStrategy {
 /// Canonical write request: "append this leaf to this tree".
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TreeWriteRequest {
+    /// Target tree id.
     pub tree_id: String,
+    /// Discriminates the tree's domain/shape (see [`TreeKind`]).
     pub tree_kind: TreeKind,
+    /// Leaf to append.
     pub leaf: TreeLeafPayload,
+    /// How summaries sealed by this append are labelled; defaults to
+    /// [`TreeLabelStrategy::Inherit`].
     #[serde(default)]
     pub label_strategy: TreeLabelStrategy,
     /// When `true`, only stage the leaf in the L0 buffer; do not cascade seals
@@ -120,6 +133,7 @@ pub struct TreeWriteOutcome {
 /// query-driven reranking.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TreeReadRequest {
+    /// Id of the tree to read from.
     pub tree_id: String,
     /// Starting node. `None` → start from the tree root.
     #[serde(default)]
@@ -138,10 +152,13 @@ pub struct TreeReadRequest {
 /// One hit returned by a tree read.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TreeReadHit {
+    /// Id of the matched node (summary node id or leaf chunk id).
     pub node_id: String,
     /// `"summary"` for sealed nodes, `"chunk"` for leaves.
     pub node_kind: String,
+    /// Tree level of the node; `0` is the leaf layer, higher levels are summaries.
     pub level: u32,
+    /// Node text (summary or leaf content).
     pub content: String,
     /// Cosine similarity when `query` was set; `0.0` otherwise.
     #[serde(default)]
@@ -151,13 +168,16 @@ pub struct TreeReadHit {
 /// Result of a tree read.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct TreeReadResult {
+    /// Returned hits, already truncated to the request `limit`.
     pub hits: Vec<TreeReadHit>,
     /// Total matches BEFORE `limit` truncation.
     pub total: usize,
+    /// Tree the read ran against.
     pub tree_id: String,
 }
 
 impl TreeReadResult {
+    /// Empty result carrying `tree`'s id; used when a read matches nothing.
     pub fn empty(tree: &Tree) -> Self {
         Self {
             hits: Vec::new(),

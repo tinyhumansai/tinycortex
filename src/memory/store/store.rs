@@ -1,3 +1,11 @@
+//! Minimal [`MemoryStore`] contract and an in-process reference implementation.
+//!
+//! Defines the CRUD-plus-search surface that storage backends must satisfy and
+//! ships [`InMemoryMemoryStore`], a volatile `BTreeMap`-backed store used by
+//! tests and as the simplest conforming backend. Records are keyed by
+//! [`MemoryId`] and scoped by a free-form `namespace` string; durability and the
+//! authoritative markdown vault live in higher layers.
+
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
@@ -7,20 +15,38 @@ use super::types::{
     MemoryError, MemoryId, MemoryInput, MemoryQuery, MemoryRecord, MemoryResult, SearchHit,
 };
 
+/// Storage backend contract for memory records.
+///
+/// Implementations provide insert/get/delete plus namespace- and text-scoped
+/// search over [`MemoryRecord`]s. Required to be `Send + Sync` so a single store
+/// can be shared across async tasks.
 #[async_trait]
 pub trait MemoryStore: Send + Sync {
+    /// Materialize a record from `input` and persist it, returning the stored
+    /// record (with its assigned [`MemoryId`] and timestamps).
     async fn insert(&self, input: MemoryInput) -> MemoryResult<MemoryRecord>;
+    /// Fetch the record for `id`, or [`MemoryError::NotFound`] if absent.
     async fn get(&self, id: MemoryId) -> MemoryResult<MemoryRecord>;
+    /// Remove and return the record for `id`, or [`MemoryError::NotFound`] if absent.
     async fn delete(&self, id: MemoryId) -> MemoryResult<MemoryRecord>;
+    /// Return scored [`SearchHit`]s matching `query`, ordered most relevant first.
     async fn search(&self, query: MemoryQuery) -> MemoryResult<Vec<SearchHit>>;
 }
 
+/// Volatile, in-process [`MemoryStore`] backed by a `BTreeMap`.
+///
+/// Holds records under an `Arc<RwLock<..>>` so the store is cheaply cloneable
+/// and shareable across tasks while serializing mutations. Contents are lost on
+/// drop; intended for tests and as the simplest conforming backend, not for
+/// durable storage.
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryMemoryStore {
+    /// Records indexed by [`MemoryId`]; the `BTreeMap` keeps a stable key order.
     records: Arc<RwLock<BTreeMap<MemoryId, MemoryRecord>>>,
 }
 
 impl InMemoryMemoryStore {
+    /// Create an empty store.
     pub fn new() -> Self {
         Self::default()
     }

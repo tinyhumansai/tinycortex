@@ -16,11 +16,16 @@ use crate::memory::chunks::{Metadata, SourceKind};
 /// One email in a thread.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EmailMessage {
+    /// Sender address; rendered as the `From:` header and used as the
+    /// participant key when bucketing a thread.
     pub from: String,
+    /// Primary recipient addresses; rendered as the `To:` header (omitted when empty).
     #[serde(default)]
     pub to: Vec<String>,
+    /// Carbon-copy recipient addresses; rendered as the `Cc:` header (omitted when empty).
     #[serde(default)]
     pub cc: Vec<String>,
+    /// Per-message subject; rendered as the `Subject:` header.
     pub subject: String,
     /// When the message was sent (epoch-ms integer or RFC 3339 string).
     #[serde(

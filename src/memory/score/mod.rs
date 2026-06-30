@@ -15,10 +15,19 @@
 //! - [`embed::Embedder`] — the embedding backend, defaulting to the
 //!   deterministic [`embed::InertEmbedder`].
 
+/// Embedding backends ([`embed::Embedder`]) and the deterministic
+/// [`embed::InertEmbedder`] default.
 pub mod embed;
+/// Entity extraction: the always-on regex extractor plus the optional LLM
+/// NER + importance rater seam ([`extract::EntityExtractor`]).
 pub mod extract;
+/// Entity canonicalisation — folds extracted surface forms into
+/// [`resolver::CanonicalEntity`] records for stable indexing.
 pub mod resolver;
+/// Cheap signal computation and weighted combination
+/// ([`signals::ScoreSignals`], [`signals::SignalWeights`]).
 pub mod signals;
+/// Persistence for score rows and the entity occurrence index.
 pub mod store;
 
 use std::sync::Arc;
@@ -60,12 +69,23 @@ pub const PRIORITY_BOOST: f32 = 0.25;
 /// Whole outcome of [`score_chunk`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ScoreResult {
+    /// Id of the scored chunk; mirrors [`Chunk::id`].
     pub chunk_id: String,
+    /// Final admission score in `[0.0, 1.0]` after weighting, priority boost,
+    /// and clamping. Compared against `drop_threshold` by the gate.
     pub total: f32,
+    /// The signal vector the `total` was combined from (kept for diagnostics
+    /// and persisted in the score row).
     pub signals: ScoreSignals,
+    /// Admission verdict — `true` if the chunk cleared the gate and should be
+    /// persisted to the chunk store; `false` if tombstoned.
     pub kept: bool,
+    /// Human-readable reason the chunk was dropped; `None` when `kept`.
     pub drop_reason: Option<String>,
+    /// Merged extractor output (regex always, plus LLM NER when consulted).
     pub extracted: ExtractedEntities,
+    /// Canonicalised entities for the occurrence index; computed
+    /// unconditionally so it is inspectable even for dropped chunks.
     pub canonical_entities: Vec<CanonicalEntity>,
 }
 
@@ -80,8 +100,11 @@ pub struct ScoreResult {
 /// definite_keep_threshold)` — chunks that are obviously trash or obviously
 /// substantive don't pay the LLM cost.
 pub struct ScoringConfig {
+    /// Always-on extractor run on every chunk (typically a regex composite).
     pub extractor: Arc<dyn EntityExtractor>,
+    /// Per-signal weights used when combining the signal vector into `total`.
     pub weights: SignalWeights,
+    /// Final admission gate: chunks with `total < drop_threshold` are dropped.
     pub drop_threshold: f32,
     /// Optional second-pass extractor whose output is **merged** into the regex
     /// output before the final combine. Designed for an LLM-based NER +
@@ -332,6 +355,10 @@ pub fn persist_score(
     Ok(())
 }
 
+/// Transactional variant of [`persist_score`] — writes the score row and
+/// entity-index rows on the caller's open [`Transaction`] so the persistence
+/// is atomic with the surrounding ingest write. Same kept/clear-before-reindex
+/// semantics as [`persist_score`].
 pub fn persist_score_tx(
     tx: &Transaction<'_>,
     result: &ScoreResult,

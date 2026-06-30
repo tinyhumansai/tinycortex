@@ -48,11 +48,22 @@ fn canonical_id_is_user(_canonical_id: &str) -> bool {
 /// Serialized per-chunk score rationale. Mirrors the `mem_tree_score` row.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ScoreRow {
+    /// Chunk this rationale belongs to; primary key of `mem_tree_score`.
     pub chunk_id: String,
+    /// Aggregate admission score. The single persisted scalar; recomputed from
+    /// [`signals`](Self::signals) at admission time.
     pub total: f32,
+    /// Per-signal breakdown that fed `total` (see [`ScoreSignals`]). Note
+    /// `llm_importance` is admission-time only and reads back as `0.0`.
     pub signals: ScoreSignals,
+    /// Whether the chunk was dropped (failed the admission threshold) rather
+    /// than kept. Persisted as the `dropped` integer column (`0`/`1`).
     pub dropped: bool,
+    /// Human-readable rationale for the drop/keep decision, when one was
+    /// recorded; `None` otherwise.
     pub reason: Option<String>,
+    /// Wall-clock time the score was computed, in milliseconds since the Unix
+    /// epoch.
     pub computed_at_ms: i64,
     /// One-line LLM-supplied explanation for the importance rating. Diagnostic
     /// only and **not persisted** (the schema has no column for it) — read back
@@ -69,6 +80,8 @@ pub fn upsert_score(config: &MemoryConfig, row: &ScoreRow) -> Result<()> {
     })
 }
 
+/// Transaction-scoped variant of [`upsert_score`] for batching a score write
+/// into a caller-owned transaction.
 pub fn upsert_score_tx(tx: &Transaction<'_>, row: &ScoreRow) -> Result<()> {
     tx.execute(
         SCORE_UPSERT_SQL,
@@ -283,6 +296,8 @@ pub fn clear_entity_index_for_node(config: &MemoryConfig, node_id: &str) -> Resu
     })
 }
 
+/// Transaction-scoped variant of [`clear_entity_index_for_node`]. Returns the
+/// number of rows deleted.
 pub fn clear_entity_index_for_node_tx(tx: &Transaction<'_>, node_id: &str) -> Result<usize> {
     let n = tx.execute(
         "DELETE FROM mem_tree_entity_index WHERE node_id = ?1",
@@ -335,6 +350,9 @@ pub fn index_summary_entity_ids_tx(
     Ok(entity_ids.len())
 }
 
+/// Transaction-scoped variant of [`index_entities`] for batching the
+/// (entity, chunk) writes into a caller-owned transaction. Returns the number
+/// of entities indexed.
 pub fn index_entities_tx(
     tx: &Transaction<'_>,
     entities: &[CanonicalEntity],
@@ -366,13 +384,25 @@ pub fn index_entities_tx(
 /// Result row from [`lookup_entity`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EntityHit {
+    /// Canonical entity id (`"<kind>:<value>"`) this row was indexed under.
     pub entity_id: String,
+    /// Id of the node (chunk or summary) the entity occurs in.
     pub node_id: String,
+    /// Node-kind wire string, e.g. `leaf`/`summary`, identifying which layer
+    /// `node_id` lives in.
     pub node_kind: String,
+    /// Parsed entity kind from the `entity_kind` column; round-trips the kind
+    /// prefix of [`entity_id`](Self::entity_id).
     pub entity_kind: EntityKind,
+    /// Observed surface form of the entity. For summary rows this holds the
+    /// full canonical id as a placeholder (no per-occurrence span).
     pub surface: String,
+    /// Relevance score carried from the source chunk/summary at index time.
     pub score: f32,
+    /// Occurrence time in milliseconds since the Unix epoch; the sort key for
+    /// newest-first lookups.
     pub timestamp_ms: i64,
+    /// Topic tree the node belongs to, when fanned into one; `None` otherwise.
     pub tree_id: Option<String>,
     /// True when the canonical id matched an identity registry at index time.
     /// Always `false` in TinyCortex (no identity registry yet).

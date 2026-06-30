@@ -41,25 +41,49 @@ static CONVERSATION_PERSISTENCE_REGISTERED: OnceLock<()> = OnceLock::new();
 pub enum ChannelEvent {
     /// An inbound message received from a channel (persisted as role `user`).
     Received {
+        /// Channel wire id (e.g. `slack`, `telegram`); `telegram` is special-cased
+        /// in thread-id derivation.
         channel: String,
+        /// Host-side id of the source message; reused to build the persisted,
+        /// dedup-keyed message id.
         message_id: String,
+        /// Channel-scoped sender id; part of the conversation-history key.
         sender: String,
+        /// Channel-scoped reply destination (channel/chat/DM id); part of the key.
         reply_target: String,
+        /// Message body, persisted verbatim as the user turn content.
         content: String,
+        /// Optional thread/timestamp anchor; a non-blank value splits the thread
+        /// for non-`telegram` channels.
         thread_ts: Option<String>,
+        /// Workspace this turn targets; turns for a different bound workspace are
+        /// dropped (workspace-switch race).
         workspace_dir: PathBuf,
     },
     /// A processed/answered turn (the assistant response, persisted as role
     /// `assistant`).
     Processed {
+        /// Channel wire id (e.g. `slack`, `telegram`); `telegram` is special-cased
+        /// in thread-id derivation.
         channel: String,
+        /// Host-side id of the originating message; reused to build the persisted,
+        /// dedup-keyed message id.
         message_id: String,
+        /// Channel-scoped sender id; part of the conversation-history key.
         sender: String,
+        /// Channel-scoped reply destination (channel/chat/DM id); part of the key.
         reply_target: String,
+        /// Optional thread/timestamp anchor; a non-blank value splits the thread
+        /// for non-`telegram` channels.
         thread_ts: Option<String>,
+        /// Assistant response body, persisted verbatim as the assistant turn content.
         response: String,
+        /// Wall-clock processing latency in milliseconds, recorded in turn metadata.
         elapsed_ms: u64,
+        /// Whether processing succeeded, recorded in turn metadata.
         success: bool,
+        /// Workspace this turn targets; turns for a different bound workspace are
+        /// dropped (workspace-switch race).
         workspace_dir: PathBuf,
     },
 }

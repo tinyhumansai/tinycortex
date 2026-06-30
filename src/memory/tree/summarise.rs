@@ -18,33 +18,49 @@ use crate::memory::tree::store::TreeKind;
 /// summary at L_n→L_{n+1}.
 #[derive(Clone, Debug)]
 pub struct SummaryInput {
+    /// Machine-readable id of the contributing leaf or lower-level summary.
     pub id: String,
+    /// Raw text being folded into the parent summary.
     pub content: String,
+    /// Approximate token count of [`content`](Self::content).
     pub token_count: u32,
+    /// Canonical entity ids attached to this input.
     pub entities: Vec<String>,
+    /// Topic labels attached to this input.
     pub topics: Vec<String>,
+    /// Start of the time window this input covers (inclusive).
     pub time_range_start: DateTime<Utc>,
+    /// End of the time window this input covers (inclusive).
     pub time_range_end: DateTime<Utc>,
+    /// Importance weight; higher-scoring inputs are folded first and are least
+    /// likely to be dropped under budget pressure.
     pub score: f32,
 }
 
 /// Per-seal context — identifies which tree/level is being sealed.
 #[derive(Clone, Debug)]
 pub struct SummaryContext<'a> {
+    /// Machine-readable id of the tree being sealed.
     pub tree_id: &'a str,
+    /// Wire kind of the tree (see [`TreeKind`]).
     pub tree_kind: TreeKind,
+    /// Level the produced summary lands at; inputs come from `target_level - 1`.
     pub target_level: u32,
+    /// Maximum approximate tokens the produced summary may occupy.
     pub token_budget: u32,
 }
 
 /// Output of a summarise call.
 #[derive(Clone, Debug, Default)]
 pub struct SummaryOutput {
+    /// Folded summary text, clamped to the seal's token budget.
     pub content: String,
+    /// Approximate token count of [`content`](Self::content).
     pub token_count: u32,
     /// Always emitted empty by the built-in summarisers; canonical entity ids
     /// are populated separately by the seal-time label strategy.
     pub entities: Vec<String>,
+    /// Topic labels for the summary; empty from the built-in summarisers.
     pub topics: Vec<String>,
 }
 
@@ -74,6 +90,7 @@ pub trait Summariser: Send + Sync {
 pub struct ConcatSummariser;
 
 impl ConcatSummariser {
+    /// Construct the stateless deterministic summariser.
     pub fn new() -> Self {
         Self
     }

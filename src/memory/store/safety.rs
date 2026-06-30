@@ -23,10 +23,20 @@ const MAX_JSON_SANITIZE_DEPTH: usize = 128;
 /// Tally of what a sanitization pass changed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SanitizationReport {
+    /// Count of secret/token pattern matches rewritten in string text by the
+    /// [`REDACTION_PATTERNS`] pass.
     pub text_redactions: usize,
+    /// Count of JSON object entries dropped wholesale because their key was
+    /// classified as sensitive by [`is_sensitive_key`].
     pub key_redactions: usize,
+    /// Count of full private-key blocks ([`BLOCK_PATTERNS`]) replaced; these are
+    /// the most severe hits since the entire block is removed.
     pub blocked_secret_hits: usize,
+    /// Count of nodes collapsed because JSON nesting reached
+    /// [`MAX_JSON_SANITIZE_DEPTH`]; the subtree is replaced rather than walked.
     pub depth_redactions: usize,
+    /// Count of personal-identifier matches ([`PII_PATTERNS`]) replaced by the
+    /// lightweight PII screen.
     pub pii_redactions: usize,
 }
 
@@ -55,7 +65,9 @@ impl SanitizationReport {
 /// A sanitized value plus the [`SanitizationReport`] describing the changes.
 #[derive(Debug, Clone)]
 pub struct Sanitized<T> {
+    /// The cleaned value with secrets and PII removed.
     pub value: T,
+    /// Tally of what the sanitization pass changed to produce `value`.
     pub report: SanitizationReport,
 }
 
