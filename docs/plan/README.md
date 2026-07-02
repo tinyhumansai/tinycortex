@@ -29,6 +29,7 @@ the first migration goal, not an afterthought.
 | [02-completion-gaps.md](02-completion-gaps.md) | Missing pieces inside TinyCortex: engine facade, providers, registries, features, docs/examples |
 | [03-testing-benchmarks.md](03-testing-benchmarks.md) | Unit + e2e testing strategy, retrieval-effectiveness harness, benchmarking |
 | [04-openhuman-integration.md](04-openhuman-integration.md) | Pluggability design and phased, non-breaking adoption inside OpenHuman |
+| [05-openhuman-compat-matrix.md](05-openhuman-compat-matrix.md) | Living checklist of every OpenHuman feature surface (sources, Obsidian vault/wiki, credentials, controllers) and its TinyCortex status — the companion tracker to doc 04 |
 
 ## Goal format (`/goal` compatible)
 
@@ -46,7 +47,8 @@ Definition of done: <one/two sentences, verifiable>
 ```
 
 ID namespaces: `M*` migration, `C*` crate completion, `T*` testing/benchmarks,
-`I*` OpenHuman integration. Work each goal on its own feature branch with
+`I*` OpenHuman integration, `X*` compatibility-matrix tracking stubs (doc 05).
+Work each goal on its own feature branch with
 small conventional commits, and keep `cargo fmt` + `cargo test` green at every
 checkpoint.
 
