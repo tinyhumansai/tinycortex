@@ -39,7 +39,44 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Build
-        run: cargo build --all-targets
+        run: cargo build --all-targets --all-features
 
       - name: Test
-        run: cargo test
+        run: cargo test --all-features
+
+  features:
+    name: Features (${{ matrix.features.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Curated subset of the feature power set: the dependency-light core,
+        # each feature in isolation, and the fully-enabled build. Each combo
+        # must type-check so heavyweight deps stay genuinely opt-in.
+        features:
+          - name: core (no features)
+            flags: --no-default-features
+          - name: tokio
+            flags: --no-default-features --features tokio
+          - name: git-diff
+            flags: --no-default-features --features git-diff
+          - name: providers-http
+            flags: --no-default-features --features providers-http
+          - name: rpc
+            flags: --no-default-features --features rpc
+          - name: all features
+            flags: --all-features
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          key: features-${{ matrix.features.name }}
+
+      - name: Check
+        run: cargo check --all-targets ${{ matrix.features.flags }}
