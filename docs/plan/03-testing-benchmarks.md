@@ -58,7 +58,7 @@ that fails loudly if it drifts, plus golden files pinning schemas and ids.
 - [ ] On-disk vault layout snapshot test (paths, front-matter round-trip).
 
 ### T3 — Retrieval effectiveness harness ("perfection & effectiveness")
-Status: todo
+Status: in-progress
 Depends-on: T1
 Definition of done: `benchmarks/effectiveness/` produces recall@k / MRR /
 nDCG numbers on labeled datasets from a single command, with results written
@@ -67,18 +67,28 @@ to a dated JSON so regressions are diffable across commits.
 Correctness tests can't tell us whether retrieval is *good*. Build a small
 harness (Rust bin or the existing Python `requirements.txt` toolchain) that:
 
-- [ ] Defines a labeled-dataset format: documents + queries + relevant-ids
-      (start with ~50 hand-labeled query/answer pairs over the ingestion
-      fixtures; grow with synthetic sets generated once and frozen).
-- [ ] Metrics: recall@k (k=1,5,10), MRR, nDCG@10, plus per-weight-profile
-      breakdown (BALANCED / SEMANTIC / LEXICAL / GRAPH_FIRST) to validate
-      profile differentiation.
+The Rust harness scaffold now exists at `benchmarks/effectiveness/`
+(`cargo run --bin effectiveness`) — a standalone crate with pure, unit-tested
+metrics, a JSON labeled-dataset format, a backend-agnostic `BenchBackend` seam
+scored today against the lexical `InMemoryMemoryStore`, and dated JSON output.
+Remaining work is the real backend (`CortexEngine`, C1), embedding mode, and
+the compare gate.
+
+- [x] Defines a labeled-dataset format: documents + queries + relevant-ids.
+      Seed corpus `data/fixtures_v1.json` (10 docs / 12 queries); still need to
+      grow toward ~50 hand-labeled pairs over the ingestion fixtures + frozen
+      synthetic sets.
+- [~] Metrics: recall@k (k=1,5,10), MRR, nDCG@10 done and unit-tested; still
+      need the per-weight-profile breakdown (BALANCED / SEMANTIC / LEXICAL /
+      GRAPH_FIRST) — blocked on a hybrid backend.
 - [ ] Two modes: deterministic (inert embedder — measures lexical/graph
-      paths only) and real-embedding (Ollama `bge-m3` — full hybrid).
+      paths only) and real-embedding (Ollama `bge-m3` — full hybrid). Only the
+      deterministic lexical baseline exists today.
 - [ ] Optional LLM-judge groundedness scoring for summarised levels (are
       L1+ summaries faithful to their leaves?) — flagged, off by default.
-- [ ] `benchmarks/effectiveness/results/<date>-<git-sha>.json` output +
-      a compare script that fails if recall@10 drops >2pts vs. baseline.
+- [~] `benchmarks/effectiveness/results/<date>-<git-sha>.json` output done;
+      still need the compare script that fails if recall@10 drops >2pts vs.
+      baseline.
 
 ### T4 — Performance benchmarking
 Status: todo
