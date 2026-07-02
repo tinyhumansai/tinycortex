@@ -42,6 +42,13 @@ pub mod gate;
 mod handlers;
 mod ops;
 mod redact;
+/// Always-on async background worker + scheduler loops (feature `tokio`).
+///
+/// Wraps the host-driven [`run_once`] / [`scheduler`] primitives into
+/// cancellable `tokio` loops. Gated behind the `tokio` feature so the core
+/// stays synchronous and dependency-light.
+#[cfg(feature = "tokio")]
+pub mod runtime;
 pub mod scheduler;
 pub mod store;
 pub mod store_settle;
