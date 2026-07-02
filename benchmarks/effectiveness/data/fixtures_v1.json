@@ -1,0 +1,118 @@
+{
+  "name": "fixtures_v1",
+  "description": "Hand-labeled seed corpus for the TinyCortex effectiveness harness. Ten short engineering-knowledge documents with twelve keyword-style queries. Queries are phrased so their terms appear verbatim in the relevant documents, because the reference InMemoryMemoryStore backend gates matches on whole-query substring presence (lexical only). Natural-language / paraphrase queries will be added alongside embedding-capable backends (T3, mode 2). Grow toward ~50 labeled pairs.",
+  "documents": [
+    {
+      "id": "doc-auth",
+      "title": "Authentication and OAuth tokens",
+      "text": "User authentication uses OAuth token refresh to keep sessions alive. When an access token expires the client performs an oauth token refresh against the identity service. Passwords are never stored in plaintext; only salted hashes."
+    },
+    {
+      "id": "doc-billing",
+      "title": "Billing and invoices",
+      "text": "The billing service issues monthly invoices and reconciles payments. Failed payments trigger a dunning email. Refunds are processed within five business days through the payments provider."
+    },
+    {
+      "id": "doc-deploy-ci",
+      "title": "Deployment pipeline",
+      "text": "Every merge to main runs the deployment pipeline: build, test, and a staged rollout. The deployment pipeline gates production on a green test suite and a manual approval for risky changes."
+    },
+    {
+      "id": "doc-deploy-rollback",
+      "title": "Rollback procedure",
+      "text": "If a release regresses, use the deployment pipeline rollback command to pin the previous known-good image. Rollbacks are fast because artifacts from the deployment pipeline are retained for thirty days."
+    },
+    {
+      "id": "doc-db-backup",
+      "title": "Database backup and restore",
+      "text": "The database backup job snapshots Postgres nightly and ships the backup to object storage. To restore, download the latest backup and replay the write-ahead log to the desired point in time."
+    },
+    {
+      "id": "doc-onboarding",
+      "title": "New engineer onboarding",
+      "text": "Onboarding a new engineer covers laptop setup, repository access, and a buddy assignment. The onboarding checklist ends with shipping a small first pull request in the first week."
+    },
+    {
+      "id": "doc-incident",
+      "title": "Incident response",
+      "text": "Incident response begins when the pager fires. The on-call engineer opens an incident channel, declares severity, and drives mitigation. Every incident response ends with a blameless postmortem."
+    },
+    {
+      "id": "doc-rate-limit",
+      "title": "API rate limiting",
+      "text": "Public endpoints enforce rate limiting with a token bucket per API key. When a client exceeds the rate limiting budget the gateway returns HTTP 429 with a retry-after header."
+    },
+    {
+      "id": "doc-search-index",
+      "title": "Search indexing",
+      "text": "The search indexing pipeline tokenizes documents, builds an inverted index, and refreshes it every minute. Search indexing latency is monitored so stale results are caught early."
+    },
+    {
+      "id": "doc-security-patch",
+      "title": "Security patching",
+      "text": "Security patching follows a monthly cadence, with out-of-band patches for critical vulnerabilities. The security patching rota tracks CVEs and confirms every host is updated."
+    }
+  ],
+  "queries": [
+    {
+      "id": "q-oauth",
+      "query": "oauth token refresh",
+      "relevant_ids": ["doc-auth"]
+    },
+    {
+      "id": "q-invoices",
+      "query": "invoices",
+      "relevant_ids": ["doc-billing"]
+    },
+    {
+      "id": "q-deploy",
+      "query": "deployment pipeline",
+      "relevant_ids": ["doc-deploy-ci", "doc-deploy-rollback"]
+    },
+    {
+      "id": "q-rollback",
+      "query": "rollback",
+      "relevant_ids": ["doc-deploy-rollback"]
+    },
+    {
+      "id": "q-backup",
+      "query": "backup",
+      "relevant_ids": ["doc-db-backup"]
+    },
+    {
+      "id": "q-onboarding",
+      "query": "onboarding",
+      "relevant_ids": ["doc-onboarding"]
+    },
+    {
+      "id": "q-incident",
+      "query": "incident response",
+      "relevant_ids": ["doc-incident"]
+    },
+    {
+      "id": "q-rate-limit",
+      "query": "rate limiting",
+      "relevant_ids": ["doc-rate-limit"]
+    },
+    {
+      "id": "q-search-index",
+      "query": "search indexing",
+      "relevant_ids": ["doc-search-index"]
+    },
+    {
+      "id": "q-security",
+      "query": "security patching",
+      "relevant_ids": ["doc-security-patch"]
+    },
+    {
+      "id": "q-pager",
+      "query": "pager",
+      "relevant_ids": ["doc-incident"]
+    },
+    {
+      "id": "q-restore",
+      "query": "restore",
+      "relevant_ids": ["doc-db-backup"]
+    }
+  ]
+}
