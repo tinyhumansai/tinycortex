@@ -17,11 +17,37 @@ exclude = [
     "requirements.txt",
 ]
 
+[features]
+# Dependency-light, fully synchronous core. No heavyweight native or async
+# dependencies are pulled in by default; every heavy capability is opt-in below.
+default = []
+
+# Async background worker loops for the job queue (`memory::queue::runtime`).
+# Turns `tokio` into a real (optional) dependency rather than a test-only one so
+# a host can run the append/seal/flush pipeline as always-on loops instead of
+# driving `run_once` by hand.
+tokio = ["dep:tokio"]
+
+# Git-backed source snapshots / diffs / checkpoints (`memory::diff`). Gates the
+# heavy native `git2`/libgit2 dependency; with the feature off the whole `diff`
+# module (and libgit2) compiles out.
+git-diff = ["dep:git2"]
+
+# reqwest-based embedding / LLM HTTP providers (`memory::providers`). Pulls in
+# the reqwest stack and needs an async runtime, so it implies `tokio`. The
+# concrete providers land with goals C3/M3; this feature reserves the seam and
+# gates the dependency.
+providers-http = ["dep:reqwest", "tokio"]
+
+# serde schema / envelope surface for the RPC boundary (`memory::rpc`). Reserved
+# for goal C5; gates the wire-facing surface without adding heavy dependencies
+# (serde is already a core dependency).
+rpc = []
+
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
-git2 = "0.19"
 parking_lot = "0.12"
 rand = "0.8"
 regex = "1"
@@ -34,6 +60,24 @@ toml = "0.8"
 uuid = { version = "1", features = ["serde", "v4"] }
 walkdir = "2"
 
+# ── Optional, feature-gated dependencies ────────────────────────────────────
+# git2 links libgit2 (heavy native build) — only for the `git-diff` feature.
+git2 = { version = "0.19", optional = true }
+# reqwest pulls a large async HTTP stack — only for the `providers-http` feature.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+], optional = true }
+# tokio powers the optional background worker loops (`tokio` feature). It is
+# also listed under dev-dependencies so the async test suite always compiles.
+tokio = { version = "1", features = [
+    "rt",
+    "rt-multi-thread",
+    "macros",
+    "time",
+    "sync",
+], optional = true }
+
 [dev-dependencies]
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

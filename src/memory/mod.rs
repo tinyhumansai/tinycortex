@@ -14,7 +14,8 @@
 //! - [`tree`]: summary-tree mechanics (append, seal, summarise, retrieve).
 //! - [`queue`]: async job model (extract, append, seal, flush, backfill).
 //! - [`retrieval`]: vector / keyword / graph / tree / hybrid search.
-//! - [`diff`]: git-backed source snapshots, diffs, checkpoints, read markers.
+//! - [`diff`]: git-backed source snapshots, diffs, checkpoints, read markers
+//!   (feature `git-diff`; gates the heavy native `git2`/libgit2 dependency).
 //! - [`entities`] / [`graph`]: entity files and derived co-occurrence graph.
 //! - [`goals`] / [`tool_memory`]: specialized long-term memory surfaces.
 //! - [`conversations`] / [`archivist`]: transcript storage and tree archival.
@@ -33,6 +34,11 @@ pub mod store;
 pub mod archivist;
 pub mod chunks;
 pub mod conversations;
+/// Git-backed source snapshots, diffs, checkpoints, and read markers.
+///
+/// Gated behind the `git-diff` feature: the entire module (and the heavy native
+/// `git2`/libgit2 dependency it needs) compiles out when the feature is off.
+#[cfg(feature = "git-diff")]
 pub mod diff;
 pub mod entities;
 pub mod goals;
@@ -44,6 +50,22 @@ pub mod score;
 pub mod sources;
 pub mod tool_memory;
 pub mod tree;
+
+// ── Feature-gated boundary surfaces ─────────────────────────────────────────
+/// reqwest-based embedding / LLM HTTP providers.
+///
+/// Gated behind the `providers-http` feature (implies `tokio`). Reserves the
+/// HTTP provider seam and gates the reqwest dependency; the concrete providers
+/// land with goals C3/M3.
+#[cfg(feature = "providers-http")]
+pub mod providers;
+
+/// serde schema / envelope surface for the RPC boundary.
+///
+/// Gated behind the `rpc` feature. Reserves the wire-facing surface for goal
+/// C5 without adding heavy dependencies.
+#[cfg(feature = "rpc")]
+pub mod rpc;
 
 // ── Re-exports ──────────────────────────────────────────────────────────────
 pub use config::{MemoryConfig, WeightProfile};
