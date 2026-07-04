@@ -366,7 +366,9 @@ impl Ledger {
         };
         Ok(Some(checkpoint_from_message(
             checkpoint_id,
-            tag.message().unwrap_or(""),
+            // git2 0.21: Tag::message() is Result<Option<&str>, _>; a non-UTF8
+            // or missing message degrades to an empty checkpoint body.
+            tag.message().ok().flatten().unwrap_or(""),
         )))
     }
 
@@ -375,8 +377,9 @@ impl Ledger {
         let pattern = format!("{CHECKPOINT_PREFIX}*");
         let names = self.repo.tag_names(Some(&pattern))?;
         let mut out = Vec::new();
-        // StringArray::iter() yields Option<&str>; drop non-utf8 names.
-        for name in names.iter().flatten() {
+        // git2 0.21: StringArray::iter() yields Result<Option<&str>, _>; keep
+        // only successfully-decoded utf8 names.
+        for name in names.iter().filter_map(|r| r.ok().flatten()) {
             if let Some(ckpt) = self.get_checkpoint(name)? {
                 out.push(ckpt);
             }
@@ -394,7 +397,8 @@ impl Ledger {
         let pattern = format!("{CHECKPOINT_PREFIX}*");
         let names = self.repo.tag_names(Some(&pattern))?;
         let mut deleted = 0u64;
-        for name in names.iter().flatten() {
+        // git2 0.21: StringArray::iter() yields Result<Option<&str>, _>.
+        for name in names.iter().filter_map(|r| r.ok().flatten()) {
             if let Some(ckpt) = self.get_checkpoint(name)? {
                 if ckpt.created_at_ms < older_than_ms {
                     self.repo.tag_delete(name)?;
@@ -545,7 +549,8 @@ fn oid_hash(oid: Oid) -> Option<String> {
 fn patch_text(diff: &git2::Diff, delta_idx: usize) -> Option<String> {
     let mut patch = git2::Patch::from_diff(diff, delta_idx).ok().flatten()?;
     let buf = patch.to_buf().ok()?;
-    let text = buf.as_str()?;
+    // git2 0.21: Buf::as_str() returns Result<&str, Utf8Error>.
+    let text = buf.as_str().ok()?;
     if text.trim().is_empty() {
         None
     } else {

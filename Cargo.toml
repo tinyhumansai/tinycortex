@@ -21,11 +21,15 @@ exclude = [
 anyhow = "1"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
-git2 = "0.19"
+# Native-linking deps pinned to OpenHuman's versions so the host and the crate
+# link ONE bundled SQLite and ONE libgit2 (both are `links = "…"` crates; two
+# versions in one binary is a hard Cargo error). Keep in lockstep with the host
+# root Cargo.toml when either side bumps.
+git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
 parking_lot = "0.12"
 rand = "0.8"
 regex = "1"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
