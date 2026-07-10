@@ -275,9 +275,29 @@ impl InvertedIndex {
         }
 
         let total_terms = terms.len() as f64;
-        let mut hits: Vec<CrossThreadHit> = hit_counts
+        // Rank on cheap keys first — the match count and a borrowed `created_at`
+        // — then materialize the heavy CrossThreadHit (which clones the KB-sized
+        // `content`) only for the `limit` survivors. Phase 2 can leave thousands
+        // of candidates in `hit_counts` while callers ask for 3-10 results, so
+        // cloning every candidate's content before truncating is ~99% wasted.
+        // Ranking by `matched` (usize) is order-equivalent to ranking by
+        // `score = matched / total_terms` since `total_terms` is a positive
+        // constant, so the returned order is unchanged.
+        let mut ranked: Vec<(u32, usize, &str)> = hit_counts
             .into_iter()
             .map(|(doc_id, matched)| {
+                let entry = self.docs[doc_id as usize]
+                    .as_ref()
+                    .expect("doc_id from hit_counts must be live");
+                (doc_id, matched, entry.created_at.as_str())
+            })
+            .collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(a.2)));
+        ranked.truncate(limit);
+
+        ranked
+            .into_iter()
+            .map(|(doc_id, matched, _)| {
                 let entry = self.docs[doc_id as usize]
                     .as_ref()
                     .expect("doc_id from hit_counts must be live");
@@ -290,16 +310,7 @@ impl InvertedIndex {
                     score: matched as f64 / total_terms,
                 }
             })
-            .collect();
-
-        hits.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| b.created_at.cmp(&a.created_at))
-        });
-        hits.truncate(limit);
-        hits
+            .collect()
     }
 
     /// Build the Phase 1 candidate set for one query term.
