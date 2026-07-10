@@ -11,6 +11,11 @@
 //! The SQLite error classifiers ([`is_sqlite_busy`] et al.) are ported verbatim
 //! so a host loop can reproduce OpenHuman's "back off, don't page" policy for
 //! transient write-lock / I/O / disk-full / corruption conditions.
+//! [`is_host_io_error`] extends that family to persistent **host-filesystem**
+//! failures (EIO/ENOSPC/EROFS — a dying SD card or full/read-only mount) that
+//! surface as `std::io::Error` rather than a SQLite code; the host uses it to
+//! back off and page once instead of flooding (Sentry CORE-RUST-19J). The
+//! Sentry-once emission and the storage-degraded flag stay host-owned.
 
 use std::sync::LazyLock;
 
@@ -153,6 +158,28 @@ pub fn is_sqlite_corrupt(err: &anyhow::Error) -> bool {
     }
     let msg = format!("{err:#}").to_ascii_lowercase();
     msg.contains("database disk image is malformed") || msg.contains("file is not a database")
+}
+
+/// Classify a persistent **host-filesystem** I/O failure (EIO `5`, ENOSPC `28`,
+/// EROFS `30`) surfaced as a `std::io::Error` — a dying SD card, a full disk, or
+/// a kernel-remounted-read-only mount. These are user-only-fixable and never
+/// clear on their own, so a host loop should back off long and page **once**
+/// rather than re-poll and flood (Sentry CORE-RUST-19J).
+///
+/// Distinct from [`is_sqlite_disk_full`]: `SQLITE_FULL` arrives as a SQLite code
+/// and stays in that arm; this family is the raw OS error bubbling out of
+/// `create_dir_all` / `File` operations, often through anyhow context layers,
+/// so both the typed downcast and the flattened `(os error N)` text are checked.
+/// EACCES (`13`) and ENOENT (`2`) are deliberately excluded — those are genuine
+/// bugs that must keep reporting.
+pub fn is_host_io_error(err: &anyhow::Error) -> bool {
+    if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+        if matches!(io_err.raw_os_error(), Some(5) | Some(28) | Some(30)) {
+            return true;
+        }
+    }
+    let msg = format!("{err:#}").to_ascii_lowercase();
+    msg.contains("(os error 5)") || msg.contains("(os error 28)") || msg.contains("(os error 30)")
 }
 
 #[cfg(test)]
