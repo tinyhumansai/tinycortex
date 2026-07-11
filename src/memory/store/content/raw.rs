@@ -109,6 +109,13 @@ pub fn raw_rel_path(source_id: &str, kind: RawKind, created_at_ms: i64, uid: &st
     format!("raw/{}/{}/{}", slug, kind.as_dir(), filename)
 }
 
+/// Build the `<ts>_<uid>.md` basename for a raw item.
+///
+/// `created_at_ms` is clamped to `0` (never negative) so a bad upstream
+/// timestamp can't produce a leading `-` in the filename; `uid` is sanitised
+/// via [`sanitize_uid`]. The same `(created_at_ms, uid)` pair always yields
+/// the same filename, which is what makes [`write_raw_items`] idempotent on
+/// re-sync.
 fn build_filename(created_at_ms: i64, uid: &str) -> String {
     let ts = created_at_ms.max(0);
     let uid = sanitize_uid(uid);
@@ -132,6 +139,15 @@ pub(crate) fn sanitize_uid(uid: &str) -> String {
     }
 }
 
+/// Write `bytes` to `path` via a sibling temp file (`.tmp_raw_<pid>_<nanos>.md`)
+/// that is fsynced then renamed over the destination, fsyncing the parent
+/// directory afterwards so the rename survives a crash.
+///
+/// Unlike [`super::atomic::write_if_new`], this always overwrites an existing
+/// file at `path` — there is no existence check — relying on the caller
+/// ([`write_raw_items`]) to only ever regenerate the same bytes for a given
+/// `(source, uid, ts)` triple, which is what makes repeat writes idempotent
+/// in effect rather than by construction.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path
         .parent()
