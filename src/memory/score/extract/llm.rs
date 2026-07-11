@@ -365,6 +365,14 @@ impl LlmExtractionOutput {
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
+/// Map a free-form LLM-returned kind string to an [`EntityKind`].
+///
+/// Case- and whitespace-insensitive, and accepts several synonyms per kind
+/// (e.g. "org"/"organisation" both map to [`EntityKind::Organization`]) since
+/// models don't reliably stick to the exact schema vocabulary. Returns `None`
+/// for anything unrecognised; the caller then falls back to
+/// [`EntityKind::Misc`] or drops the entity depending on
+/// [`LlmExtractorConfig::strict_kinds`].
 fn parse_kind(s: &str) -> Option<EntityKind> {
     match s.trim().to_lowercase().as_str() {
         "person" | "people" => Some(EntityKind::Person),
@@ -421,6 +429,11 @@ fn find_char_span_from(
     Some((char_start, char_end, byte_end))
 }
 
+/// Truncate `s` to at most `max_chars` Unicode scalar values, appending an
+/// ellipsis (`…`) when truncation happened. Char-counting (not byte-slicing)
+/// keeps this UTF-8 safe. Intended for logging raw provider responses without
+/// flooding logs; currently unused (`#[allow(dead_code)]`) pending log-site
+/// wiring.
 #[allow(dead_code)]
 fn truncate_for_log(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {

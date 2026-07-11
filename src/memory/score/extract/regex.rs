@@ -38,6 +38,19 @@ static RE_HASHTAG: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?:^|[\s(])#([A-Za-z][A-Za-z0-9_\-]{1,})").unwrap());
 
 /// Extract all mechanical entities from `text`.
+///
+/// Emits one [`ExtractedEntity`] per regex match (multiple matches of the
+/// same surface form are **not** deduplicated here — that's
+/// [`ExtractedEntities::merge`]'s job when combining extractor outputs).
+/// Hashtag matches are additionally surfaced as [`ExtractedTopic`] rows so
+/// they can be promoted into the canonical entity stream by the resolver.
+///
+/// NOTE: `RE_HANDLE` allows `.`/`-` anywhere in the captured group, including
+/// at the end, so trailing sentence punctuation folded into a handle (e.g.
+/// "ping @alice." at end-of-sentence) is captured as part of the surface
+/// form. `handle:alice.` and `handle:alice` then canonicalise to distinct
+/// entities, splitting co-occurrence weight for what is really one person
+/// (see audit finding RS-12).
 pub fn extract(text: &str) -> ExtractedEntities {
     let mut entities: Vec<ExtractedEntity> = Vec::new();
     let mut topics: Vec<ExtractedTopic> = Vec::new();
@@ -77,6 +90,10 @@ pub fn extract(text: &str) -> ExtractedEntities {
     }
 }
 
+/// Build an [`ExtractedEntity`] for a regex match, converting the match's
+/// byte offsets (`start`/`end`, as returned by the `regex` crate) into the
+/// char offsets [`ExtractedEntity`] stores. Score is always `1.0` — regex
+/// matches are deterministic and unambiguous.
 fn to_entity(text: &str, start: usize, end: usize, kind: EntityKind) -> ExtractedEntity {
     ExtractedEntity {
         kind,
@@ -87,6 +104,12 @@ fn to_entity(text: &str, start: usize, end: usize, kind: EntityKind) -> Extracte
     }
 }
 
+/// Convert a byte offset into `s` to the corresponding char (Unicode
+/// scalar value) offset, by counting chars in the prefix `s[..byte_idx]`.
+/// `byte_idx` is clamped to `s.len()` first, so an out-of-range offset
+/// degrades to "end of string" instead of panicking on an out-of-bounds
+/// slice. Caller must still pass a byte index that lands on a UTF-8 char
+/// boundary (true for all offsets the `regex` crate returns).
 fn char_index(s: &str, byte_idx: usize) -> u32 {
     let byte_idx = byte_idx.min(s.len());
     s[..byte_idx].chars().count() as u32
