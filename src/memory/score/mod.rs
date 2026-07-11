@@ -14,6 +14,24 @@
 //!   [`extract::ChatProvider`].
 //! - [`embed::Embedder`] — the embedding backend, defaulting to the
 //!   deterministic [`embed::InertEmbedder`].
+//!
+//! ## Position in the layer diagram
+//!
+//! `score` sits between [`crate::memory::chunks`] (produces the [`Chunk`]s
+//! it scores) and [`crate::memory::tree`]/[`crate::memory::queue`] (which
+//! call [`score_chunk`]/[`score_chunks`] during ingest and act on
+//! [`ScoreResult::kept`]). Per the crate-wide layering rule, `score` never
+//! calls upward into `tree`, `queue`, or `retrieval`.
+//!
+//! ## Concurrency / atomicity
+//!
+//! [`score_chunk`] itself is pure-ish (no store access) and safe to call
+//! concurrently for different chunks — the only shared state is whatever the
+//! configured [`extract::EntityExtractor`] / LLM provider holds internally.
+//! Persistence ([`persist_score`] / [`persist_score_tx`]) is where atomicity
+//! matters: use the `_tx` variant when persisting a score alongside its chunk
+//! write so both land in the same SQLite transaction (see
+//! [`store`]'s module docs for the full write contract).
 
 /// Embedding backends ([`embed::Embedder`]) and the deterministic
 /// [`embed::InertEmbedder`] default.
@@ -337,6 +355,15 @@ pub async fn score_chunks_fast(chunks: &[Chunk], cfg: &ScoringConfig) -> Result<
 /// Co-occurrence graph edges (OpenHuman's E2GraphRAG accumulation) are not
 /// written here: TinyCortex's `memory::graph` module is not yet ported, so this
 /// helper persists the score row and the entity index only.
+///
+/// NOTE (RS-13): the entity index is only cleared/re-indexed when
+/// `result.kept` is `true`. If a chunk is scored a second time (e.g. a
+/// re-score after content edit) and flips from kept to dropped, this function
+/// takes the `!result.kept` branch and never calls
+/// [`store::clear_entity_index_for_node`] — the entity-index rows from the
+/// earlier, kept scoring are left behind as phantom rows pointing at a
+/// now-dropped chunk. Callers that need drop-time cleanup must clear the
+/// entity index themselves before calling this function.
 pub fn persist_score(
     config: &MemoryConfig,
     result: &ScoreResult,
@@ -370,7 +397,8 @@ pub fn persist_score(
 /// Transactional variant of [`persist_score`] — writes the score row and
 /// entity-index rows on the caller's open [`Transaction`] so the persistence
 /// is atomic with the surrounding ingest write. Same kept/clear-before-reindex
-/// semantics as [`persist_score`].
+/// semantics as [`persist_score`], including the same phantom-row gotcha on a
+/// kept→dropped re-score (see the RS-13 note there).
 pub fn persist_score_tx(
     tx: &Transaction<'_>,
     result: &ScoreResult,
