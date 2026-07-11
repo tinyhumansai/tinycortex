@@ -43,7 +43,7 @@ Benchmark results for TinyCortex Mark 1 (`mk1` / `tinycortex_v1`). All benchmark
 **Methods compared:** tinycortex_v1, fastgraphrag, gemini_vdb, mem0, supermemory
 
 <div align="center">
-<img src="https://raw.githubusercontent.com/tinyhumansai/tinycortex/main/docs/images/chart_ragas.png" alt="RAGAS Benchmark Scores" width="700"/>
+<img src=".gitbook/assets/chart_ragas.png" alt="RAGAS Benchmark Scores" width="700"/>
 </div>
 
 **Key results:**
@@ -69,7 +69,7 @@ TinyCortex achieves the highest Answer Relevancy score by a significant margin (
 **Methods compared:** tinycortex_v1, directfeed, e2graphrag, mem0, supermemory
 
 <div align="center">
-<img src="https://raw.githubusercontent.com/tinyhumansai/tinycortex/main/docs/images/chart_temporalbench.png" alt="TemporalBench Accuracy" width="700"/>
+<img src=".gitbook/assets/chart_temporalbench.png" alt="TemporalBench Accuracy" width="700"/>
 </div>
 
 **Key results:**
@@ -95,7 +95,7 @@ TinyCortex achieves **perfect accuracy on recency questions** (100%), reflecting
 **Methods compared:** tinycortex_v1, directfeed
 
 <div align="center">
-<img src="https://raw.githubusercontent.com/tinyhumansai/tinycortex/main/docs/images/heatmap_babilong.png" alt="BABILong Heatmap" width="600"/>
+<img src=".gitbook/assets/heatmap_babilong.png" alt="BABILong Heatmap" width="600"/>
 </div>
 
 **Key results:**
@@ -121,7 +121,7 @@ TinyCortex is the **only method that successfully retrieves needles**, scoring 3
 **Methods compared:** tinycortex_v1, mem0, scratchpad, supermemory
 
 <div align="center">
-<img src="https://raw.githubusercontent.com/tinyhumansai/tinycortex/main/docs/images/chart_vendingbench.png" alt="Vending-Bench P&L" width="700"/>
+<img src=".gitbook/assets/chart_vendingbench.png" alt="Vending-Bench P&L" width="700"/>
 </div>
 
 **Key results:**
