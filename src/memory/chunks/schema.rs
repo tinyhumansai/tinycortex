@@ -7,8 +7,35 @@
 //! entity-index tables it cascade-deletes, and the source ingest gate). The
 //! remaining tables are created so future modules (tree, queue, score,
 //! retrieval) can share the same database file without a second migration step.
+//!
+//! All statements are `CREATE TABLE/INDEX IF NOT EXISTS`, so applying
+//! [`SCHEMA`] against an already-initialized database is a no-op — this is
+//! what makes [`super::connection::with_connection`] safe to call it on every
+//! open rather than gating it behind a first-run check.
 
 /// `CREATE TABLE IF NOT EXISTS …` statements for the whole chunk DB.
+///
+/// Executed verbatim as a single multi-statement batch (see
+/// [`super::connection`]). Idempotent: re-running it against an
+/// already-migrated database changes nothing. Column/table names here are
+/// on-disk contracts shared with other `mem_tree_*` consumers (tree, queue,
+/// score, retrieval) — renaming or dropping one without a migration breaks
+/// them.
+///
+/// Table summary (chunk-store-owned tables first):
+/// - `mem_tree_chunks` — the canonical chunk rows (see [`super::store`]).
+/// - `mem_tree_chunk_embeddings` / `mem_tree_chunk_reembed_skipped` — per-model
+///   embedding vectors and the reembed-skip audit trail (see
+///   [`super::embeddings`]).
+/// - `mem_tree_ingested_sources` — per-`(source_kind, source_id)` ingest gate,
+///   including the synthetic `raw_file` kind used for raw-archive dedup (see
+///   [`super::store_sources`]).
+/// - Remaining tables (`mem_tree_score`, `mem_tree_entity_index`,
+///   `mem_tree_entity_edges`, `mem_tree_trees`, `mem_tree_summaries`,
+///   `mem_tree_summary_embeddings`, `mem_tree_summary_reembed_skipped`,
+///   `mem_tree_buffers`, `mem_tree_entity_hotness`, `mem_tree_jobs`,
+///   `mcp_writes`) belong to modules not yet ported; declared here only so
+///   they share this database file without a later migration step.
 pub(crate) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS mem_tree_chunks (
     id                     TEXT PRIMARY KEY,
@@ -78,6 +105,14 @@ CREATE INDEX IF NOT EXISTS idx_mem_tree_score_total
 CREATE INDEX IF NOT EXISTS idx_mem_tree_score_dropped
     ON mem_tree_score(dropped);
 
+-- NOTE: `src/memory/store/entity_index/store.rs` also declares and opens a
+-- table with this exact name, at whatever path its caller passes it — the two
+-- schemas are not reconciled at runtime. If that path differs from this
+-- chunk DB, the two become independent tables (orphan growth, and
+-- `extraction_coverage` in `store.rs` sees only this copy). If it is pointed
+-- at this same file, its `PRAGMA journal_mode = WAL` overrides the TRUNCATE
+-- mode this DB otherwise enforces (see `connection.rs`), which defeats the
+-- WAL-related crash-safety assumptions elsewhere in this module.
 CREATE TABLE IF NOT EXISTS mem_tree_entity_index (
     entity_id              TEXT NOT NULL,
     node_id                TEXT NOT NULL,

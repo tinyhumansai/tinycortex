@@ -360,16 +360,24 @@ pub fn truncate_to_conservative_tokens(text: &str, budget: u32) -> &str {
     text
 }
 
+/// `serde(with = ...)` shim for `(DateTime<Utc>, DateTime<Utc>)`.
+///
+/// Chrono has no built-in serde helper for a *pair* of timestamps, so this
+/// mirrors `chrono::serde::ts_milliseconds` but for a 2-tuple: each endpoint
+/// round-trips through millisecond-since-epoch integers under the field
+/// names `start_ms` / `end_ms`.
 mod time_range_serde {
     use chrono::{DateTime, TimeZone, Utc};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+    /// On-wire shape: millisecond-since-epoch pair.
     #[derive(Serialize, Deserialize)]
     struct Wire {
         start_ms: i64,
         end_ms: i64,
     }
 
+    /// Serialize a `(start, end)` UTC timestamp pair as `{start_ms, end_ms}`.
     pub fn serialize<S: Serializer>(
         value: &(DateTime<Utc>, DateTime<Utc>),
         serializer: S,
@@ -381,6 +389,12 @@ mod time_range_serde {
         .serialize(serializer)
     }
 
+    /// Deserialize a `{start_ms, end_ms}` pair back into UTC timestamps.
+    ///
+    /// # Errors
+    /// Returns a `serde` custom error if either millisecond value does not
+    /// map to a valid `DateTime<Utc>` (chrono's `timestamp_millis_opt` fails,
+    /// e.g. out-of-range values).
     pub fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<(DateTime<Utc>, DateTime<Utc>), D::Error> {

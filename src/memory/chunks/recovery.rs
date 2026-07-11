@@ -1,5 +1,25 @@
 //! Cold-start error classification, stale-file cleanup, and corrupt-DB
 //! recovery for the chunk SQLite database.
+//!
+//! Three independent concerns live here:
+//! - [`is_io_open_error`] / [`try_cleanup_stale_files`]: the retry path wired
+//!   into [`super::connection::get_or_init_connection`] for the *cold-start*
+//!   WAL/SHM bootstrap race (a fresh process opening a DB whose side-files
+//!   are mid-write from another process).
+//! - [`is_transient_cold_start`]: a second, overlapping classifier for the
+//!   same error family, currently exercised only by tests (see NOTE on its
+//!   doc comment).
+//! - [`recover_corrupt_db`] / [`quick_check_ok`]: a `SQLITE_CORRUPT`
+//!   quarantine-and-rebuild path that is **not** invoked from any production
+//!   call site today — see the NOTE on [`recover_corrupt_db`] (audit finding
+//!   SC-5). A real `SQLITE_CORRUPT` on the chunk DB currently wedges the
+//!   store rather than recovering.
+//!
+//! [`try_cleanup_stale_files`] unconditionally deletes `-wal`/`-shm` rather
+//! than checkpointing first; for a DB still in legacy WAL mode this can drop
+//! committed-but-uncheckpointed transactions (audit finding SC-4). It is safe
+//! only for the specific cold-start bootstrap races it targets, not as a
+//! general-purpose "fix a stuck DB" hammer.
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -27,6 +47,15 @@ const SQLITE_IOERR_IN_PAGE: i32 = 8714;
 
 /// True if `err` (or anything in its cause chain) is one of the SQLite codes
 /// that fire during cold-start WAL/SHM bootstrap races.
+///
+/// Checks both `err.root_cause()` and every error in `err`'s `source()` chain,
+/// so it catches the code whether `anyhow` wrapped the `rusqlite::Error`
+/// directly at the root or nested it under additional context.
+///
+/// NOTE: this duplicates the code list in [`is_io_open_error`] (used by the
+/// live retry path in `connection.rs`) but is itself `#[allow(dead_code)]` —
+/// it is currently only reachable from this crate's test modules, not from
+/// any production call site.
 #[allow(dead_code)]
 pub(crate) fn is_transient_cold_start(err: &anyhow::Error) -> bool {
     fn is_transient_sqlite(e: &(dyn std::error::Error + 'static)) -> bool {
@@ -58,6 +87,13 @@ pub(crate) fn is_transient_cold_start(err: &anyhow::Error) -> bool {
 
 /// Whether `err` looks like one of the I/O error codes that warrant a
 /// stale-file cleanup + single retry before giving up.
+///
+/// Checks only the immediate `downcast_ref::<rusqlite::Error>()` on `err`
+/// (not the full cause chain the way [`is_transient_cold_start`] does),
+/// falling back to a case-insensitive substring match against the formatted
+/// error (`{err:#}`) for error shapes that don't downcast cleanly — this
+/// catches messages surfaced through `anyhow::Context` wrapping that loses
+/// the original `rusqlite::Error` type.
 pub(crate) fn is_io_open_error(err: &anyhow::Error) -> bool {
     if let Some(rusqlite::Error::SqliteFailure(f, _)) = err.downcast_ref::<rusqlite::Error>() {
         return matches!(
@@ -79,6 +115,19 @@ pub(crate) fn is_io_open_error(err: &anyhow::Error) -> bool {
 
 /// Delete stale WAL/SHM side-files (`<db>-shm`, `<db>-wal`) that can block a
 /// clean DB open after a crash. Returns `true` if anything was removed.
+///
+/// Called only from the single-retry cold-start path in
+/// `connection::get_or_init_connection` after an [`is_io_open_error`] match.
+///
+/// # Gotchas
+/// This unlinks `-wal` unconditionally — it never attempts a checkpoint
+/// first. For a database still running in legacy WAL journal mode (still
+/// explicitly supported on open, see `connection::apply_schema`), the `-wal`
+/// file can hold committed-but-not-yet-checkpointed transactions; deleting it
+/// silently discards them instead of losing only the in-flight, uncommitted
+/// write the cold-start race is meant to unstick (audit finding SC-4). Not
+/// safe to call as a general "unstick the DB" operation outside this narrow
+/// retry context.
 pub(crate) fn try_cleanup_stale_files(db_path: &Path) -> bool {
     let mut cleaned = false;
     for suffix in &["-shm", "-wal"] {
@@ -105,6 +154,18 @@ fn with_name_suffix(path: &Path, suffix: &str) -> PathBuf {
 
 /// Run `PRAGMA quick_check(1)` against `db_path` on a fresh, short-lived
 /// connection. `Ok(true)` when the structural scan reports `"ok"`.
+///
+/// `quick_check` is a fast structural scan (not the exhaustive
+/// `PRAGMA integrity_check`) — sufficient to confirm the file is no longer
+/// corrupt, but it does not verify every b-tree page or cross-reference.
+/// Opens a brand-new, uncached `Connection` (deliberately bypassing the
+/// process connection cache) so this can safely run before/independent of
+/// whatever state that cache is in.
+///
+/// # Errors
+/// Returns `Err` if the file cannot be opened or the pragma query fails
+/// (e.g. the file is missing, unreadable, or so corrupt the pragma itself
+/// errors rather than reporting a structural problem).
 fn quick_check_ok(db_path: &Path) -> Result<bool> {
     let conn = Connection::open(db_path)
         .with_context(|| format!("open for quick_check: {}", db_path.display()))?;
@@ -124,6 +185,27 @@ fn quick_check_ok(db_path: &Path) -> Result<bool> {
 /// Returns `Ok(true)` when a quarantine + rebuild happened, `Ok(false)` when a
 /// fresh `PRAGMA quick_check` now passes (the earlier failure was transient),
 /// and `Err` when the quarantine rename or the schema rebuild failed.
+///
+/// # NOTE — not wired into any production error path (audit finding SC-5)
+/// `#[allow(dead_code)]` here is not incidental: nothing in `connection.rs`
+/// currently calls this on a `SQLITE_CORRUPT` failure, so a real corruption
+/// event wedges `get_or_init_connection` (via the circuit breaker) rather
+/// than triggering this recovery. Wiring it in requires care beyond adding a
+/// call site: the two-step "drop cached connection, then rename" sequence
+/// below does not hold any lock across the gap, so a concurrent
+/// `with_connection` call for the same path can reopen and re-cache the
+/// about-to-be-quarantined file between step 1 and step 3 — its writes then
+/// land in the file this function is about to rename out from under it, and
+/// step 4's fresh `get_or_init_connection` call returns that same stale
+/// cached `Arc` instead of a connection to the newly rebuilt schema. A safe
+/// wiring needs the per-path init lock held across the whole
+/// quarantine-and-rebuild sequence.
+///
+/// # Errors
+/// Returns `Err` if quarantining any of the main/`-wal`/`-shm` files fails
+/// (e.g. permissions, or a lingering file handle keeping the rename from
+/// succeeding on platforms with mandatory file locking), or if rebuilding the
+/// schema via [`get_or_init_connection`] fails.
 #[allow(dead_code)]
 pub(crate) fn recover_corrupt_db(config: &MemoryConfig) -> Result<bool> {
     let db_path = db_path_for(config);
