@@ -77,17 +77,80 @@ pub(crate) fn is_io_open_error(err: &anyhow::Error) -> bool {
         || msg.contains("truncate file")
 }
 
-/// Delete stale WAL/SHM side-files (`<db>-shm`, `<db>-wal`) that can block a
-/// clean DB open after a crash. Returns `true` if anything was removed.
+/// Clean up WAL/SHM side-files that can block a clean DB open after a crash,
+/// **without ever discarding committed data**.
+///
+/// SQLite writes committed-but-uncheckpointed transactions into the `-wal`
+/// side-file; for a legacy DB still in WAL mode (see `connection::apply_schema`,
+/// which migrates such DBs to TRUNCATE on a *successful* open) that data lives
+/// *only* in the `-wal` until a checkpoint folds it back into the main file.
+/// Unconditionally unlinking the `-wal` here would silently drop those
+/// committed transactions. This routine therefore:
+///
+/// 1. Never unlinks the `-wal`. It first attempts a `wal_checkpoint(TRUNCATE)`
+///    so any committed frames are folded into the main DB.
+/// 2. Only if that checkpoint attempt fails does it *quarantine* the `-wal` —
+///    renaming it to a timestamped `.quarantine-<ts>` sibling that is preserved
+///    for manual recovery rather than deleted.
+/// 3. Always removes the `-shm` where present: it is a pure, rebuildable
+///    shared-memory index, and deleting it clears the stale wal-index state that
+///    drives the cold-start `IOERR_SHM*` failures (SQLite rebuilds it on open).
+///
+/// Returns `true` if anything was checkpointed, quarantined, or removed.
 pub(crate) fn try_cleanup_stale_files(db_path: &Path) -> bool {
     let mut cleaned = false;
-    for suffix in &["-shm", "-wal"] {
-        let side = with_name_suffix(db_path, suffix);
-        if side.exists() && std::fs::remove_file(&side).is_ok() {
+    let wal = with_name_suffix(db_path, "-wal");
+    let shm = with_name_suffix(db_path, "-shm");
+
+    if wal.exists() {
+        if try_checkpoint(db_path) {
+            // Committed frames (if any) are now folded into the main DB; a
+            // successful TRUNCATE checkpoint also drops the `-wal` on close.
+            cleaned = true;
+        } else if quarantine_file(&wal) {
+            // The checkpoint failed — preserve the WAL's committed frames by
+            // renaming rather than destroying them, but still unblock the open.
             cleaned = true;
         }
     }
+
+    // The `-shm` never holds durable data, so deleting it is always safe.
+    if shm.exists() && std::fs::remove_file(&shm).is_ok() {
+        cleaned = true;
+    }
+
     cleaned
+}
+
+/// Open `db_path` on a short-lived connection and run
+/// `PRAGMA wal_checkpoint(TRUNCATE)` to fold committed WAL frames back into the
+/// main database. Returns `true` only when the checkpoint completed (the `busy`
+/// flag is `0`); any open/query failure yields `false` so the caller quarantines
+/// the `-wal` instead of trusting a partial or missed checkpoint.
+fn try_checkpoint(db_path: &Path) -> bool {
+    let conn = match Connection::open(db_path) {
+        Ok(conn) => conn,
+        Err(_) => return false,
+    };
+    let _ = conn.busy_timeout(SQLITE_BUSY_TIMEOUT);
+    // `wal_checkpoint` returns `(busy, log_frames, checkpointed_frames)`; a
+    // `busy` of `0` means every committed frame was checkpointed.
+    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+        row.get::<_, i64>(0)
+    })
+    .map(|busy| busy == 0)
+    .unwrap_or(false)
+}
+
+/// Quarantine `path` by renaming it to a sibling `<name>.quarantine-<ts>` file,
+/// preserving its contents for manual recovery. Returns `true` on success.
+fn quarantine_file(path: &Path) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    let ts = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let dst = with_name_suffix(path, &format!(".quarantine-{ts}"));
+    std::fs::rename(path, &dst).is_ok()
 }
 
 /// Append `suffix` to the *file name* of `path` (so `chunks.db` + `-wal`
