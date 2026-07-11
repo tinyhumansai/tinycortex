@@ -13,6 +13,15 @@
 //! ## 2026-04-21T10:12:40Z — Bob
 //! Reply body here.
 //! ```
+//!
+//! NOTE: `author` and `text` are rendered verbatim into the boundary line
+//! (`## <timestamp> — <author>`) with no escaping (known gap, see audit finding
+//! QI-14 in `docs/spec/audit/04-queue-ingest.md`). A message body containing a
+//! line that itself starts with `## ` is structurally indistinguishable from a
+//! new message boundary and will be split into a bogus extra chunk by the
+//! downstream Markdown chunker. Callers that accept untrusted message text
+//! should sanitise or escape leading `## ` sequences before calling
+//! [`canonicalise`] if boundary-splitting must be prevented.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

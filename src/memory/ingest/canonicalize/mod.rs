@@ -27,6 +27,21 @@ use crate::memory::chunks::{Metadata, SourceRef};
 ///
 /// On an unparseable string a serde error is returned (no silent default).
 /// Shared across chat, email, and document canonicalisers.
+///
+/// NOTE: known gap (audit finding QI-15 in
+/// `docs/spec/audit/04-queue-ingest.md`) — both the `Millis` branch and the
+/// decimal-string fallback accept **any** parseable `i64` as epoch
+/// milliseconds with no range check. A caller that accidentally sends
+/// epoch-**seconds** (~10 orders of magnitude smaller) has that value silently
+/// accepted and interpreted as epoch-milliseconds, producing a timestamp near
+/// the Unix epoch (1970) instead of a serde error. The resulting timestamp
+/// feeds `timestamp` / `time_range` on the [`Metadata`] each canonicaliser
+/// seeds, which in turn drive tree ordering and flush-staleness math — a
+/// poisoned timestamp here can misorder chunks or make a fresh chunk look
+/// arbitrarily stale. Callers
+/// should range-check values below roughly `1e11` (below year ~1973 in
+/// milliseconds) before they reach this deserializer if they cannot guarantee
+/// the unit.
 pub(crate) fn deserialize_flexible_timestamp<'de, D>(
     deserializer: D,
 ) -> Result<DateTime<Utc>, D::Error>
