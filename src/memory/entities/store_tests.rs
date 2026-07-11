@@ -124,6 +124,47 @@ fn upsert_preserves_user_notes_body() {
 }
 
 #[test]
+fn get_entity_reads_file_with_closing_fence_at_eof() {
+    // An editor that strips the trailing blank line and newline leaves the
+    // closing `---` fence at end-of-file. The entity must still be readable
+    // and round-trip through a re-upsert (regression: RS-14).
+    let (_t, c) = cfg();
+    put_entity(&c, alice()).unwrap();
+    let path = entity_path(&c, EntityKind::Person, "person:alice");
+    let text = fs::read_to_string(&path).unwrap();
+    let trimmed = text.trim_end_matches('\n'); // now ends in "...---"
+    assert!(trimmed.ends_with("---"));
+    fs::write(&path, trimmed).unwrap();
+
+    let got = get_entity(&c, EntityKind::Person, "person:alice")
+        .unwrap()
+        .expect("entity with EOF fence is still readable");
+    assert_eq!(got.id, "person:alice");
+
+    // Re-upserting must not fail or corrupt the file.
+    put_entity(&c, alice()).unwrap();
+    assert!(get_entity(&c, EntityKind::Person, "person:alice")
+        .unwrap()
+        .is_some());
+}
+
+#[test]
+fn put_entity_refuses_to_clobber_unparsable_non_empty_file() {
+    // A non-empty file the parser cannot recognize must never be silently
+    // overwritten, or the user's hand-typed notes would be destroyed.
+    let (_t, c) = cfg();
+    let path = entity_path(&c, EntityKind::Person, "person:alice");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let precious = "These are irreplaceable notes with no front matter.\n";
+    fs::write(&path, precious).unwrap();
+
+    let result = put_entity(&c, alice());
+    assert!(result.is_err(), "put_entity must refuse the write");
+    let after = fs::read_to_string(&path).unwrap();
+    assert_eq!(after, precious, "original contents must be preserved");
+}
+
+#[test]
 fn entity_file_lands_at_expected_path() {
     let (_t, c) = cfg();
     put_entity(&c, alice()).unwrap();
