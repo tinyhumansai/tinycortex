@@ -31,6 +31,8 @@ pub fn scrub_for_log(input: &str) -> String {
     truncate(out)
 }
 
+/// Cap `s` at [`MAX_LEN`] bytes, appending a `…(truncated, N more bytes)`
+/// suffix when it was cut. No-op when `s` already fits.
 fn truncate(mut s: String) -> String {
     if s.len() <= MAX_LEN {
         return s;
@@ -47,6 +49,9 @@ fn truncate(mut s: String) -> String {
     s
 }
 
+/// Lazily-compiled, process-lifetime regex/replacement pairs applied in order
+/// by [`scrub_for_log`]. Compiled once via [`OnceLock`] since `Regex::new` is
+/// not cheap and this runs on every scrubbed string.
 fn patterns() -> &'static [(Regex, &'static str)] {
     static PATTERNS: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
     PATTERNS.get_or_init(|| {

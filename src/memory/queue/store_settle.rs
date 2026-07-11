@@ -118,6 +118,15 @@ pub fn mark_failed_typed(
 ///
 /// `reason` is recorded in `last_error` for visibility and `started_at_ms` is
 /// cleared so the next claim stamps a fresh start time.
+///
+/// There is no cap on how many times a row may be deferred, and deferring
+/// never advances toward `max_attempts`. A handler that repeatedly makes no
+/// progress and always returns `JobOutcome::Defer` (rather than eventually
+/// erroring) re-defers the same row forever at zero budget cost — this
+/// function has no way to distinguish that from legitimate rate-limit
+/// backoff. Callers that need a bound should track defer count or job age in
+/// the payload and translate it to an `Err` (burning the retry budget) once a
+/// cap is hit.
 pub fn mark_deferred(config: &MemoryConfig, job: &Job, until_ms: i64, reason: &str) -> Result<()> {
     let job_id = &job.id;
     let claim_attempts = job.attempts as i64;
@@ -172,6 +181,15 @@ pub fn recover_stale_locks(config: &MemoryConfig) -> Result<usize> {
 /// on next launch instead of waiting out the lease. The core runs a single
 /// worker pool, so any `running` row at clean-shutdown time was claimed by us.
 /// Returns the number of rows released.
+///
+/// Unlike [`mark_deferred`], this does **not** revert the `attempts` bump
+/// [`claim_next`](super::store::claim_next) applied when the row was claimed
+/// — released rows keep the attempt they were charged for. A process that is
+/// restarted repeatedly mid-job (e.g. five graceful shutdowns while the same
+/// job is running) burns through `max_attempts` purely from the
+/// release/re-claim cycle, with no actual handler failure involved, and the
+/// row can end up settled `failed` without ever having been given a real
+/// chance to complete.
 pub fn release_running_locks(config: &MemoryConfig) -> Result<usize> {
     with_connection(config, |conn| {
         let n = conn.execute(
