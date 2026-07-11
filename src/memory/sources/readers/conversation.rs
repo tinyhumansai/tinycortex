@@ -71,6 +71,15 @@ impl SourceReader for ConversationReader {
         Ok(items)
     }
 
+    /// Read one thread's content by its `item_id` (the thread's file stem, as
+    /// produced by [`list_items`](Self::list_items)).
+    ///
+    /// NOTE: the traversal guard below rejects any `item_id` containing the
+    /// substring `".."`, not just path-separator-adjacent `..` segments. A
+    /// thread file whose stem legitimately contains `".."` (e.g.
+    /// `standup..2026.json`, which [`list_items`](Self::list_items) itself
+    /// would happily produce as an id) is therefore unreadable even though it
+    /// poses no traversal risk once separators are excluded.
     async fn read_item(
         &self,
         _source: &MemorySourceEntry,

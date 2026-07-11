@@ -9,6 +9,15 @@
 //!
 //! Every mutation follows the spec's atomic load-modify-validate-save cycle:
 //! load the current file, apply the change in memory, validate, and persist.
+//! Each on-disk write (`SourceRegistry::atomic_write`) is atomic (temp file +
+//! rename), so a crash mid-write cannot leave a truncated `config.toml`.
+//!
+//! NOTE: the load-modify-save cycle itself is *not* locked — there is no mutex
+//! or file lock guarding the read-mutate-write window (contrast the diff
+//! ledger's `WRITE_LOCK` or goals' mutation lock). Two concurrent mutations on
+//! the same registry race: the second writer's `list()` snapshot does not see
+//! the first writer's change, so its `write_all` silently overwrites it —
+//! last writer wins and one mutation is lost.
 
 use std::path::{Path, PathBuf};
 
@@ -102,6 +111,13 @@ impl SourceRegistry {
     /// and then renamed over the config. This keeps a failed/crashed write from
     /// leaving a truncated `config.toml`, matching the OpenHuman source
     /// registry contract.
+    ///
+    /// NOTE: this re-reads the file via [`SourceRegistry::read_table`] to
+    /// obtain the "other top-level keys" to preserve. That read is a second,
+    /// unsynchronized file access separate from whatever `list()` call the
+    /// caller used to build `entries` — under concurrent writers the two reads
+    /// can observe different file versions, so `entries` and the preserved
+    /// keys in the final file may not have come from the same snapshot.
     fn write_all(&self, entries: &[MemorySourceEntry]) -> Result<()> {
         let mut table = self.read_table()?;
         let value = toml::Value::try_from(entries).context("failed to encode memory_sources")?;

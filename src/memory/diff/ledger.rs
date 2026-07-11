@@ -71,6 +71,12 @@ pub struct SnapshotMeta {
 
 impl Ledger {
     /// Open the ledger, initialising the repository on first use.
+    ///
+    /// NOTE: any `Repository::open` failure — not only "repo doesn't exist
+    /// yet" — falls through to `Repository::init` on the same path. A
+    /// transiently-locked or genuinely corrupt repository is therefore
+    /// silently re-initialised rather than surfaced as an error, which can
+    /// discard ledger history instead of reporting the real problem.
     pub fn open(workspace_dir: &Path) -> Result<Self> {
         let repo_path = workspace_dir.join("memory_diff").join("repo");
         std::fs::create_dir_all(&repo_path)
