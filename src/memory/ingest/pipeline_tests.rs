@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use chrono::{TimeZone, Utc};
@@ -5,7 +6,8 @@ use tempfile::TempDir;
 
 use super::{ingest_chat, ingest_document, ingest_document_versioned, ingest_email_with_raw_refs};
 use crate::memory::chunks::{
-    count_chunks, get_chunk_lifecycle_status, CHUNK_STATUS_PENDING_EXTRACTION,
+    count_chunks, get_chunk_lifecycle_status, is_source_ingested, SourceKind,
+    CHUNK_STATUS_PENDING_EXTRACTION,
 };
 use crate::memory::chunks::{get_chunk_raw_refs, RawRef};
 use crate::memory::config::MemoryConfig;
@@ -23,6 +25,24 @@ struct RecordingJobSink {
 
 impl TreeJobSink for RecordingJobSink {
     fn enqueue_extract(&self, chunk_id: &str) -> anyhow::Result<()> {
+        self.ids.lock().unwrap().push(chunk_id.to_string());
+        Ok(())
+    }
+}
+
+/// Sink that fails enqueue while `fail` is set, to simulate a post-gate stage
+/// error. Records ids on the successful path so a retry can be asserted.
+#[derive(Default)]
+struct TogglingJobSink {
+    fail: AtomicBool,
+    ids: Mutex<Vec<String>>,
+}
+
+impl TreeJobSink for TogglingJobSink {
+    fn enqueue_extract(&self, chunk_id: &str) -> anyhow::Result<()> {
+        if self.fail.load(Ordering::SeqCst) {
+            anyhow::bail!("simulated enqueue failure");
+        }
         self.ids.lock().unwrap().push(chunk_id.to_string());
         Ok(())
     }
@@ -157,6 +177,53 @@ async fn second_document_ingest_with_same_source_id_is_short_circuited() {
     assert!(second.chunk_ids.is_empty());
 
     assert_eq!(count_chunks(&cfg).unwrap(), first.chunks_written as u64);
+}
+
+#[tokio::test]
+async fn failed_document_ingest_releases_gate_so_retry_ingests() {
+    let (_tmp, cfg) = test_config();
+    let sink = TogglingJobSink::default();
+    let scoring = ScoringConfig::default_regex_only();
+
+    let doc = DocumentInput {
+        provider: "notion".into(),
+        title: "Launch plan".into(),
+        body: "Phoenix ships Friday after staging review. alice@example.com owns this.".into(),
+        modified_at: Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+        source_ref: Some("notion://page/abc".into()),
+    };
+
+    // First attempt: a post-gate stage (enqueue) fails. The whole ingest must
+    // error, and the source gate must NOT be left claimed.
+    sink.fail.store(true, Ordering::SeqCst);
+    let err = ingest_document(
+        &cfg,
+        "notion:abc",
+        "alice",
+        vec![],
+        doc.clone(),
+        &sink,
+        &scoring,
+    )
+    .await;
+    assert!(err.is_err(), "forced enqueue failure should surface as Err");
+    assert!(
+        !is_source_ingested(&cfg, SourceKind::Document, "notion:abc").unwrap(),
+        "a failed ingest must release the source gate (no zero-chunk claim)",
+    );
+
+    // Retry: the gate was released, so the document actually ingests this time.
+    sink.fail.store(false, Ordering::SeqCst);
+    let retry = ingest_document(&cfg, "notion:abc", "alice", vec![], doc, &sink, &scoring)
+        .await
+        .unwrap();
+    assert!(
+        !retry.already_ingested,
+        "retry after a failed ingest must not report already-ingested",
+    );
+    assert!(retry.chunks_written >= 1);
+    assert_eq!(retry.extract_jobs_enqueued, retry.chunk_ids.len());
+    assert!(is_source_ingested(&cfg, SourceKind::Document, "notion:abc").unwrap());
 }
 
 #[tokio::test]

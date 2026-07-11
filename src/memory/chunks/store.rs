@@ -395,6 +395,6 @@ pub(super) fn ms_to_utc(ms: i64) -> rusqlite::Result<DateTime<Utc>> {
 
 pub use super::store_sources::{
     claim_source_ingest_tx, count_chunks_by_lifecycle_status, count_raw_paths_ingested_with_prefix,
-    filter_raw_paths_not_ingested, get_chunk_lifecycle_status, is_source_ingested,
-    mark_raw_paths_ingested, set_chunk_lifecycle_status, RAW_FILE_GATE_KIND,
+    delete_source_ingest, filter_raw_paths_not_ingested, get_chunk_lifecycle_status,
+    is_source_ingested, mark_raw_paths_ingested, set_chunk_lifecycle_status, RAW_FILE_GATE_KIND,
 };

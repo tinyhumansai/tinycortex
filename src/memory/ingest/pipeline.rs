@@ -16,9 +16,9 @@ use anyhow::{anyhow, bail, Result};
 use chrono::Utc;
 
 use crate::memory::chunks::{
-    self, chunk_markdown, claim_source_ingest_tx, get_chunk_lifecycle_status, is_source_ingested,
-    set_chunk_lifecycle_status, set_chunk_raw_refs, upsert_chunks, with_connection, ChunkerInput,
-    ChunkerOptions, SourceKind, CHUNK_STATUS_PENDING_EXTRACTION,
+    self, chunk_markdown, claim_source_ingest_tx, delete_source_ingest, get_chunk_lifecycle_status,
+    is_source_ingested, set_chunk_lifecycle_status, set_chunk_raw_refs, upsert_chunks,
+    with_connection, ChunkerInput, ChunkerOptions, SourceKind, CHUNK_STATUS_PENDING_EXTRACTION,
 };
 use crate::memory::config::MemoryConfig;
 use crate::memory::score::{persist_score, score_chunks_fast, ScoringConfig};
@@ -60,7 +60,14 @@ pub async fn ingest_canonical(
 
     // 2. Authoritative source gate (documents only). Claimed before any write
     //    so two concurrent ingests of the same document can't both proceed.
-    if source_kind == SourceKind::Document {
+    //
+    //    The gate row is committed in its own transaction (staging/scoring is
+    //    async and can't hold a SQLite transaction across `.await`). To keep the
+    //    gate honest we treat it as a *reservation*: if any later stage fails we
+    //    release it (see the compensation below) so the document is never left
+    //    permanently marked ingested with zero persisted chunks — a retry can
+    //    then re-claim and finish the job.
+    let gate_key: Option<String> = if source_kind == SourceKind::Document {
         let gate_key = match opts.gate_version_ms {
             Some(v) => format!("{source_id}@{v}"),
             None => source_id.to_string(),
@@ -75,8 +82,41 @@ pub async fn ingest_canonical(
         if !claimed {
             return Ok(IngestSummary::already_ingested(source_id));
         }
-    }
+        Some(gate_key)
+    } else {
+        None
+    };
 
+    // Run the remaining persist/score/enqueue stages. On any failure after the
+    // gate was claimed, release the reservation so a retry is not short-circuited.
+    let result = persist_score_enqueue(config, source_id, chunks, sink, scoring, opts).await;
+    if result.is_err() {
+        if let Some(key) = gate_key.as_deref() {
+            if let Err(cleanup_err) = delete_source_ingest(config, source_kind, key) {
+                // Best-effort: the original error is the one worth surfacing, but
+                // a failed release would leave the source wrongly gated, so make
+                // the operator aware of it.
+                eprintln!(
+                    "ingest: failed to release source gate {key} after ingest error: {cleanup_err}"
+                );
+            }
+        }
+    }
+    result
+}
+
+/// Persist chunk bodies + rows, fast-score, and enqueue extract jobs.
+///
+/// Split out from [`ingest_canonical`] so the source-gate reservation can wrap
+/// exactly this fallible tail and compensate (release the gate) on any error.
+async fn persist_score_enqueue(
+    config: &MemoryConfig,
+    source_id: &str,
+    chunks: Vec<crate::memory::chunks::Chunk>,
+    sink: &dyn TreeJobSink,
+    scoring: &ScoringConfig,
+    opts: &IngestOptions,
+) -> Result<IngestSummary> {
     // 3. Write each chunk body to the content store (atomic write + sha256).
     let content_root = chunks::content_root(config);
     content::stage_chunks(&content_root, &chunks)
