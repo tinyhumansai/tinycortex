@@ -9,6 +9,13 @@ source syncs, what did its world view gain, lose, or revise? TinyCortex answers
 this by snapshotting a source's already-ingested items into a git repository and
 diffing those snapshots with git's native tree-diff machinery.
 
+The module is compiled only when the crate's **`git-diff` Cargo feature** is
+enabled (it is off by default and pulls in `git2`/libgit2):
+
+```bash
+cargo test --features git-diff
+```
+
 The module lives under `src/memory/diff/`. The public entry point is
 [`DiffEngine`](#diffengine), generic over an injected
 [`SnapshotItemSource`](sources.md). Domain types
