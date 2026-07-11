@@ -190,7 +190,17 @@ pub async fn score_chunk(chunk: &Chunk, cfg: &ScoringConfig) -> Result<ScoreResu
                         scoring_token_count,
                         &extracted,
                     );
-                    true
+                    // `LlmEntityExtractor::extract` never returns `Err`: every
+                    // failure path (transport, HTTP status, malformed JSON)
+                    // soft-falls back to `Ok(ExtractedEntities::default())`
+                    // with `llm_importance: None`. So an `Ok` alone does NOT
+                    // mean an importance signal was produced. Only treat the
+                    // LLM as "consulted" — and thus switch to the full,
+                    // importance-weighted combine — when an importance value is
+                    // actually present. Otherwise a `0.0` importance would flow
+                    // through the `llm_importance` weight and drag borderline
+                    // chunks below the drop threshold, silently discarding them.
+                    extracted.llm_importance.is_some()
                 }
                 Err(_e) => {
                     // LLM extractor failed — fall back to cheap signals only.
@@ -206,14 +216,16 @@ pub async fn score_chunk(chunk: &Chunk, cfg: &ScoringConfig) -> Result<ScoreResu
 
     // 4. Final weighted combine.
     //
-    // If the LLM ran, its importance signal is populated → use the full
-    // `combine` which includes the `llm_importance` weight.
+    // If the LLM ran AND produced an importance signal, `llm_consulted` is
+    // `true` → use the full `combine` which includes the `llm_importance`
+    // weight.
     //
-    // If the LLM was skipped (short-circuited or not configured) OR failed,
-    // using the full combine would pin `llm_importance * w.llm_importance =
-    // 0 * 2.0` into the numerator while still dividing by the full denominator
-    // — artificially dragging the total down. Fall back to `combine_cheap_only`
-    // which excludes that term from both numerator and denominator.
+    // If the LLM was skipped (short-circuited or not configured), failed, or
+    // soft-fell back to an empty extraction with no importance, using the full
+    // combine would pin `llm_importance * w.llm_importance = 0 * 2.0` into the
+    // numerator while still dividing by the full denominator — artificially
+    // dragging the total down. Fall back to `combine_cheap_only` which excludes
+    // that term from both numerator and denominator.
     let mut total = if llm_consulted {
         self::signals::combine(&signals, &cfg.weights)
     } else {

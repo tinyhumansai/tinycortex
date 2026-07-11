@@ -176,6 +176,75 @@ async fn llm_failure_falls_back_gracefully() {
     assert_eq!(r.signals.llm_importance, 0.0);
 }
 
+/// Regression: `LlmEntityExtractor::extract` never returns `Err` — every
+/// failure path soft-falls back to `Ok(ExtractedEntities::default())` with
+/// `llm_importance: None`. Treating that `Ok` as "LLM consulted" would push a
+/// `0.0` importance through the full weighted combine (weight `2.0`), dragging
+/// borderline chunks below the drop threshold and silently discarding them —
+/// the opposite of the intended soft-fallback. The full combine must be gated
+/// on the importance actually being present, not merely on `Ok`.
+#[tokio::test]
+async fn ok_without_importance_falls_back_to_cheap_only() {
+    /// Mirrors `LlmEntityExtractor`'s soft-fallback contract: returns `Ok`
+    /// with `llm_importance: None`.
+    struct NullLlm {
+        call_count: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl extract::EntityExtractor for NullLlm {
+        fn name(&self) -> &'static str {
+            "null-llm"
+        }
+        async fn extract(&self, _text: &str) -> Result<extract::ExtractedEntities> {
+            self.call_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(extract::ExtractedEntities::default())
+        }
+    }
+
+    let c = test_chunk(
+        "We decided to ship Phoenix on Friday after reviewing alice@example.com and \
+         the migration plan carefully. @bob will coordinate and we discussed \
+         #launch-q2 details extensively in the email thread.",
+    );
+    let llm = std::sync::Arc::new(NullLlm {
+        call_count: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let mut cfg = ScoringConfig::with_llm_extractor(llm.clone());
+    // Force the chunk into the borderline band so the LLM is actually consulted.
+    cfg.definite_drop_threshold = 0.0;
+    cfg.definite_keep_threshold = 1.0;
+    let r = score_chunk(&c, &cfg).await.unwrap();
+
+    // The LLM ran but yielded no importance signal.
+    assert_eq!(
+        llm.call_count.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "LLM should be consulted for a borderline chunk"
+    );
+    assert!(
+        r.signals.llm_importance == 0.0,
+        "no importance signal was produced"
+    );
+
+    // Because no importance was produced, the total must fall back to the
+    // cheap-only combine — NOT the full LLM-weighted combine (which would drag
+    // the total down through a zero-valued llm_importance term).
+    let expected = signals::combine_cheap_only(&r.signals, &cfg.weights);
+    assert!(
+        (r.total - expected).abs() < 1e-6,
+        "total={} expected(cheap_only)={}",
+        r.total,
+        expected
+    );
+    // A chunk that clears the cheap threshold must be kept.
+    assert!(
+        r.kept,
+        "chunk passing the cheap threshold must be kept, got total={}",
+        r.total
+    );
+}
+
 /// When LLM is skipped (short-circuit or failure), the reported `total` must
 /// equal `combine_cheap_only(signals, weights)` — not the LLM-weighted
 /// `combine` (which would drag `llm_importance=0` through a 2.0 weight and
