@@ -164,3 +164,45 @@ fn stage_summary_rewrites_stale_on_disk_body() {
     assert!(disk_str.contains(new_body));
     assert!(!disk_str.contains("STALE BODY CONTENT"));
 }
+
+#[test]
+fn stage_summary_stale_rewrite_leaves_no_temp_litter() {
+    let dir = TempDir::new().unwrap();
+    let children = vec!["c1".to_string()];
+    let new_body = "fresh body for hygiene test";
+    let input = mk_summary_input(
+        SummaryTreeKind::Source,
+        "gmail:hyg@test.com",
+        "summary:L1:hyg-test",
+        new_body,
+        &children,
+    );
+
+    let first = stage_summary(dir.path(), &input, "gmail-hyg-test-com").unwrap();
+    let mut abs = dir.path().to_path_buf();
+    for part in first.content_path.split('/') {
+        abs.push(part);
+    }
+    // Corrupt the on-disk body so the next stage takes the stale-rewrite path.
+    std::fs::write(&abs, b"---\nstale: true\n---\nSTALE BODY").unwrap();
+
+    stage_summary(dir.path(), &input, "gmail-hyg-test-com").unwrap();
+
+    // Destination holds the fully-replaced new content (old-or-new, never torn).
+    let disk = std::fs::read_to_string(&abs).unwrap();
+    assert!(disk.contains(new_body));
+    assert!(!disk.contains("STALE BODY"));
+
+    // The atomic temp file must have been renamed away, not left behind.
+    let summary_dir = abs.parent().unwrap();
+    let target_name = abs.file_name().unwrap().to_string_lossy().to_string();
+    let leftovers: Vec<_> = std::fs::read_dir(summary_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .filter(|name| *name != target_name)
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "stale rewrite must not leave temp files behind, found: {leftovers:?}"
+    );
+}
