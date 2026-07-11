@@ -279,17 +279,20 @@ Curve:
 
 ![Memory decay](.gitbook/assets/memory-decay@2x.png)
 
-- **New memories** start with high retention.
-- **Unaccessed memories** decay — their importance decreases over time.
-- **Recalled or interacted-with memories** are reinforced — retention resets and
-  strengthens.
-- **Decayed memories** are effectively pruned, keeping the system lean without
-  manual cleanup.
+- **New memories** rank high — the freshness signal starts at 1.0.
+- **Aging memories** decay — freshness halves every `half_life_days` (7 by
+  default), so importance at query time decreases with age.
+- **Updated memories** are refreshed — decay is computed from `updated_at`, so
+  writing to a memory resets its freshness clock.
+- **Decayed memories** effectively drop out of recall, keeping results lean
+  without manual cleanup.
 
-Decay and interaction reinforcement work together: a frequently recalled memory
-resists decay and stays front and center, while a memory ingested once and never
-touched fades. In the type surface this surfaces through the `freshness` signal
-(driven by `updated_at`) and the freshness weight in the active profile.
+Note the mechanism precisely: decay is a **stateless, query-time function** of
+`updated_at` — there is no persisted retention score that is written down over
+time, and merely *recalling* a memory does not reinforce it. Interaction
+weighting (authored/reply/dm/mention signals) shapes a memory's admission score
+once, at ingest. In the type surface all of this appears as the `freshness`
+signal and the freshness weight in the active profile.
 
 ## Conscious recall
 

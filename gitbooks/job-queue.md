@@ -8,7 +8,7 @@ TinyCortex replaces the synchronous `append_leaf → cascade_seal → LLM summar
 
 All queue state lives in the same `chunks.db` as `mem_tree_chunks` — the `mem_tree_jobs` table and its dedupe index are owned by the shared chunks schema, so a producer can commit its side-effect and its follow-up job atomically. The queue module owns the in-crate control flow (payload parsing, follow-up enqueues, gating, defer); the genuinely external heavy work sits behind the [`QueueDelegates`](#queuedelegates-the-heavy-work-seam) trait.
 
-Source: `src/memory/queue/` (`types.rs`, `store.rs`, `handlers.rs`, `worker.rs`, `scheduler.rs`, `gate.rs`).
+Source: `src/memory/queue/` (`types.rs`, `store.rs`, `handlers.rs`, `worker.rs`, `scheduler.rs`, `gate.rs`, plus `ops.rs`, `redact.rs`, `store_settle.rs`, and the async `runtime/` submodule, which is compiled only with the crate's `tokio` Cargo feature).
 
 ## Pipeline shape
 

@@ -174,7 +174,7 @@ assert_eq!(hits.len(), 1);
 assert_eq!(hits[0].record.namespace, "default");
 ```
 
-Heavier dependencies are bundled, so a from-source build is self-contained: `rusqlite` is pulled in with the `bundled` feature (no system SQLite needed) and `git2` backs the diff ledger. Tokio and `tempfile` are dev-dependencies used by the tests, not part of the library's own dependency set.
+Heavier dependencies are bundled, so a from-source build is self-contained: `rusqlite` is pulled in with the `bundled` feature (no system SQLite needed), and `git2` backs the diff ledger when the optional `git-diff` feature is enabled. `tempfile` is a dev-only dependency used by the tests. Tokio appears twice: as a dev-dependency for the test suite, and as a **real optional dependency** behind the crate's `tokio` feature, which powers the async job-queue worker loops in `memory::queue::runtime`. With the default (empty) feature set, none of these optional dependencies are compiled.
 
 ## See also
 

@@ -136,21 +136,19 @@ only**: it normalizes casing and decoration so cross-source mentions of the same
 thing collapse onto one registry file, but it does *not* attempt fuzzy matching
 (e.g. `alice-slack` ≡ `Alice-Discord`), which would risk false merges.
 
-Normalization rules per kind:
+Normalization rules:
 
 | Kind | Rule | Example |
 | --- | --- | --- |
-| `email` | lowercase | `email:alice@example.com` |
-| `handle` | lowercase, strip leading `@` | `handle:alice` |
-| `hashtag` | lowercase, strip leading `#` | `hashtag:rust` |
-| `topic` | lowercase, strip leading `@`/`#` | `topic:memory` |
 | `url` | **case preserved**, trimmed only | `url:https://Example.com/Path` |
-| all others | lowercase surface | `person:alice` |
+| every other kind | lowercase, strip a leading `@` then a leading `#` | `handle:@Alice` → `handle:alice`, `hashtag:#Rust` → `hashtag:rust`, `person:Alice` → `person:alice` |
 
-URLs keep their original case because path and query components are
-case-significant; folding them would break exact matching. Every other kind is
-lowercased so casing never fragments an identity. (The surface is also `trim()`ed
-before normalization in every case.)
+The code does not branch per kind beyond the URL exception: the same
+lowercase-and-strip transform applies uniformly, so a stray leading `@` or `#`
+is stripped from an `email` or `person` surface just as it is from a `handle`
+or `hashtag`. URLs keep their original case because path and query components
+are case-significant; folding them would break exact matching. (The surface is
+also `trim()`ed before normalization in every case.)
 
 The filename stem comes from `slugify_id(id)`, which replaces `:` along with the
 Windows-reserved characters (`/ \ : * ? " < > |`), the NUL byte, and any control

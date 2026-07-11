@@ -1,10 +1,58 @@
 # TinyCortex Benchmarks
 
-Benchmark results for TinyCortex Mark 1 (`mk1`). All benchmarks compare TinyCortex against other memory and RAG methods including vector databases, FastGraphRAG, Mem0, SuperMemory, and directfeed (raw context window).
+This directory contains the benchmark tooling that ships with the open-source
+Rust crate, plus headline results from evaluations of the hosted TinyCortex
+platform.
+
+There are two distinct things here — please don't confuse them:
+
+1. **[`effectiveness/`](./effectiveness/README.md)** — the reproducible,
+   in-repo benchmark. A standalone Rust harness that measures retrieval
+   quality (recall@k, precision@k, hit@k, MRR, nDCG@k) over labeled datasets.
+2. **Hosted platform evaluations** (RAGAS, TemporalBench, BABILong,
+   Vending-Bench, below) — results measured against the broader TinyCortex
+   system (`tinycortex_v1`). The harness that produced them is **not included
+   in this repository**, so these numbers are *reported*, not reproducible
+   from this repo.
 
 ---
 
-## RAGAS (Sherlock Holmes Corpus)
+## Reproducible: retrieval-effectiveness harness
+
+The only benchmark you can run from this repository today:
+
+```bash
+cd benchmarks/effectiveness
+cargo run --bin effectiveness
+# options: --dataset PATH   (default: data/fixtures_v1.json)
+#          --out DIR        (default: results/)
+#          --label LABEL    (default: $GIT_SHA or "local")
+cargo test    # unit tests for the metrics + dataset validation
+```
+
+It path-depends on the `tinycortex` crate and exercises the lexical
+`InMemoryMemoryStore` baseline over a hand-labeled seed corpus
+(`data/fixtures_v1.json`, 10 documents / 12 queries). Output is a summary
+table on stdout plus a dated JSON report under `results/` (gitignored, so
+runs are diffable across commits without polluting history).
+
+See [`effectiveness/README.md`](./effectiveness/README.md) for the dataset
+format, metrics, how to add a backend, and the roadmap (engine-backed and
+real-embedding modes are planned but not yet implemented).
+
+---
+
+## Reported: hosted platform evaluations
+
+> **Not reproducible from this repo.** The results below were measured for
+> TinyCortex Mark 1 (`tinycortex_v1` — GraphRAG with time-decay and
+> interaction weighting) using an evaluation harness that is not part of this
+> repository. The comparison methods (FastGraphRAG, Mem0, SuperMemory,
+> gemini_vdb, e2graphrag, scratchpad, directfeed) are likewise not vendored
+> here. Charts are pre-rendered. Treat these as system-level results for the
+> hosted platform, which the open-source Rust core contributes to.
+
+### RAGAS (Sherlock Holmes Corpus)
 
 **What it measures:** Standard retrieval-augmented generation quality — answer correctness, faithfulness, answer relevancy, context precision, and context recall.
 
@@ -13,7 +61,7 @@ Benchmark results for TinyCortex Mark 1 (`mk1`). All benchmarks compare TinyCort
 **Methods compared:** tinycortex_v1, fastgraphrag, gemini_vdb, mem0, supermemory
 
 <div align="center">
-<img src=".github/images/chart_ragas.png" alt="RAGAS Benchmark Scores" width="700"/>
+<img src="../docs/images/chart_ragas.png" alt="RAGAS Benchmark Scores" width="700"/>
 </div>
 
 **Key results:**
@@ -29,7 +77,7 @@ TinyCortex achieves the highest Answer Relevancy score by a significant margin (
 
 ---
 
-## TemporalBench
+### TemporalBench
 
 **What it measures:** Temporal reasoning accuracy — can the memory system correctly answer questions about event ordering, state at a specific time, recency, intervals, and sequences?
 
@@ -38,7 +86,7 @@ TinyCortex achieves the highest Answer Relevancy score by a significant margin (
 **Methods compared:** tinycortex_v1, directfeed, e2graphrag, mem0, supermemory
 
 <div align="center">
-<img src=".github/images/chart_temporalbench.png" alt="TemporalBench Accuracy" width="700"/>
+<img src="../docs/images/chart_temporalbench.png" alt="TemporalBench Accuracy" width="700"/>
 </div>
 
 **Key results:**
@@ -50,11 +98,11 @@ TinyCortex achieves the highest Answer Relevancy score by a significant margin (
 | State at Time | 60% | **80%** | e2graphrag |
 | Sequence | 30% | **80%** | directfeed |
 
-TinyCortex achieves **perfect accuracy on recency questions** (100%), directly demonstrating the effectiveness of its Ebbinghaus time-decay model — recent memories naturally have higher retention scores. The directfeed method (feeding full context to the LLM) performs well on interval and sequence questions where having the complete timeline helps, but this approach doesn't scale beyond context window limits.
+TinyCortex achieves **perfect accuracy on recency questions** (100%), reflecting its time-decay ranking — recent memories score higher at query time. The directfeed method (feeding full context to the LLM) performs well on interval and sequence questions where having the complete timeline helps, but this approach doesn't scale beyond context window limits.
 
 ---
 
-## BABILong (Needle in a Haystack)
+### BABILong (Needle in a Haystack)
 
 **What it measures:** Whether a retrieval method can find specific facts ("needles") embedded within increasingly large contexts of distractor text.
 
@@ -63,7 +111,7 @@ TinyCortex achieves **perfect accuracy on recency questions** (100%), directly d
 **Methods compared:** tinycortex_v1, directfeed
 
 <div align="center">
-<img src=".github/images/heatmap_babilong.png" alt="BABILong Heatmap" width="600"/>
+<img src="../docs/images/heatmap_babilong.png" alt="BABILong Heatmap" width="600"/>
 </div>
 
 **Key results:**
@@ -79,7 +127,7 @@ TinyCortex is the **only method that successfully retrieves needles**, scoring 3
 
 ---
 
-## Vending-Bench (Agentic Decision-Making)
+### Vending-Bench (Agentic Decision-Making)
 
 **What it measures:** How well a memory-augmented agent makes business decisions over time. An agent manages a simulated vending machine operation over 30 days, deciding what products to stock, where to place machines, and how to price items.
 
@@ -88,7 +136,7 @@ TinyCortex is the **only method that successfully retrieves needles**, scoring 3
 **Methods compared:** tinycortex_v1, mem0, scratchpad, supermemory
 
 <div align="center">
-<img src=".github/images/chart_vendingbench.png" alt="Vending-Bench P&L" width="700"/>
+<img src="../docs/images/chart_vendingbench.png" alt="Vending-Bench P&L" width="700"/>
 </div>
 
 **Key results:**
@@ -100,24 +148,3 @@ TinyCortex is the **only method that successfully retrieves needles**, scoring 3
 | mem0 | ~$5 |
 
 TinyCortex achieves the **highest cumulative P&L by day 30** (~$295). The interaction-weighted memory ensures the agent prioritizes learning from high-signal events (successful sales, pricing changes) while forgetting noise (random daily fluctuations). Mem0 barely breaks even, suggesting that without structured memory, the agent cannot learn from past decisions effectively.
-
----
-
-## Running Benchmarks
-
-The benchmark suite lives in this repository. See the [CLAUDE.md](CLAUDE.md) setup instructions for running benchmarks locally:
-
-```bash
-# Setup
-pip install -r requirements.txt
-bash scripts/download_corpus.sh
-
-# Run all benchmarks
-python run.py
-
-# Run specific methods
-python run.py --methods tinycortex,vdb --max-questions 10
-
-# View results
-python scripts/chart.py --chart bar
-```
