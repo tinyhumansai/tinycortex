@@ -7,10 +7,17 @@
 //!
 //! All mutations go through `load → mutate → save`, which re-enforces the size
 //! and item-count caps on every write. Trimming drops the *oldest* items first
-//! (front of the list); it never silently corrupts the file. Every mutation is
-//! serialised through a process-wide [`parking_lot::Mutex`] so concurrent
-//! callers (user edits via RPC/tools and background reflection) can't clobber
-//! each other's load→save sequences.
+//! (front of the list). Every mutation is serialised through a process-wide
+//! [`parking_lot::Mutex`] so concurrent callers (user edits via RPC/tools and
+//! background reflection) can't clobber each other's load→save sequences.
+//!
+//! NOTE: `save` currently writes via a bare `std::fs::write`
+//! (truncate-then-write), not the atomic temp-file+rename pattern used by the
+//! sibling `SourceRegistry`. A crash between the truncate and the write can
+//! leave `MEMORY_GOALS.md` empty or partial; [`GoalsDoc::parse`] degrades a
+//! corrupt/partial file to an empty document silently, so the loss is not
+//! surfaced to the caller. Do not rely on this path being crash-safe until it
+//! is switched to atomic writes.
 //!
 //! Path validation rejects symlink escapes: a `MEMORY_GOALS.md` symlinked to a
 //! target outside the workspace is refused so a hostile link can't read or
@@ -120,6 +127,10 @@ fn enforce_caps(doc: &mut GoalsDoc) -> Vec<String> {
 
 /// Persist `doc` to disk, enforcing caps first. The `doc` is mutated in place
 /// to reflect any cap trimming so the caller's view matches disk.
+///
+/// NOTE: this write is a plain truncate-then-write, not atomic
+/// temp-file+rename; a crash mid-write can leave the file empty or partial
+/// (see the module-level caveat above).
 pub fn save(workspace: &Path, doc: &mut GoalsDoc) -> MemoryEngineResult<()> {
     let path = validate_within_workspace(workspace)?;
     let _dropped = enforce_caps(doc);

@@ -1,5 +1,11 @@
 //! Memory archivist — chat conversation → tree leaf.
 //!
+//! Sits alongside [`crate::memory::conversations`] in the "transcript storage
+//! and tree archival" layer of the [top-level layer
+//! diagram](crate::memory) — it is a leaf producer that depends downward on
+//! the (concurrently-ported) `tree` module through the small
+//! [`TreeLeafSink`] seam, and is not depended on by anything below it.
+//!
 //! The archivist's one job is to take a chat conversation, strip the noisy
 //! tool-call payloads from it, and push the resulting text into a memory tree
 //! as a single leaf. The tree owns persistence and retrieval from there on.
