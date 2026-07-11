@@ -39,16 +39,19 @@ fn compose_emits_expected_front_matter_shape() {
 }
 
 #[test]
-fn extract_notes_returns_body_after_fence() {
+fn notes_body_returns_body_after_fence() {
     // The blank line separating the closing `---` fence from the body is part
     // of the preserved notes, so the body begins with a leading newline.
     let doc = compose(&alice(), "Met at the conference.");
-    assert_eq!(extract_notes(&doc), "\nMet at the conference.\n");
+    assert_eq!(
+        notes_body(&doc).as_deref(),
+        Some("\nMet at the conference.\n")
+    );
 }
 
 #[test]
-fn extract_notes_empty_without_front_matter() {
-    assert_eq!(extract_notes("no front matter here"), "");
+fn notes_body_none_without_front_matter() {
+    assert_eq!(notes_body("no front matter here"), None);
 }
 
 #[test]

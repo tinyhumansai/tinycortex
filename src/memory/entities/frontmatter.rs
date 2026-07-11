@@ -26,7 +26,7 @@
 //! Only the well-known scalar/list shapes the [`Entity`] uses are emitted and
 //! parsed; this is deliberately not a general YAML implementation. The free
 //! text after the closing `---` is the notes body and is never interpreted —
-//! [`extract_notes`] hands it back verbatim so upserts can round-trip it.
+//! [`notes_body`] hands it back verbatim so upserts can round-trip it.
 
 use chrono::{DateTime, Utc};
 
@@ -118,21 +118,13 @@ fn split_front_matter(text: &str) -> Option<(&str, &str)> {
     None
 }
 
-/// Return just the notes body of a document, or an empty string when the file
-/// has no recognisable front matter.
-pub(crate) fn extract_notes(text: &str) -> String {
-    split_front_matter(text)
-        .map(|(_, body)| body.to_string())
-        .unwrap_or_default()
-}
-
 /// Return the notes body when the document has recognisable front matter, or
 /// `None` when the leading or closing fence is absent.
 ///
-/// Unlike [`extract_notes`], this distinguishes a file with an *empty* body
-/// (`Some("")`) from one the parser cannot recognise at all (`None`). Callers
-/// that rewrite entity files use `None` as a signal to refuse the write rather
-/// than clobber content they failed to understand.
+/// A file with an *empty* body parses as `Some("")`, distinct from one the
+/// parser cannot recognise at all (`None`). Callers that rewrite entity files
+/// use `None` as a signal to refuse the write rather than clobber content they
+/// failed to understand.
 pub(crate) fn notes_body(text: &str) -> Option<String> {
     split_front_matter(text).map(|(_, body)| body.to_string())
 }
