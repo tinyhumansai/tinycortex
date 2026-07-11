@@ -30,6 +30,11 @@ use crate::memory::config::MemoryConfig;
 #[cfg(test)]
 static SCHEMA_APPLY_COUNTS: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
 
+/// Test-only instrumentation: bump the per-path counter of successful
+/// [`open_and_init`] calls. A no-op in non-test builds (the whole body is
+/// `#[cfg(test)]`-gated), so this carries no cost or behavior in production.
+/// Used by tests to assert the connection cache actually skips re-init on
+/// subsequent `with_connection` calls for the same path.
 fn record_schema_apply(_path: &Path) {
     #[cfg(test)]
     {
@@ -39,6 +44,9 @@ fn record_schema_apply(_path: &Path) {
     }
 }
 
+/// Number of times [`open_and_init`] has run to completion for `path` in this
+/// process, or `0` if it has never run. Test-only; panics are avoided (lock
+/// poisoning degrades to `0` rather than propagating).
 #[cfg(test)]
 #[doc(hidden)]
 pub(crate) fn schema_apply_count_for_path_for_tests(path: &Path) -> usize {
@@ -63,8 +71,14 @@ pub(crate) const CB_COOLDOWN: Duration = Duration::from_secs(30);
 /// the breaker trips and `get_or_init_connection` returns an error immediately
 /// until [`CB_COOLDOWN`] elapses. On the first success it resets to zero.
 struct CircuitBreaker {
+    /// Count of consecutive init failures since the last success. Reset to 0
+    /// on any success.
     consecutive_failures: AtomicU32,
+    /// Whether the breaker is currently open (rejecting new attempts).
     tripped: AtomicBool,
+    /// Timestamp of the most recent trip/re-trip, used by [`Self::is_open`] to
+    /// compute whether [`CB_COOLDOWN`] has elapsed. `None` when never tripped
+    /// or after a reset.
     last_trip: PMutex<Option<Instant>>,
 }
 
@@ -114,14 +128,32 @@ impl CircuitBreaker {
 
 // ── Connection cache ─────────────────────────────────────────────────────────
 
+/// Process-global, per-DB-path connection state.
+///
+/// Three independent maps, each guarded by its own `parking_lot::Mutex` (so
+/// locking one never blocks the others): the live cached connection, the
+/// circuit breaker tracking recent init failures, and a per-path init lock
+/// used to serialise cold-start initialisation across concurrent callers.
+/// Entries are never evicted except by [`invalidate_connection`],
+/// [`drop_cached_connection`], or [`clear_connection_cache`] (test-only) — one
+/// entry accumulates per distinct workspace path for the life of the process.
 struct ConnectionCache {
+    /// One live, already-initialised `Connection` per DB path, wrapped so
+    /// multiple `Arc` holders can share it and `with_connection` callers
+    /// serialise access via the inner mutex.
     connections: PMutex<HashMap<PathBuf, Arc<PMutex<Connection>>>>,
+    /// One [`CircuitBreaker`] per DB path, tracking consecutive init failures.
     breakers: PMutex<HashMap<PathBuf, Arc<CircuitBreaker>>>,
+    /// One dedicated lock per DB path used only to serialise the cold-start
+    /// path in [`get_or_init_connection`] — never held during normal
+    /// `with_connection` use.
     init_locks: PMutex<HashMap<PathBuf, Arc<PMutex<()>>>>,
 }
 
 static CONN_CACHE: OnceLock<ConnectionCache> = OnceLock::new();
 
+/// Access (lazily constructing on first call) the process-wide connection
+/// cache singleton.
 fn conn_cache() -> &'static ConnectionCache {
     CONN_CACHE.get_or_init(|| ConnectionCache {
         connections: PMutex::new(HashMap::new()),
@@ -130,8 +162,20 @@ fn conn_cache() -> &'static ConnectionCache {
     })
 }
 
-/// Run the full one-time DB initialisation (journal mode, schema, migrations)
-/// against an already-open `Connection`.
+/// Run the full one-time DB initialisation (busy timeout, pragmas, schema,
+/// migrations) against a freshly-[`Connection::open`]ed connection.
+///
+/// Order matters: `busy_timeout` and `foreign_keys` must be set before any
+/// query runs (SQLite resets `foreign_keys` on every new connection, so this
+/// must happen per-open, not once globally); `synchronous = FULL` is required
+/// because [`apply_schema`] forces the TRUNCATE rollback journal, under which
+/// `NORMAL` synchronous is not crash-safe. Idempotent — safe to call again on
+/// an already-migrated DB (every step is `IF NOT EXISTS` / duplicate-tolerant).
+///
+/// # Errors
+/// Returns `Err` if any pragma fails to apply, if schema DDL fails, or if
+/// either one-shot migration ([`migrate_legacy_embeddings_to_sidecar`],
+/// [`purge_global_topic_trees`]) fails.
 fn init_db(conn: &Connection, config: &MemoryConfig) -> Result<()> {
     conn.busy_timeout(SQLITE_BUSY_TIMEOUT)
         .context("Failed to configure chunk DB busy timeout")?;
@@ -149,6 +193,17 @@ fn init_db(conn: &Connection, config: &MemoryConfig) -> Result<()> {
     Ok(())
 }
 
+/// Force the TRUNCATE journal mode, apply [`SCHEMA`], and run every additive
+/// `ALTER TABLE ADD COLUMN` / index migration accumulated since the initial
+/// release.
+///
+/// All statements here are idempotent (`IF NOT EXISTS` DDL,
+/// [`add_column_if_missing`] tolerates an existing column) so calling this
+/// against an already-migrated DB is a safe no-op.
+///
+/// # Errors
+/// Returns `Err` if the `journal_mode` pragma, the schema batch, or any
+/// individual column/index migration fails.
 fn apply_schema(conn: &Connection) -> Result<()> {
     // The chunk DB uses the TRUNCATE rollback journal, NOT WAL. WAL's `-shm`
     // shared-memory index + `-wal` checkpoint machinery are the root of the
@@ -158,6 +213,12 @@ fn apply_schema(conn: &Connection) -> Result<()> {
     let journal_mode: String = conn
         .query_row("PRAGMA journal_mode=TRUNCATE", [], |row| row.get(0))
         .context("Failed to set chunk DB journal_mode=TRUNCATE")?;
+    // NOTE: SQLite can refuse a journal-mode change (e.g. an open transaction
+    // elsewhere, or WAL mode held by another connection to the same file) by
+    // simply returning the *previous* mode instead of erroring. This check is
+    // currently a no-op — a refusal is silently accepted here, and the
+    // synchronous=FULL crash-safety assumption in `init_db` is only actually
+    // valid when the mode really did become TRUNCATE. See audit finding SC-9.
     if !journal_mode.eq_ignore_ascii_case("truncate") {}
     conn.execute_batch(SCHEMA)
         .context("Failed to initialize chunk DB schema")?;
@@ -219,8 +280,25 @@ pub(super) fn add_column_if_missing(
     }
 }
 
-/// Obtain (or lazily create) a cached connection for the workspace described by
-/// `config`. Returns `Err` immediately when the circuit breaker is open.
+/// Obtain (or lazily create) a cached connection for the workspace described
+/// by `config`.
+///
+/// Fast path: an already-cached, healthy connection is returned without
+/// taking any lock beyond the cache's own. Cold path: callers race to acquire
+/// a per-DB-path init lock so only one of them actually opens + migrates the
+/// database; the rest block briefly and then observe the now-cached
+/// connection. On an I/O error consistent with stale WAL/SHM side-files from a
+/// prior crash (see [`is_io_open_error`]), the stale files are cleaned up
+/// ([`try_cleanup_stale_files`]) and open+init is retried exactly once before
+/// giving up.
+///
+/// # Errors
+/// Returns `Err` immediately, without attempting to open the DB, when the
+/// per-path circuit breaker is open (see [`CircuitBreaker`]). Otherwise
+/// returns `Err` if opening the SQLite file or running [`init_db`] fails
+/// (after the single stale-file-cleanup retry) — each failure is recorded
+/// against the breaker, and three consecutive failures trip it for
+/// [`CB_COOLDOWN`].
 pub(crate) fn get_or_init_connection(config: &MemoryConfig) -> Result<Arc<PMutex<Connection>>> {
     let db_path = db_path_for(config);
 
@@ -288,6 +366,10 @@ pub(crate) fn get_or_init_connection(config: &MemoryConfig) -> Result<Arc<PMutex
                     .or_insert_with(|| Arc::new(CircuitBreaker::new()))
                     .clone()
             };
+            // NOTE: `record_success` returns whether this call cleared a
+            // previously-tripped breaker (recovery signal); currently
+            // discarded, so a breaker recovering from an open state is not
+            // logged anywhere. See audit finding SC-9.
             if breaker.record_success() {}
             Ok(arc_conn)
         }
@@ -299,6 +381,9 @@ pub(crate) fn get_or_init_connection(config: &MemoryConfig) -> Result<Arc<PMutex
                     .or_insert_with(|| Arc::new(CircuitBreaker::new()))
                     .clone()
             };
+            // NOTE: `record_failure` returns whether this call just tripped
+            // the breaker; currently discarded, so the trip event itself is
+            // not logged, only observable later via `is_open`. See SC-9.
             if breaker.record_failure() {}
             Err(err)
         }
@@ -306,7 +391,18 @@ pub(crate) fn get_or_init_connection(config: &MemoryConfig) -> Result<Arc<PMutex
 }
 
 /// Ensure the DB directory exists, open the SQLite file, and run the full
-/// schema init sequence.
+/// schema init sequence ([`init_db`]).
+///
+/// # Errors
+/// Returns `Err` if the parent directory cannot be created, the SQLite file
+/// cannot be opened, or [`init_db`] fails. Does not clean up a partially
+/// created directory or file on failure — the caller (or a subsequent call)
+/// simply retries against the same path.
+///
+/// # Panics
+/// Panics if `db_path` has no parent component. Not reachable in practice:
+/// `db_path` is always produced by [`super::db_path_for`], which joins onto
+/// `config.workspace`.
 fn open_and_init(db_path: &Path, config: &MemoryConfig) -> Result<Connection> {
     let dir = db_path.parent().expect("db_path always has a parent");
     std::fs::create_dir_all(dir)
@@ -320,7 +416,14 @@ fn open_and_init(db_path: &Path, config: &MemoryConfig) -> Result<Connection> {
 }
 
 /// Remove the cached connection for `config`'s workspace (forces a fresh open
-/// on the next `with_connection` call). Also clears the breaker.
+/// on the next `with_connection` call). Also clears the breaker, so a prior
+/// tripped state does not carry over to the next open attempt.
+///
+/// Does not close the underlying SQLite connection explicitly; if no other
+/// `Arc` clone is held elsewhere, dropping the last reference closes it via
+/// `rusqlite`'s `Drop` impl. Currently unused in production code
+/// (`#[allow(dead_code)]`) — reserved for callers that need to force a
+/// reopen (e.g. after external file manipulation).
 #[allow(dead_code)]
 pub(crate) fn invalidate_connection(config: &MemoryConfig) {
     let db_path = db_path_for(config);
@@ -330,13 +433,21 @@ pub(crate) fn invalidate_connection(config: &MemoryConfig) {
 
 /// Drop the cached connection + breaker for `config` (used by corrupt-DB
 /// recovery before quarantining the on-disk file).
+///
+/// NOTE: this only removes this process's cache entry; it does not hold any
+/// lock across the removal and the caller's subsequent quarantine rename.
+/// A concurrent `with_connection` call racing with the caller can re-open and
+/// re-cache the (about to be quarantined) file between this call returning
+/// and the rename happening — see audit finding SC-5.
 pub(super) fn drop_cached_connection(config: &MemoryConfig) {
     let db_path = db_path_for(config);
     conn_cache().connections.lock().remove(&db_path);
     conn_cache().breakers.lock().remove(&db_path);
 }
 
-/// Clear the entire connection cache. For test isolation only.
+/// Clear the entire connection cache (all workspace paths' connections,
+/// breakers, and init locks). For test isolation only — production code must
+/// never need to reset every path at once.
 #[cfg(test)]
 pub(crate) fn clear_connection_cache() {
     conn_cache().connections.lock().clear();
@@ -349,6 +460,19 @@ pub(crate) fn clear_connection_cache() {
 /// The underlying connection is initialised once per workspace path and reused
 /// from a process-level cache. Schema migrations run exactly once on the first
 /// call for a given `config.workspace`.
+///
+/// `f` runs while holding the connection's `parking_lot::Mutex`: every
+/// `with_connection` call for the same workspace path is serialised against
+/// every other one, including calls made from different async tasks. This is
+/// a synchronous, blocking mutex — calling this function directly from an
+/// async context blocks the executor thread for the duration of `f`, and
+/// (worst case, on a cold start or after a transient failure) for up to
+/// `SQLITE_BUSY_TIMEOUT` while waiting on SQLite's own busy handler. Callers
+/// on an async runtime should wrap this in `spawn_blocking` or equivalent.
+///
+/// # Errors
+/// Returns `Err` if the connection cannot be obtained/initialised (circuit
+/// breaker open, or open/init failure) or if `f` itself returns `Err`.
 pub fn with_connection<T>(
     config: &MemoryConfig,
     f: impl FnOnce(&Connection) -> Result<T>,

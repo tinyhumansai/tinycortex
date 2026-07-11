@@ -5,6 +5,22 @@
 //! Unlike OpenHuman, this slice does **not** cascade into summary trees (that
 //! subsystem is not ported here); it deletes only the chunk-owned rows and
 //! files.
+//!
+//! ## Deletion completeness gaps (audit findings SC-7, SC-20)
+//! - Only files at `content_path` are removed. A chunk's `raw_refs_json`
+//!   pointers (the raw-archive mirror — the *only* copy of the body for
+//!   email chunks, see [`super::raw_refs`]) are never parsed here, so their
+//!   files are never deleted, and no reachability check runs to see whether
+//!   another surviving chunk still references the same raw file. Deleting an
+//!   email account's chunks leaves every message body on disk.
+//! - Matching `RAW_FILE_GATE_KIND` rows in `mem_tree_ingested_sources` (the
+//!   raw-archive ingest gate — see [`super::store::RAW_FILE_GATE_KIND`]) are
+//!   never cleared alongside the deleted chunks.
+//! - Every public entry point loads every chunk row for the source kind into
+//!   memory and filters in Rust, then issues five `DELETE` statements per
+//!   matched chunk — `O(N·M)` round-trips for `N` chunks touched across `M`
+//!   dependent tables, rather than a single set-based `DELETE ... WHERE id IN
+//!   (subquery)` per table.
 
 use anyhow::{Context, Result};
 use rusqlite::params;
@@ -18,6 +34,13 @@ use crate::memory::config::MemoryConfig;
 /// Delete all chunk rows for one exact `(source_kind, source_id)` and clear
 /// dependent source-local indexes + the ingest gate. Returns the number of
 /// chunk rows removed.
+///
+/// Idempotent: deleting an already-empty/nonexistent source returns `Ok(0)`
+/// rather than erroring. See the module doc for what this does *not* clean up
+/// (raw-archive files, raw-file gate rows).
+///
+/// # Errors
+/// See `delete_chunks_by_source_filter`.
 pub fn delete_chunks_by_source(
     config: &MemoryConfig,
     source_kind: SourceKind,
@@ -35,6 +58,9 @@ pub fn delete_chunks_by_source(
 ///
 /// Rust-side prefix filter (not SQL `LIKE`) so provider ids containing `_` /
 /// `%` are treated literally.
+///
+/// # Errors
+/// See `delete_chunks_by_source_filter`.
 pub fn delete_chunks_by_source_prefix(
     config: &MemoryConfig,
     source_kind: SourceKind,
@@ -50,6 +76,15 @@ pub fn delete_chunks_by_source_prefix(
 
 /// Delete all chunk rows for one exact `(source_kind, owner)` while preserving
 /// source ingest gates that still have chunks owned by another connection.
+///
+/// Unlike [`delete_chunks_by_source`] / [`delete_chunks_by_source_prefix`],
+/// this never removes an ingest-gate row directly by owner match (the gate
+/// table has no `owner` column) — a gate row is only removed here as a
+/// side effect of its `source_id` becoming fully orphaned (every chunk under
+/// that source id deleted), independent of which owner triggered that.
+///
+/// # Errors
+/// See `delete_chunks_by_source_filter`.
 pub fn delete_chunks_by_owner(
     config: &MemoryConfig,
     source_kind: SourceKind,
@@ -63,6 +98,26 @@ pub fn delete_chunks_by_owner(
     )
 }
 
+/// Shared implementation behind [`delete_chunks_by_source`],
+/// [`delete_chunks_by_source_prefix`], and [`delete_chunks_by_owner`].
+///
+/// Loads every chunk row for `source_kind`, keeps those where `matches_chunk`
+/// (given `(source_id, owner)`) returns `true`, then — inside one
+/// transaction — deletes each matched chunk's score/entity-index/embedding/
+/// reembed-skip rows before the chunk row itself, and finally removes any
+/// `mem_tree_ingested_sources` row whose `source_id` either satisfies
+/// `matches_ingested_source` directly or became fully orphaned (zero
+/// remaining chunks) as a result of this delete. On-disk `content_path`
+/// files are collected during the transaction but removed only after it
+/// commits, via [`remove_chunk_content_files`] (best-effort; a filesystem
+/// failure there does not roll back or fail the DB-side delete, and does not
+/// surface as an `Err` from this function).
+///
+/// # Errors
+/// Returns `Err` if any `SELECT`/`DELETE` statement or the transaction commit
+/// fails. On error, no chunk/index rows are removed — the whole batch rolls
+/// back with the transaction. (Content-file removal never contributes to an
+/// `Err` here; see above.)
 fn delete_chunks_by_source_filter(
     config: &MemoryConfig,
     source_kind: SourceKind,

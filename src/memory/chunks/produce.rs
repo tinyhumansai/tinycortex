@@ -75,6 +75,18 @@ pub struct ChunkerInput {
 /// - **Document**: split by [`split_by_token_budget`] — sized by the
 ///   conservative token estimate (paragraph → sentence → whitespace →
 ///   hard-char) with ~12% overlap between adjacent chunks.
+///
+/// # NOTE — re-ingest of a grown source can leave stale rows (audit SC-8)
+/// Chunk ids are deterministic in `(source_kind, source_id, seq, content)`, so
+/// re-chunking byte-identical input reproduces the exact same ids — an
+/// idempotent no-op against the store. But greedy packing means *appending*
+/// new messages/emails to a source changes the content of what used to be the
+/// last packed chunk at a given `seq`, so re-chunking a grown source produces
+/// a **new** id at that `seq` rather than replacing the old row. This
+/// function itself has no store access and cannot dedupe across calls; the
+/// caller ([`super::store::upsert_chunks`]) only adds/replaces by id, so the
+/// old row from the pre-growth chunking is never removed unless the caller
+/// explicitly reconciles by source.
 pub fn chunk_markdown(input: &ChunkerInput, opts: &ChunkerOptions) -> Vec<Chunk> {
     let now = chrono::Utc::now();
     let max_tokens = opts.max_tokens.max(1);

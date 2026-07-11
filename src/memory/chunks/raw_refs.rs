@@ -4,6 +4,14 @@
 //! archives under `<content_root>/raw/` while storing only a ≤500-char preview
 //! in the SQLite `content` column. Retrieval reads the archive directly instead
 //! of going through the SQL preview path.
+//!
+//! For email chunks, the raw archive referenced by `raw_refs_json` is the
+//! *only* copy of the message body — the SQLite `content` column holds just
+//! the preview. This module only reads/writes the pointers; it does not
+//! delete the archive files themselves. Chunk deletion
+//! ([`super::store_delete`]) currently never parses `raw_refs_json` to remove
+//! the files it points at, so deleting an email chunk leaves its raw body on
+//! disk indefinitely (audit finding SC-7).
 
 use anyhow::{Context, Result};
 use rusqlite::{params, OptionalExtension, Transaction};
@@ -30,7 +38,12 @@ pub struct RawRef {
 }
 
 /// Stash a list of [`RawRef`] entries on a chunk row. Replaces any previous
-/// value.
+/// value (last write wins; not additive).
+///
+/// # Errors
+/// Returns `Err` if `refs` fails to serialize (practically unreachable — the
+/// type has no fallible `Serialize` impl) or the `UPDATE` fails. Silently
+/// affects zero rows (no error) if `chunk_id` does not exist.
 pub fn set_chunk_raw_refs(config: &MemoryConfig, chunk_id: &str, refs: &[RawRef]) -> Result<()> {
     let json = serde_json::to_string(refs).context("serialize raw_refs")?;
     with_connection(config, |conn| {
@@ -42,7 +55,11 @@ pub fn set_chunk_raw_refs(config: &MemoryConfig, chunk_id: &str, refs: &[RawRef]
     })
 }
 
-/// Stash raw archive pointers on a chunk row inside a caller-owned transaction.
+/// Stash raw archive pointers on a chunk row inside a caller-owned
+/// transaction. The caller commits/rolls back `tx`.
+///
+/// # Errors
+/// See [`set_chunk_raw_refs`].
 pub fn set_chunk_raw_refs_tx(tx: &Transaction<'_>, chunk_id: &str, refs: &[RawRef]) -> Result<()> {
     let json = serde_json::to_string(refs).context("serialize raw_refs")?;
     tx.execute(
@@ -53,7 +70,14 @@ pub fn set_chunk_raw_refs_tx(tx: &Transaction<'_>, chunk_id: &str, refs: &[RawRe
 }
 
 /// Return the raw-archive pointers stored in SQLite for `chunk_id`, or `None`
-/// if no `raw_refs_json` was recorded.
+/// if no `raw_refs_json` was recorded (row missing, column NULL, or empty
+/// string are all treated as "none").
+///
+/// # Errors
+/// Returns `Err` if the query fails, or if a non-empty `raw_refs_json` value
+/// fails to deserialize as `Vec<RawRef>` (a malformed/corrupt row — this is
+/// surfaced as an error here, unlike [`list_chunk_raw_ref_paths_with_prefix`]
+/// which tolerates the same failure per-row).
 pub fn get_chunk_raw_refs(config: &MemoryConfig, chunk_id: &str) -> Result<Option<Vec<RawRef>>> {
     with_connection(config, |conn| {
         let row = conn
@@ -77,7 +101,19 @@ pub fn get_chunk_raw_refs(config: &MemoryConfig, chunk_id: &str) -> Result<Optio
 
 /// Collect every raw-archive path referenced by ANY chunk row whose
 /// `raw_refs_json` is set, restricted to paths under `rel_prefix`. Rust-side
-/// prefix filter so `_` / `%` in slugs are treated literally.
+/// prefix filter so `_` / `%` in slugs are treated literally (a SQL `LIKE`
+/// prefix would otherwise treat those as wildcard metacharacters).
+///
+/// Scans the full `mem_tree_chunks` table (every row with non-empty
+/// `raw_refs_json`) — there is no index on the JSON contents, so this cost
+/// scales with total chunk count, not with the number of matching paths.
+///
+/// # Errors
+/// Returns `Err` only if the query itself fails (statement prepare/execute).
+/// A row whose `raw_refs_json` fails to deserialize is silently skipped
+/// rather than failing the whole scan, so a corrupt individual row cannot
+/// block coverage computation — but its paths are also invisible to the
+/// caller as a result.
 pub fn list_chunk_raw_ref_paths_with_prefix(
     config: &MemoryConfig,
     rel_prefix: &str,
@@ -108,7 +144,20 @@ pub fn list_chunk_raw_ref_paths_with_prefix(
     })
 }
 
-/// Return both `content_path` and `content_sha256` stored in SQLite for `chunk_id`.
+/// Return both `content_path` and `content_sha256` stored in SQLite for
+/// `chunk_id`.
+///
+/// # Gotcha (audit finding SC-18)
+/// Returns `None` only when the row is missing or either column is SQL NULL.
+/// Some chunk kinds (email — see the module doc) store `content_path` /
+/// `content_sha256` as an **empty string**, not NULL, because their body
+/// lives entirely in the raw archive rather than an MD content file. For
+/// those rows this function returns `Some(("", ""))`, not `None` — callers
+/// that treat `Some(_)` as "there is a readable content file at this path"
+/// will mis-handle that case; check for a non-empty path before using it.
+///
+/// # Errors
+/// Returns `Err` only if the underlying query fails.
 pub fn get_chunk_content_pointers(
     config: &MemoryConfig,
     chunk_id: &str,
@@ -130,6 +179,13 @@ pub fn get_chunk_content_pointers(
 }
 
 /// Return the `content_path` stored in SQLite for `chunk_id`, if any.
+///
+/// Same empty-string-vs-NULL gotcha as [`get_chunk_content_pointers`]: a
+/// `Some(String::new())` result means the column is set to `""`, not that a
+/// content file exists at that path.
+///
+/// # Errors
+/// Returns `Err` only if the underlying query fails.
 pub fn get_chunk_content_path(config: &MemoryConfig, chunk_id: &str) -> Result<Option<String>> {
     with_connection(config, |conn| {
         let row = conn
@@ -144,7 +200,13 @@ pub fn get_chunk_content_path(config: &MemoryConfig, chunk_id: &str) -> Result<O
     })
 }
 
-/// Return both `content_path` and `content_sha256` stored in SQLite for `summary_id`.
+/// Return both `content_path` and `content_sha256` stored in SQLite for
+/// `summary_id`. `None` means either column is SQL NULL; see
+/// [`get_chunk_content_pointers`] for the empty-string-vs-NULL distinction
+/// this module's chunk accessors need to account for.
+///
+/// # Errors
+/// Returns `Err` only if the underlying query fails.
 pub fn get_summary_content_pointers(
     config: &MemoryConfig,
     summary_id: &str,
@@ -165,7 +227,12 @@ pub fn get_summary_content_pointers(
     })
 }
 
-/// List all summary rows that have a non-NULL `content_path`.
+/// List all non-deleted summary rows that have both a non-NULL
+/// `content_path` and `content_sha256`.
+///
+/// # Errors
+/// Returns `Err` if preparing/executing the query, or collecting any row,
+/// fails.
 pub fn list_summaries_with_content_path(
     config: &MemoryConfig,
 ) -> Result<Vec<(String, String, String)>> {
