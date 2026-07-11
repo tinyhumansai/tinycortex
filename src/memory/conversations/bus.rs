@@ -240,19 +240,52 @@ impl ChannelEventHandler for ConversationPersistenceSubscriber {
     }
 }
 
+/// Normalized view of a [`ChannelEvent::Received`] or [`ChannelEvent::Processed`]
+/// carrying only the fields `persist_channel_turn` needs, so that function
+/// stays event-variant-agnostic.
 struct ChannelTurnDescriptor<'a> {
+    /// Channel wire id (drives thread-id derivation and turn metadata).
     channel: &'a str,
+    /// Host-side id of the source/originating message.
     message_id: &'a str,
+    /// Channel-scoped sender id.
     sender: &'a str,
+    /// Channel-scoped reply destination.
     reply_target: &'a str,
+    /// Optional thread/timestamp anchor.
     thread_ts: Option<&'a str>,
+    /// Turn body: the inbound message for `Received`, the response for
+    /// `Processed`.
     content: &'a str,
+    /// Persisted sender role: `"user"` for `Received`, `"assistant"` for
+    /// `Processed`.
     role: &'a str,
+    /// Whether processing succeeded; `None` for `Received` turns.
     success: Option<bool>,
+    /// Processing latency in milliseconds; `None` for `Received` turns.
     elapsed_ms: Option<u64>,
+    /// Diagnostic tag recorded in `extraMetadata.sourceEvent`.
     source: &'a str,
 }
 
+/// Mirror one channel turn into the workspace conversation store:
+/// create-or-touch the channel thread, then append the message if it hasn't
+/// already been persisted.
+///
+/// Idempotent per `(role, message_id)`: the dedup check reads back the
+/// thread's full message list and skips the append if `{role}:{message_id}`
+/// is already present, so redelivery of the same event is a no-op. That
+/// dedup check re-reads every message in the thread on every call — cheap for
+/// short-lived channel threads, O(n) per turn (O(n²) over a thread's
+/// lifetime) for long-running ones.
+///
+/// NOTE (audit TR-8): every call passes `labels: Some(vec!["general"])` to
+/// `ensure_thread`, and the thread-log fold (`ThreadLogEntry::Upsert`
+/// handling in `store_index::thread_index_unlocked`) lets a `Some` label list
+/// on a later `Upsert` override the thread's current labels. So a user-set
+/// label (e.g. via `update_thread_labels`) is silently reset to `["general"]`
+/// the next time a message lands on this thread — this call site should pass
+/// `labels: None` once thread creation and per-turn touch are distinguished.
 fn persist_channel_turn(
     workspace_dir: &Path,
     descriptor: ChannelTurnDescriptor<'_>,
@@ -320,6 +353,15 @@ fn persist_channel_turn(
 /// `conversation_history_key` (Telegram does not split per `thread_ts`; other
 /// channels append a `_thread:<ts>` suffix when a non-blank `thread_ts` is
 /// present) and prefixes it with `channel:`.
+///
+/// NOTE (audit TR-15): `base_key` is a plain `_`-joined concatenation of
+/// `channel`, `sender`, and `reply_target`, none of which are guaranteed
+/// underscore-free. Two distinct triples can collide onto the same thread id
+/// — e.g. `("slack", "a_b", "c")` and `("slack", "a", "b_c")` both yield
+/// `slack_a_b_c`. A length-prefixed or hex-encoded join (as
+/// `ConversationStore::thread_messages_path`'s `hex_encode` already does for
+/// filenames) would be collision-free; this preserves the existing wire
+/// format for already-persisted thread ids, so it is not changed here.
 fn persisted_channel_thread_id(
     channel: &str,
     sender: &str,
@@ -338,6 +380,9 @@ fn persisted_channel_thread_id(
     format!("channel:{key}")
 }
 
+/// Build the human-readable thread title shown for a channel thread.
+/// Cosmetic only — never parsed back — so it does not need the collision
+/// safety `persisted_channel_thread_id` requires.
 fn channel_thread_title(
     channel: &str,
     sender: &str,
@@ -352,6 +397,9 @@ fn channel_thread_title(
     }
 }
 
+/// Trim `value` and return `None` if the result is empty, so blank/whitespace
+/// `thread_ts` values are treated the same as "absent" by thread-id and
+/// title derivation.
 fn non_empty_trimmed(value: &str) -> Option<&str> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
