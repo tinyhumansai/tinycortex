@@ -127,7 +127,9 @@ pub fn save(workspace: &Path, doc: &mut GoalsDoc) -> MemoryEngineResult<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&path, doc.render())?;
+    // Atomic write: a crash mid-save must not truncate MEMORY_GOALS.md to an
+    // empty file and silently lose the goals list.
+    crate::memory::fsutil::atomic_write(&path, doc.render().as_bytes())?;
     Ok(())
 }
 
