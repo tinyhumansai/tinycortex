@@ -148,7 +148,7 @@ pub async fn append_leaf(
         leaf.token_count as i64,
         leaf.timestamp,
     )?;
-    cascade_all_from(config, tree, 0, None, summariser, strategy).await
+    cascade_all_from(config, tree, 0, false, summariser, strategy).await
 }
 
 /// Queue-oriented variant of [`append_leaf`]: only stage the leaf in the L0
@@ -194,15 +194,15 @@ pub fn append_to_buffer(
     })
 }
 
-/// Seal buffers starting at `start_level` and cascade upward. When `force_now`
-/// is `Some`, the buffer at `start_level` is sealed regardless of token budget
-/// (used by time-based flush). Upper levels are sealed only when they cross
-/// their gate.
+/// Seal buffers starting at `start_level` and cascade upward. When `force` is
+/// `true`, the buffer at `start_level` is sealed regardless of its token/fan-in
+/// gate (used by time-based flush and the disconnect force-flush). Upper levels
+/// are sealed only when they cross their gate.
 pub async fn cascade_all_from(
     config: &MemoryConfig,
     tree: &Tree,
     start_level: u32,
-    force_now: Option<DateTime<Utc>>,
+    force: bool,
     summariser: &dyn Summariser,
     strategy: &LabelStrategy,
 ) -> Result<Vec<String>> {
@@ -212,7 +212,7 @@ pub async fn cascade_all_from(
 
     for _ in 0..MAX_CASCADE_DEPTH {
         let buf = store::get_buffer(config, &tree.id, level)?;
-        let forced = first_iteration && force_now.is_some();
+        let forced = first_iteration && force;
         first_iteration = false;
 
         if !forced && !should_seal(config, &buf) {

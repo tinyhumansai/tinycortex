@@ -136,3 +136,32 @@ async fn factory_insert_seal_and_archive_use_profile_scope() {
     let archived = store::get_tree(&cfg, &tree.id).unwrap().unwrap();
     assert_eq!(archived.status, TreeStatus::Archived);
 }
+
+#[tokio::test]
+async fn seal_now_force_seals_under_budget_l0_buffer() {
+    // Regression (TR-3/TR-12): a non-empty L0 buffer that never crossed the
+    // token budget must still be sealed by `seal_now` (the disconnect path).
+    let (_tmp, cfg) = test_config();
+    let factory = TreeFactory::source("slack:#eng");
+    let summariser = ConcatSummariser::new();
+    let chunk = seed_chunk(&cfg, 0, "small under-budget note");
+    let leaf = LeafRef {
+        chunk_id: chunk.id.clone(),
+        token_count: 1, // well below input_token_budget — never auto-seals
+        timestamp: chunk.created_at,
+        content: chunk.content.clone(),
+        entities: vec![],
+        topics: vec![],
+        score: 0.5,
+    };
+
+    let immediate = factory.insert_leaf(&cfg, &leaf, &summariser).await.unwrap();
+    assert!(immediate.is_empty(), "under-budget leaf must not auto-seal");
+
+    let sealed = factory.seal_now(&cfg, &summariser).await.unwrap();
+    assert_eq!(sealed.len(), 1, "seal_now must force-seal the buffer");
+
+    let tree = factory.get_or_create(&cfg).unwrap();
+    assert_eq!(store::count_summaries(&cfg, &tree.id).unwrap(), 1);
+    assert!(store::get_buffer(&cfg, &tree.id, 0).unwrap().is_empty());
+}
