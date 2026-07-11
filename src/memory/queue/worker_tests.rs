@@ -224,3 +224,52 @@ fn is_sqlite_corrupt_matches_code_notadb_context_text() {
         "database or disk is full"
     )));
 }
+
+/// EIO (`5`), ENOSPC (`28`), and EROFS (`30`) are the persistent, user-only-
+/// fixable host-FS family: a `std::io::Error` bubbling out of a filesystem call
+/// classifies as host I/O whether it arrives typed, through anyhow context
+/// layers, or flattened to its `(os error N)` text (Sentry CORE-RUST-19J).
+#[test]
+fn is_host_io_error_matches_family_code_context_text() {
+    for code in [5, 28, 30] {
+        let err = anyhow::Error::from(std::io::Error::from_raw_os_error(code));
+        assert!(
+            is_host_io_error(&err),
+            "os error {code} must classify as host I/O"
+        );
+    }
+    // The production shape: an io::Error wrapped in .with_context() twice; the
+    // downcast must still find it through the anyhow context chain.
+    let wrapped = anyhow::Error::from(std::io::Error::from_raw_os_error(5))
+        .context("Failed to create memory_tree dir: /home/x/workspace/memory_tree")
+        .context("with_connection closure failed");
+    assert!(is_host_io_error(&wrapped));
+    // Text fallback: no io::Error to downcast (flattened to a plain string), the
+    // os-error-number anchor still classifies it.
+    assert!(is_host_io_error(&anyhow::anyhow!(
+        "Failed to create memory_tree dir: /home/x/workspace/memory_tree: \
+         Input/output error (os error 5)"
+    )));
+}
+
+/// EACCES (`13`, a permission bug), ENOENT (`2`), `SQLITE_FULL` (its own arm),
+/// and unrelated errors must NOT be swallowed as host I/O — they are real bugs
+/// or handled elsewhere and must keep reporting.
+#[test]
+fn is_host_io_error_negatives() {
+    assert!(!is_host_io_error(&anyhow::Error::from(
+        std::io::Error::from_raw_os_error(13)
+    )));
+    assert!(!is_host_io_error(&anyhow::Error::from(
+        std::io::Error::from_raw_os_error(2)
+    )));
+    // SQLITE_FULL stays in is_sqlite_disk_full's arm, not here.
+    assert!(!is_host_io_error(&sqlite_failure(
+        rusqlite::ErrorCode::DiskFull,
+        13,
+        "database or disk is full"
+    )));
+    assert!(!is_host_io_error(&anyhow::anyhow!(
+        "upstream returned 500: internal server error"
+    )));
+}

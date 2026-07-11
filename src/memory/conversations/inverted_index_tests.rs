@@ -195,3 +195,40 @@ fn intersect_sorted_with_btreeset_empty_other() {
     intersect_sorted_with_btreeset(&mut acc, &other);
     assert!(acc.is_empty());
 }
+
+#[test]
+fn ranks_by_score_then_recency_before_truncating() {
+    // More matches than `limit`, so truncation must keep the top-ranked hits by
+    // (score desc, created_at desc) — this pins that ranking still happens
+    // before the result set is cut, not after (the rank-before-materialize
+    // refactor must stay order-equivalent to the old clone-then-rank path).
+    let mut idx = InvertedIndex::new();
+    // Both terms → score 1.0, but oldest.
+    idx.insert(
+        "t1",
+        msg("both", "alpha beta gamma", "2026-04-10T10:00:00Z"),
+    );
+    // One term → score 0.5, newest of the 0.5 group.
+    idx.insert("t1", msg("newest", "alpha delta", "2026-04-10T10:03:00Z"));
+    // One term → score 0.5, middle.
+    idx.insert("t1", msg("middle", "alpha epsilon", "2026-04-10T10:02:00Z"));
+    // One term → score 0.5, oldest of the 0.5 group.
+    idx.insert("t1", msg("oldest", "beta zeta", "2026-04-10T10:01:00Z"));
+
+    let hits = idx.search("alpha beta", 2, None);
+    assert_eq!(hits.len(), 2, "must respect the limit");
+    // Highest score wins outright; the recency tiebreak then picks the newest of
+    // the equal-score remainder. "middle"/"oldest" are dropped.
+    assert_eq!(hits[0].message_id, "both");
+    assert!(
+        (hits[0].score - 1.0).abs() < 1e-9,
+        "score = {}",
+        hits[0].score
+    );
+    assert_eq!(hits[1].message_id, "newest");
+    assert!(
+        (hits[1].score - 0.5).abs() < 1e-9,
+        "score = {}",
+        hits[1].score
+    );
+}
