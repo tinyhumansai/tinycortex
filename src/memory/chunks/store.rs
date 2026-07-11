@@ -44,7 +44,7 @@ pub const CHUNK_STATUS_DROPPED: &str = "dropped";
 /// # Gotcha (audit finding SC-17)
 /// This `ON CONFLICT` clause only overwrites the plain-content columns; it
 /// never touches `content_path`, `content_sha256`, or `lifecycle_status`. If
-/// a chunk id was previously staged via [`upsert_staged_chunks_tx`] (so it has
+/// a chunk id was previously staged via `upsert_staged_chunks_tx` (so it has
 /// a `content_path`) or was marked `dropped` by the admission gate, calling
 /// this function again for the same id leaves those columns exactly as they
 /// were — it does not clear a stale `content_path` pointing at now-orphaned
@@ -54,7 +54,7 @@ pub const CHUNK_STATUS_DROPPED: &str = "dropped";
 ///
 /// # Errors
 /// Returns `Err` if beginning the transaction, preparing/executing
-/// [`UPSERT_SQL`] for any chunk, or committing fails. On error, no partial
+/// `UPSERT_SQL` for any chunk, or committing fails. On error, no partial
 /// writes are visible (the whole batch rolls back with the transaction).
 pub fn upsert_chunks(config: &MemoryConfig, chunks: &[Chunk]) -> Result<usize> {
     if chunks.is_empty() {
@@ -94,7 +94,7 @@ const UPSERT_SQL: &str = "INSERT INTO mem_tree_chunks (
         seq_in_source = excluded.seq_in_source,
         created_at_ms = excluded.created_at_ms";
 
-/// Bind and execute [`UPSERT_SQL`] once per chunk against an already-prepared
+/// Bind and execute `UPSERT_SQL` once per chunk against an already-prepared
 /// statement. Split out from [`upsert_chunks`] so the statement is prepared
 /// exactly once per batch rather than once per chunk.
 ///
@@ -131,7 +131,7 @@ fn upsert_chunks_with_statement(
 /// existing transaction. The `content` column receives a ≤500-char plain-text
 /// preview of the body; the full body lives on disk at `content_path`.
 ///
-/// Unlike [`upsert_chunks`]'s [`UPSERT_SQL`], this statement's `ON CONFLICT`
+/// Unlike [`upsert_chunks`]'s `UPSERT_SQL`, this statement's `ON CONFLICT`
 /// clause *does* overwrite `content_path` and `content_sha256` — it is the
 /// counterpart that keeps those columns in sync when re-staging an existing
 /// chunk id.
@@ -205,7 +205,7 @@ pub(crate) fn upsert_staged_chunks_tx(
 }
 
 /// Column list shared by every plain-chunk `SELECT` in this module. Ordinal
-/// positions here are load-bearing: [`row_to_chunk`] reads columns by
+/// positions here are load-bearing: `row_to_chunk` reads columns by
 /// numeric index, so this list and that function's `row.get(N)` calls must
 /// stay in lockstep.
 const SELECT_COLUMNS: &str = "id, source_kind, source_id, path_scope, source_ref, owner,
@@ -216,7 +216,7 @@ const SELECT_COLUMNS: &str = "id, source_kind, source_id, path_scope, source_ref
 ///
 /// # Errors
 /// Returns `Err` if the query fails or the row fails to decode (see
-/// [`row_to_chunk`] — malformed `source_kind`, `tags_json`, or timestamp
+/// `row_to_chunk` — malformed `source_kind`, `tags_json`, or timestamp
 /// values). Returns `Ok(None)`, not an error, when `id` does not exist.
 pub fn get_chunk(config: &MemoryConfig, id: &str) -> Result<Option<Chunk>> {
     with_connection(config, |conn| {
@@ -238,12 +238,12 @@ const MAX_FETCH_BATCH: usize = 500;
 /// Batched read of full chunk rows by id. The returned map contains only ids
 /// that exist in `mem_tree_chunks`; missing ids are silently absent.
 ///
-/// `chunk_ids` is split into windows of at most [`MAX_FETCH_BATCH`] so a
+/// `chunk_ids` is split into windows of at most `MAX_FETCH_BATCH` so a
 /// single query never approaches SQLite's bound-parameter limit.
 ///
 /// # Errors
 /// Returns `Err` if any window's query preparation, execution, or row
-/// decoding ([`row_to_chunk`]) fails. Returns `Ok(HashMap::new())`
+/// decoding (`row_to_chunk`) fails. Returns `Ok(HashMap::new())`
 /// immediately (no DB access) when `chunk_ids` is empty.
 pub fn get_chunks_batch(
     config: &MemoryConfig,
@@ -308,7 +308,7 @@ pub struct ListChunksQuery {
 /// # Gotcha (audit finding SC-15)
 /// When `query.source_scope` is `Some`, the allowlist filter has to run in
 /// Rust *after* the SQL fetch (SQLite doesn't know about the memory-source
-/// tag semantics), so this fetches up to [`MAX_LIST_LIMIT`] (10,000)
+/// tag semantics), so this fetches up to `MAX_LIST_LIMIT` (10,000)
 /// candidate rows from SQL — ordered newest-first — before filtering and
 /// truncating to `query.limit` in Rust. If a workspace has more than 10,000
 /// chunks newer than the allowed ones, valid, in-scope rows past that SQL
@@ -319,7 +319,7 @@ pub struct ListChunksQuery {
 ///
 /// # Errors
 /// Returns `Err` if the query fails to prepare/execute or any row fails to
-/// decode (see [`row_to_chunk`]).
+/// decode (see `row_to_chunk`).
 pub fn list_chunks(config: &MemoryConfig, query: &ListChunksQuery) -> Result<Vec<Chunk>> {
     with_connection(config, |conn| {
         let mut sql = format!("SELECT {SELECT_COLUMNS} FROM mem_tree_chunks WHERE 1=1");

@@ -20,7 +20,7 @@ use crate::memory::config::MemoryConfig;
 /// # Errors
 /// Returns `Err` only if the underlying `UPDATE` fails. Silently affects zero
 /// rows (no error, no signal) if `chunk_id` does not exist — see the NOTE on
-/// [`set_chunk_lifecycle_status_conn`].
+/// `set_chunk_lifecycle_status_conn`.
 pub fn set_chunk_lifecycle_status(
     config: &MemoryConfig,
     chunk_id: &str,

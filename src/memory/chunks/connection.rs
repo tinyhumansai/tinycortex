@@ -467,12 +467,12 @@ pub(crate) fn clear_connection_cache() {
 /// a synchronous, blocking mutex — calling this function directly from an
 /// async context blocks the executor thread for the duration of `f`, and
 /// (worst case, on a cold start or after a transient failure) for up to
-/// [`SQLITE_BUSY_TIMEOUT`] while waiting on SQLite's own busy handler. Callers
+/// `SQLITE_BUSY_TIMEOUT` while waiting on SQLite's own busy handler. Callers
 /// on an async runtime should wrap this in `spawn_blocking` or equivalent.
 ///
 /// # Errors
-/// Returns `Err` if [`get_or_init_connection`] fails (circuit breaker open, or
-/// open/init failure) or if `f` itself returns `Err`.
+/// Returns `Err` if the connection cannot be obtained/initialised (circuit
+/// breaker open, or open/init failure) or if `f` itself returns `Err`.
 pub fn with_connection<T>(
     config: &MemoryConfig,
     f: impl FnOnce(&Connection) -> Result<T>,

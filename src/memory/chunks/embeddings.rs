@@ -150,8 +150,8 @@ pub(crate) fn set_summary_embedding_for_signature_tx(
 ///
 /// # Errors
 /// Returns `Err` if `chunk_id` or `model_signature` fails
-/// [`validate_reembed_skip_key`] (empty after trimming, over
-/// [`REEMBED_SKIP_KEY_MAX_LEN`], or contains a NUL byte), or if the `INSERT`
+/// `validate_reembed_skip_key` (empty after trimming, over
+/// `REEMBED_SKIP_KEY_MAX_LEN`, or contains a NUL byte), or if the `INSERT`
 /// fails.
 pub fn mark_chunk_reembed_skipped(
     config: &MemoryConfig,
@@ -204,7 +204,7 @@ pub fn clear_chunk_reembed_skipped(
 /// calling again with nothing left to clear returns `Ok(0)`.
 ///
 /// # Errors
-/// Returns `Err` if `model_signature` fails [`validate_reembed_skip_key`] or
+/// Returns `Err` if `model_signature` fails `validate_reembed_skip_key` or
 /// either `DELETE` fails.
 pub fn clear_reembed_skipped_for_signature(
     config: &MemoryConfig,
@@ -234,7 +234,7 @@ pub(crate) const REEMBED_SKIP_KEY_MAX_LEN: usize = 2048;
 ///
 /// # Errors
 /// Returns `Err` if `value`, after trimming, is empty, exceeds
-/// [`REEMBED_SKIP_KEY_MAX_LEN`] bytes, or contains a NUL byte.
+/// `REEMBED_SKIP_KEY_MAX_LEN` bytes, or contains a NUL byte.
 pub(crate) fn validate_reembed_skip_key<'a>(label: &str, value: &'a str) -> Result<&'a str> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -255,7 +255,7 @@ pub(crate) fn validate_reembed_skip_key<'a>(label: &str, value: &'a str) -> Resu
 /// absence is not an error.
 ///
 /// # Errors
-/// Returns `Err` if the query fails, or if [`embedding_from_blob`] rejects
+/// Returns `Err` if the query fails, or if `embedding_from_blob` rejects
 /// the stored blob (negative/zero-remainder-mismatched dim, or a blob length
 /// not a multiple of 4 bytes — both indicate on-disk corruption of this row,
 /// not a normal "no embedding" state).
@@ -289,7 +289,7 @@ pub fn get_chunk_embedding(config: &MemoryConfig, chunk_id: &str) -> Result<Opti
     get_chunk_embedding_for_signature(config, chunk_id, &signature)
 }
 
-/// Little-endian `f32` vector → `BLOB`. The inverse of [`embedding_from_blob`].
+/// Little-endian `f32` vector → `BLOB`. The inverse of `embedding_from_blob`.
 pub(crate) fn embedding_to_blob(embedding: &[f32]) -> Vec<u8> {
     embedding.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
@@ -341,7 +341,7 @@ const MAX_EMBEDDING_BATCH: usize = 500;
 /// a vector under `model_signature`. Missing chunks are simply absent (callers
 /// treat that the same as a `None` from the single-row helper).
 ///
-/// `chunk_ids` is split into windows of at most [`MAX_EMBEDDING_BATCH`] so a
+/// `chunk_ids` is split into windows of at most `MAX_EMBEDDING_BATCH` so a
 /// single query never approaches SQLite's bound-parameter limit; each window
 /// runs as its own `SELECT ... WHERE chunk_id IN (...)` inside the same
 /// [`super::connection::with_connection`] call (not separately transacted —
@@ -349,7 +349,7 @@ const MAX_EMBEDDING_BATCH: usize = 500;
 ///
 /// # Errors
 /// Returns `Err` if `chunk_ids` is non-empty and any window's query
-/// preparation, execution, or blob decoding ([`embedding_from_blob`]) fails.
+/// preparation, execution, or blob decoding (`embedding_from_blob`) fails.
 /// Returns `Ok(HashMap::new())` immediately (no DB access) when `chunk_ids`
 /// is empty.
 pub fn get_chunk_embeddings_for_signature_batch(

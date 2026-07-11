@@ -40,7 +40,7 @@ use crate::memory::config::MemoryConfig;
 /// (raw-archive files, raw-file gate rows).
 ///
 /// # Errors
-/// See [`delete_chunks_by_source_filter`].
+/// See `delete_chunks_by_source_filter`.
 pub fn delete_chunks_by_source(
     config: &MemoryConfig,
     source_kind: SourceKind,
@@ -60,7 +60,7 @@ pub fn delete_chunks_by_source(
 /// `%` are treated literally.
 ///
 /// # Errors
-/// See [`delete_chunks_by_source_filter`].
+/// See `delete_chunks_by_source_filter`.
 pub fn delete_chunks_by_source_prefix(
     config: &MemoryConfig,
     source_kind: SourceKind,
@@ -84,7 +84,7 @@ pub fn delete_chunks_by_source_prefix(
 /// that source id deleted), independent of which owner triggered that.
 ///
 /// # Errors
-/// See [`delete_chunks_by_source_filter`].
+/// See `delete_chunks_by_source_filter`.
 pub fn delete_chunks_by_owner(
     config: &MemoryConfig,
     source_kind: SourceKind,
