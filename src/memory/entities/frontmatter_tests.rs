@@ -52,6 +52,28 @@ fn extract_notes_empty_without_front_matter() {
 }
 
 #[test]
+fn parse_accepts_closing_fence_at_eof() {
+    // A hand-edited file whose closing `---` sits at end-of-file with no
+    // trailing newline must still parse (regression: RS-14).
+    let doc = "---\nid: person:alice\nkind: person\n---";
+    let parsed = parse(doc).expect("EOF-fence document parses");
+    assert_eq!(parsed.id, "person:alice");
+    assert_eq!(parsed.kind, EntityKind::Person);
+}
+
+#[test]
+fn notes_body_distinguishes_empty_body_from_unparsable() {
+    // Recognizable front matter with an empty body → `Some("")`.
+    let eof = "---\nid: person:alice\nkind: person\n---";
+    assert_eq!(notes_body(eof).as_deref(), Some(""));
+    // A body after the fence round-trips verbatim.
+    let with_notes = "---\nid: person:alice\nkind: person\n---\n\nMet at conf.\n";
+    assert_eq!(notes_body(with_notes).as_deref(), Some("\nMet at conf.\n"));
+    // No recognizable front matter → `None`, so callers can refuse to clobber.
+    assert_eq!(notes_body("free text with no fence\n"), None);
+}
+
+#[test]
 fn parse_returns_none_without_kind() {
     let doc = "---\nid: person:x\n---\n\nbody\n";
     assert!(parse(doc).is_none());
