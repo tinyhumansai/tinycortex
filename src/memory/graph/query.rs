@@ -32,7 +32,21 @@ const DEFAULT_LIMIT: usize = 100;
 ///
 /// Results are sorted by weight DESC, then object id ASC, for deterministic
 /// output regardless of the index's iteration order. Self-edges are excluded.
-/// `limit` caps the result set; `None` defaults to [`DEFAULT_LIMIT`].
+/// `limit` caps the result set; `None` defaults to `DEFAULT_LIMIT` (100).
+///
+/// # Cost
+///
+/// This issues one [`EntityOccurrenceIndex::nodes_for_entity`] call plus one
+/// [`EntityOccurrenceIndex::entities_on_node`] call per node the subject
+/// occurs on — `1 + subject_nodes.len()` index round-trips in total. `limit`
+/// only truncates the *output*; it does not bound the number of nodes
+/// gathered or the fan-out cost, so a subject with many occurrences is
+/// expensive to query regardless of how small `limit` is.
+///
+/// # Errors
+///
+/// Returns an error if either index call fails, with context naming the
+/// entity or node id that failed.
 pub fn co_occurring_entities(
     index: &dyn EntityOccurrenceIndex,
     subject_entity: &str,
@@ -82,6 +96,9 @@ pub fn co_occurring_entities(
 
 /// Convenience wrapper around [`co_occurring_entities`] that returns just the
 /// neighbour entity ids in weight-descending order.
+///
+/// Same argument semantics, error conditions, and index-call cost as
+/// [`co_occurring_entities`]; this only discards the weights afterwards.
 pub fn neighbors(
     index: &dyn EntityOccurrenceIndex,
     subject_entity: &str,
@@ -96,6 +113,10 @@ pub fn neighbors(
 /// Group co-occurrence edges by weight. Useful for UIs that want to render
 /// strong vs weak relationships separately. Kept as a pure derivation helper
 /// rather than living on the type.
+///
+/// Consumes `edges` (bucketed by `weight` into `object` ids); the `subject`
+/// field of each edge is discarded since callers of this helper already know
+/// which subject they queried for.
 pub fn group_by_weight(edges: Vec<GraphEdge>) -> HashMap<u32, Vec<String>> {
     let mut out: HashMap<u32, Vec<String>> = HashMap::new();
     for e in edges {
