@@ -75,6 +75,24 @@ impl ToolMemoryRulesSection {
 
 /// Pure rendering helper — public so callers that pre-render the block
 /// (e.g. tests, dynamic prompt sources) can share the same logic.
+///
+/// NOTE: `rule.rule` and `rule.tool_name` are concatenated into the output
+/// verbatim (only `trim()`ed) — neither is escaped. A rule body containing
+/// its own `\n### \`tool\`` heading-shaped text renders as a fake extra
+/// tool section inside a block the prompt frames as a hard constraint, and
+/// a backtick in `tool_name` breaks out of the `` ` `` code span in the
+/// `### \`tool_name\`` heading. Callers that accept rule content from
+/// untrusted sources (e.g. auto-captured tool-failure text) must sanitize
+/// before storing, since this function does not.
+///
+/// NOTE: the sort above orders by priority first, tool name second, so a
+/// tool with rules at two different priorities (e.g. one Critical, one
+/// High) is split across the Critical block and the High block by
+/// construction. Heading emission tracks only the *immediately previous*
+/// rule's `tool_name`, so that tool gets two separate `### \`tool\``
+/// headings — one per block — instead of one grouped section. This is a
+/// real, reachable rendering artifact whenever a tool has both a Critical
+/// and a High rule.
 pub fn render_tool_memory_rules(rules: &[ToolMemoryRule]) -> String {
     if rules.is_empty() {
         return String::new();
