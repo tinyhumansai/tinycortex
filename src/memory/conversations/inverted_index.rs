@@ -292,6 +292,11 @@ impl InvertedIndex {
                 (doc_id, matched, entry.created_at.as_str())
             })
             .collect();
+        // NOTE: `created_at` is compared as a raw string (lexicographic, not
+        // parsed-to-instant). Values are RFC3339 with a consistent zero-padded
+        // width in practice, so this tiebreak orders correctly for same-offset
+        // timestamps, but mixed offsets (`+00:00` vs `Z` vs a non-UTC offset)
+        // can misorder — see audit TR-16.
         ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(a.2)));
         ranked.truncate(limit);
 
@@ -323,6 +328,16 @@ impl InvertedIndex {
     /// The intersect is a two-pointer sort-merge over the already-sorted
     /// posting lists: `acc` is rewritten in place once per remaining
     /// ngram, allocating zero intermediate sets.
+    ///
+    /// NOTE: the `None` case in `search`'s caller treats "no ngrams" as "every
+    /// live doc is a candidate" (a full-corpus scan), not as "no candidates".
+    /// For a large corpus this routinely exceeds `LARGE_CANDIDATE_LIMIT` and
+    /// trips the recency-only fallback (see `search`), returning score-`0.0`
+    /// hits that are visually indistinguishable from genuine substring
+    /// matches. Query terms that are too short to ngram-index (sub-3-byte
+    /// non-CJK terms already fail `MIN_TERM_BYTES`, so this mostly affects
+    /// single CJK characters) degrade silently rather than returning no
+    /// results.
     fn candidates_for_term(&self, term: &str) -> Option<Vec<u32>> {
         let term_ngrams = ngrams(term);
         if term_ngrams.is_empty() {
@@ -388,6 +403,8 @@ impl InvertedIndex {
                 score: 0.0,
             })
             .collect();
+        // NOTE: lexicographic string comparison, not a parsed-timestamp
+        // comparison — see the TR-16 note on the Phase 2 ranking above.
         hits.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         hits.truncate(limit);
         hits
