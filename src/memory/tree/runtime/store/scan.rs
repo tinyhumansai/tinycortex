@@ -175,6 +175,8 @@ pub fn list_namespaces_with_root(config: &MemoryConfig) -> Result<Vec<String>> {
     Ok(out)
 }
 
+/// Recursively count `.md` files under `dir`, skipping `buffer`/`buffer_backup`
+/// subdirectories. Propagates the first I/O error encountered.
 fn count_md_files(dir: &Path) -> Result<u64> {
     let mut count = 0u64;
     for entry in std::fs::read_dir(dir)? {
@@ -193,6 +195,10 @@ fn count_md_files(dir: &Path) -> Result<u64> {
     Ok(count)
 }
 
+/// Parse a `(year, month, day, hour_filename)` directory-path tuple (e.g.
+/// `("2024", "03", "15", "09.md")`) into the UTC timestamp at that hour's
+/// start. Returns `None` if any component fails to parse as an integer or
+/// forms an invalid calendar date/time (e.g. day 31 in a 30-day month).
 fn timestamp_from_hour_path(
     year: &str,
     month: &str,

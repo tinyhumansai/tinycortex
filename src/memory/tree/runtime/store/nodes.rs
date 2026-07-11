@@ -13,6 +13,15 @@ use crate::memory::tree::runtime::types::{
 };
 
 /// Write a tree node to disk as a markdown file with YAML frontmatter.
+///
+/// # NOTE: not atomic (`TR-7`)
+/// This is a plain `std::fs::write` over the target path — no temp-file +
+/// rename, unlike [`crate::memory::store::content::atomic::write_if_new`]
+/// elsewhere in the crate. A crash mid-write leaves a truncated file;
+/// `parse_node_markdown` (private, this module) happily parses whatever bytes landed (every
+/// frontmatter field falls back to a default), so the corruption is silent and
+/// gets baked into future re-summarisation and [`super::super::engine::rebuild_tree`]
+/// runs. See `docs/spec/audit/03-tree-archivist-conversations.md`.
 pub fn write_node(config: &MemoryConfig, node: &TreeNode) -> Result<()> {
     let path = node_file_path(config, &node.namespace, &node.node_id);
     if let Some(parent) = path.parent() {
@@ -106,6 +115,12 @@ pub fn read_ancestors(
     Ok(ancestors)
 }
 
+/// List a level's `summary.md` children (year/month directories) under
+/// `base/parent_id` (or `base` itself when `parent_id` is empty, i.e. the
+/// root's year children). Skips `buffer`/`buffer_backup` and any non-numeric
+/// directory name; a directory without a `summary.md` is silently omitted.
+/// Sorted by `node_id` ascending. Read errors on individual entries are
+/// swallowed (`if let Ok(...)`), not propagated.
 fn read_subdirectory_summaries(
     base: &Path,
     namespace: &str,
@@ -149,6 +164,9 @@ fn read_subdirectory_summaries(
     Ok(children)
 }
 
+/// List the hour-leaf `.md` files directly under `base/day_id`, excluding
+/// `summary.md`. Sorted by `node_id` ascending; a file that fails to parse is
+/// silently skipped rather than propagating the error.
 fn read_hour_leaves(base: &Path, namespace: &str, day_id: &str) -> Result<Vec<TreeNode>> {
     let day_dir = base.join(day_id);
     if !day_dir.exists() {
@@ -176,6 +194,12 @@ pub fn parse_node_markdown_pub(raw: &str, namespace: &str, node_id: &str) -> Res
     parse_node_markdown(raw, namespace, node_id)
 }
 
+/// Parse a node markdown file's YAML-ish frontmatter + body into a [`TreeNode`].
+/// Every field falls back to a derived or default value when missing or
+/// unparsable (e.g. `level` falls back to [`level_from_node_id`], timestamps
+/// fall back to [`DateTime::<Utc>::UNIX_EPOCH`]) — this function does not fail
+/// on malformed frontmatter, which is what lets a truncated write (see the
+/// `TR-7` note on [`write_node`]) go undetected.
 fn parse_node_markdown(raw: &str, namespace: &str, node_id: &str) -> Result<TreeNode> {
     let (frontmatter, body_raw) = split_frontmatter(raw);
     let body = body_raw.trim_end().to_string();
@@ -229,7 +253,14 @@ fn parse_node_markdown(raw: &str, namespace: &str, node_id: &str) -> Result<Tree
     })
 }
 
-/// Split markdown into (frontmatter key-value map, body text).
+/// Split markdown into a (frontmatter key-value map, body text) pair.
+///
+/// Looks for a leading `---` fence and the first subsequent `\n---`; each
+/// `key: value` line in between is parsed with a single `find(':')` split
+/// (values are trimmed and unwrapped of one layer of surrounding `"`). If the
+/// content doesn't start with `---`, or no closing fence is found, the whole
+/// input is returned unmodified as the body with an empty map — this function
+/// never errors, it degrades to "no frontmatter" instead.
 pub(crate) fn split_frontmatter(raw: &str) -> (HashMap<String, String>, String) {
     let mut map = HashMap::new();
     let trimmed = raw.trim_start();

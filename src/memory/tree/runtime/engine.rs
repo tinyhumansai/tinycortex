@@ -34,6 +34,21 @@ pub trait Summariser: Send + Sync {
 /// Run the summarisation job for a namespace: drain the buffer, group entries
 /// by hour, summarise each hour into its leaf, then propagate upward. Returns
 /// the last hour leaf created, or `None` if the buffer was empty.
+///
+/// The buffer is only deleted (`store::buffer_delete`) when every propagation
+/// step succeeds, so a transient failure leaves the raw entries in place for
+/// the next run to retry.
+///
+/// # NOTE: retry after a partial failure can double-fold entries (`TR-11`)
+/// Hour leaves are always written unconditionally before propagation runs; if
+/// only an upper-level propagation fails (`_e` below is discarded, so the
+/// specific failure is not surfaced to the caller), the next call re-reads the
+/// buffer (not yet deleted), re-appends its content onto the *already updated*
+/// hour leaf (`to_summarize` prepends `existing_summary`), and folds it a
+/// second time. See `docs/spec/audit/03-tree-archivist-conversations.md`.
+///
+/// `_ts` is currently unused — hour bucketing is derived from each buffer
+/// entry's own filename timestamp, not from this parameter.
 pub async fn run_summarization(
     config: &MemoryConfig,
     summariser: &dyn Summariser,
@@ -123,6 +138,23 @@ pub async fn run_summarization(
 
 /// Rebuild the entire tree from hour leaves upward, preserving unsummarised
 /// buffer content.
+///
+/// # NOTE: not crash-safe (`TR-2`)
+/// This deletes the whole on-disk tree directory ([`store::delete_tree`]) and
+/// then rewrites every hour leaf from the in-memory `hour_leaves` vec. A crash
+/// between the delete and the full rewrite permanently loses every summary in
+/// the namespace — there is no atomic swap (rebuild-into-temp + rename). The
+/// buffer-preservation dance around it has the same gap: if the process
+/// crashes after the rename to `tree_buffer_backup` but before the restore
+/// rename back, the backup directory is left orphaned — no code path on a
+/// later run adopts it, so buffered (unsummarised) content is stranded outside
+/// the active buffer dir. See `docs/spec/audit/03-tree-archivist-conversations.md`.
+///
+/// # Errors
+/// Propagates any filesystem error from the delete/rename/rewrite steps.
+/// Individual `propagate_node` failures during the day/month/year/root
+/// re-summarisation pass are swallowed (best-effort) so one bad node doesn't
+/// abort the whole rebuild.
 pub async fn rebuild_tree(
     config: &MemoryConfig,
     summariser: &dyn Summariser,

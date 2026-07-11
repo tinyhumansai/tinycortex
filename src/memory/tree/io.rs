@@ -140,8 +140,12 @@ pub struct TreeReadRequest {
     pub start_node_id: Option<String>,
     /// Maximum levels to descend. `0` returns an empty result.
     pub max_depth: u32,
-    /// Optional natural-language query; when `Some`, hits are reranked by cosine
-    /// similarity to the query embedding (hits without an embedding sort last).
+    /// Optional natural-language query. When `Some`, [`crate::memory::tree::read::read_tree`]
+    /// scores each hit by a cheap lowercase token-overlap heuristic (count of
+    /// query terms found as substrings of the hit content) and sorts
+    /// descending — **not** cosine similarity against an embedding. Full
+    /// embedding-based hybrid retrieval lives in the separate `retrieval`
+    /// module; see `TR-13` in `docs/spec/audit/03-tree-archivist-conversations.md`.
     #[serde(default)]
     pub query: Option<String>,
     /// Max hits to return. `None` → backend default.
@@ -160,7 +164,9 @@ pub struct TreeReadHit {
     pub level: u32,
     /// Node text (summary or leaf content).
     pub content: String,
-    /// Cosine similarity when `query` was set; `0.0` otherwise.
+    /// Token-overlap match count against [`TreeReadRequest::query`] when a query
+    /// was set (not a normalized similarity — can exceed `1.0`); `0.0` when no
+    /// query was supplied.
     #[serde(default)]
     pub score: f32,
 }

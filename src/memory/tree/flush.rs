@@ -72,6 +72,10 @@ pub async fn flush_stale_buffers_default(
 /// whole point of the disconnect path. The `now` parameter is retained for
 /// call-site compatibility but is not used to gate the seal; the force is
 /// unconditional.
+///
+/// # Errors
+/// Propagates any error from [`cascade_all_from`], including "no tree with id
+/// {tree_id}" if the tree row does not exist.
 pub async fn force_flush_tree(
     config: &MemoryConfig,
     tree_id: &str,

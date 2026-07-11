@@ -57,14 +57,22 @@ impl TreeKind {
     }
 }
 
-/// Activity state of a tree. Archived trees stay queryable but don't accept new
-/// leaves.
+/// Activity state of a tree. Archived trees are *intended* to stay queryable
+/// but reject new leaves.
+///
+/// # NOTE: the archived invariant is not enforced today
+/// Nothing in [`crate::memory::tree::bucket_seal::append_leaf`],
+/// [`crate::memory::tree::registry::get_or_create_tree`], or
+/// [`crate::memory::tree::bucket_seal::cascade_all_from`] checks this field —
+/// an archived tree currently accepts new leaves and seals exactly like an
+/// active one. See `TR-9` in `docs/spec/audit/03-tree-archivist-conversations.md`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TreeStatus {
     /// Tree accepts new leaves and seals normally.
     Active,
-    /// Tree is frozen: still queryable, but no new leaves or seals.
+    /// Tree is meant to be frozen (no new leaves or seals) but the write paths
+    /// do not currently check this status — see the type-level NOTE above.
     Archived,
 }
 

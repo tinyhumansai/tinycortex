@@ -57,6 +57,18 @@ pub(crate) fn upsert_buffer_tx(tx: &Transaction<'_>, buf: &Buffer) -> Result<()>
 }
 
 /// Reset a buffer at `(tree_id, level)` to empty (used at seal time).
+///
+/// # NOTE
+/// This unconditionally wipes the whole buffer row rather than removing only
+/// the ids that were actually sealed. The caller in
+/// [`crate::memory::tree::bucket_seal::seal_one_level`] snapshots the buffer,
+/// awaits an arbitrarily long summariser call with no lock held, and only then
+/// runs this inside the seal transaction — if another `append_to_buffer` call
+/// lands on the same `(tree_id, level)` in that window, its item is clobbered
+/// here and is never summarised. Callers that need to seal only a known
+/// snapshot should re-read the buffer here and remove the snapshotted ids by
+/// set-difference instead of clearing unconditionally (tracked as `TR-1` in
+/// `docs/spec/audit/03-tree-archivist-conversations.md`).
 pub(crate) fn clear_buffer_tx(tx: &Transaction<'_>, tree_id: &str, level: u32) -> Result<()> {
     upsert_buffer_tx(tx, &Buffer::empty(tree_id, level))
 }
