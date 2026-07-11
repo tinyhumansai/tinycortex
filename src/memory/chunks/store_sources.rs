@@ -12,8 +12,15 @@ use crate::memory::config::MemoryConfig;
 
 // ── Lifecycle status ─────────────────────────────────────────────────────────
 
-/// Set the lifecycle status column for `chunk_id`. See the `CHUNK_STATUS_*`
-/// constants.
+/// Set the lifecycle status column for `chunk_id`. See the
+/// `super::store::CHUNK_STATUS_*` constants for valid values — this function
+/// does not validate `status` against them, so passing an arbitrary string
+/// stores it as-is.
+///
+/// # Errors
+/// Returns `Err` only if the underlying `UPDATE` fails. Silently affects zero
+/// rows (no error, no signal) if `chunk_id` does not exist — see the NOTE on
+/// [`set_chunk_lifecycle_status_conn`].
 pub fn set_chunk_lifecycle_status(
     config: &MemoryConfig,
     chunk_id: &str,
@@ -24,7 +31,11 @@ pub fn set_chunk_lifecycle_status(
     })
 }
 
-/// Set the lifecycle status column inside a caller-owned transaction.
+/// Set the lifecycle status column inside a caller-owned transaction. The
+/// caller commits/rolls back `tx`.
+///
+/// # Errors
+/// See [`set_chunk_lifecycle_status`].
 #[allow(dead_code)]
 pub(crate) fn set_chunk_lifecycle_status_tx(
     tx: &Transaction<'_>,
@@ -34,6 +45,17 @@ pub(crate) fn set_chunk_lifecycle_status_tx(
     set_chunk_lifecycle_status_conn(tx, chunk_id, status)
 }
 
+/// Core `UPDATE ... SET lifecycle_status` over an arbitrary `&Connection`.
+///
+/// # NOTE
+/// `changed` (the affected-row count) is computed but never inspected — a
+/// call for a nonexistent `chunk_id` silently succeeds with zero rows
+/// touched rather than surfacing that as an error or a return value the
+/// caller could check. Callers cannot currently distinguish "status set" from
+/// "chunk_id did not exist" without a separate existence check.
+///
+/// # Errors
+/// Returns `Err` only if the `UPDATE` statement itself fails.
 fn set_chunk_lifecycle_status_conn(conn: &Connection, chunk_id: &str, status: &str) -> Result<()> {
     let changed = conn.execute(
         "UPDATE mem_tree_chunks SET lifecycle_status = ?1 WHERE id = ?2",
@@ -44,6 +66,9 @@ fn set_chunk_lifecycle_status_conn(conn: &Connection, chunk_id: &str, status: &s
 }
 
 /// Read the lifecycle status column for `chunk_id`, or `None` if the row is absent.
+///
+/// # Errors
+/// Returns `Err` only if the underlying query fails.
 pub fn get_chunk_lifecycle_status(config: &MemoryConfig, chunk_id: &str) -> Result<Option<String>> {
     with_connection(config, |conn| {
         let row = conn
@@ -57,7 +82,12 @@ pub fn get_chunk_lifecycle_status(config: &MemoryConfig, chunk_id: &str) -> Resu
     })
 }
 
-/// Count chunks currently sitting at a given lifecycle status.
+/// Count chunks currently sitting at a given lifecycle status. Matches
+/// exactly (no prefix/wildcard semantics) — an unknown status string simply
+/// counts as `0`.
+///
+/// # Errors
+/// Returns `Err` only if the underlying query fails.
 pub fn count_chunks_by_lifecycle_status(config: &MemoryConfig, status: &str) -> Result<u64> {
     with_connection(config, |conn| {
         let n: i64 = conn.query_row(
@@ -74,6 +104,15 @@ pub fn count_chunks_by_lifecycle_status(config: &MemoryConfig, status: &str) -> 
 /// Best-effort, non-transactional check used to skip canonicalisation when a
 /// source has already been ingested. The authoritative gate is
 /// [`claim_source_ingest_tx`].
+///
+/// Because this runs outside any transaction, a `true`/`false` answer here
+/// can be stale by the time the caller acts on it under concurrent ingest —
+/// callers that need a correctness guarantee (not just a fast-path skip)
+/// must still go through [`claim_source_ingest_tx`] inside their own persist
+/// transaction.
+///
+/// # Errors
+/// Returns `Err` only if the underlying query fails.
 pub fn is_source_ingested(
     config: &MemoryConfig,
     source_kind: SourceKind,
@@ -94,6 +133,14 @@ pub fn is_source_ingested(
 /// the row was newly inserted; `false` if a previous ingest already claimed it.
 /// Lives inside the persist transaction so two concurrent ingests of the same
 /// source can't both pass the gate.
+///
+/// Idempotent by design: repeated calls for an already-claimed
+/// `(source_kind, source_id)` keep returning `false` and never overwrite
+/// `ingested_at_ms` (the `INSERT OR IGNORE` is a no-op on conflict).
+///
+/// # Errors
+/// Returns `Err` only if the `INSERT OR IGNORE` statement fails. Does not
+/// commit `tx` — the caller owns the surrounding transaction.
 pub fn claim_source_ingest_tx(
     tx: &Transaction<'_>,
     source_kind: SourceKind,
@@ -117,7 +164,14 @@ pub fn claim_source_ingest_tx(
 pub const RAW_FILE_GATE_KIND: &str = "raw_file";
 
 /// Record that the given raw archive files are covered by a tree summary.
-/// Idempotent (`INSERT OR IGNORE`); returns the number of newly-recorded paths.
+/// Idempotent (`INSERT OR IGNORE`); returns the number of newly-recorded
+/// paths (already-recorded paths in `rel_paths` are silently skipped and not
+/// counted).
+///
+/// # Errors
+/// Returns `Err` if beginning/committing the transaction or preparing/
+/// executing the insert for any path fails. Returns `Ok(0)` immediately (no
+/// DB access) for an empty `rel_paths`.
 pub fn mark_raw_paths_ingested(config: &MemoryConfig, rel_paths: &[String]) -> Result<u64> {
     if rel_paths.is_empty() {
         return Ok(0);
@@ -143,6 +197,15 @@ pub fn mark_raw_paths_ingested(config: &MemoryConfig, rel_paths: &[String]) -> R
 
 /// Filter `rel_paths` down to the ones NOT yet recorded as ingested raw files.
 /// Order of the surviving paths is preserved.
+///
+/// Issues one `COUNT(*)` query per path (not batched) — cost scales linearly
+/// with `rel_paths.len()`, each a separate round-trip against the reused
+/// prepared statement.
+///
+/// # Errors
+/// Returns `Err` if preparing the statement or executing it for any path
+/// fails. Returns `Ok(Vec::new())` immediately (no DB access) for an empty
+/// `rel_paths`.
 pub fn filter_raw_paths_not_ingested(
     config: &MemoryConfig,
     rel_paths: &[String],
@@ -167,7 +230,13 @@ pub fn filter_raw_paths_not_ingested(
 }
 
 /// Count raw-file gate rows whose path starts with `rel_prefix`. Rust-side
-/// prefix filter so `_` / `%` in slugs are treated literally.
+/// prefix filter (not SQL `LIKE`) so `_` / `%` in slugs are treated literally.
+///
+/// Scans every `raw_file`-kind gate row in `mem_tree_ingested_sources` — cost
+/// scales with total gate-row count, not with the number of matching paths.
+///
+/// # Errors
+/// Returns `Err` if preparing/executing the query or reading any row fails.
 pub fn count_raw_paths_ingested_with_prefix(
     config: &MemoryConfig,
     rel_prefix: &str,
