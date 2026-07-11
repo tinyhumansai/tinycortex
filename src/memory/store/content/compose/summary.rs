@@ -203,6 +203,15 @@ pub fn rewrite_summary_tags(file_bytes: &[u8], new_tags: &[String]) -> Result<Ve
     Ok(out)
 }
 
+/// Ensure `front_matter` carries current `openhuman_core_version:` /
+/// `memory_artifact_format:` provenance lines, immediately before `aliases:`.
+///
+/// Any existing provenance lines (possibly stamped by an older crate version)
+/// are dropped and replaced with the current [`OPENHUMAN_CORE_VERSION`] /
+/// [`MEMORY_ARTIFACT_FORMAT`] — this is how a summary's provenance stays
+/// current across tag-rewrite round-trips even though the body is untouched.
+/// If no `aliases:` line is found, the pair is inserted just before the
+/// closing `---` instead (or at the end if that's missing too).
 fn upsert_summary_provenance(front_matter: &str) -> String {
     let mut lines: Vec<String> = Vec::new();
     let mut inserted = false;

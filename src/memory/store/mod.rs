@@ -10,6 +10,18 @@
 //! - [`kv`]            — global + namespace JSON key-value store.
 //! - [`entity_index`] — entity occurrence index over tree nodes.
 //! - [`safety`]       — secret / PII detection guard used by KV writes.
+//!
+//! ## Concurrency contract
+//!
+//! [`KvStore`], [`VectorStore`], and [`EntityIndex`] each hold their SQLite
+//! connection behind a `parking_lot::Mutex`, so calls into one instance
+//! serialize cleanly. None of the three sets `PRAGMA busy_timeout`, so a
+//! second process (or a second in-process connection) opening the same
+//! database file gets an immediate `SQLITE_BUSY` on lock contention instead
+//! of blocking and retrying — unlike the chunk store's connection pool,
+//! which configures a 15s busy-timeout. Two independent handles to the same
+//! path from this module should therefore not be assumed to compose safely
+//! under write contention.
 
 /// Markdown content store: source-of-truth files with YAML front matter,
 /// atomic writes, and `content_path`/`content_sha256` provenance pointers.
