@@ -83,6 +83,13 @@ impl<S: SnapshotItemSource> DiffEngine<S> {
     /// only newer changes. With `commit = false` it previews without
     /// acknowledging. If the marker points at a commit that no longer resolves,
     /// it is treated as unread (full diff).
+    ///
+    /// NOTE: the marker is read, the diff computed, and (optionally) the
+    /// marker advanced as three separate ledger operations rather than one
+    /// atomic read-modify-write. Under concurrent `commit = true` calls for the
+    /// same source, a marker can be force-set to an older snapshot after a
+    /// newer commit already advanced it, moving the read position backwards
+    /// and causing already-read changes to be re-reported as unread.
     pub fn diff_since_read(
         &self,
         source_id: &str,
