@@ -98,6 +98,8 @@ One row per top-level module under `src/memory/` (declared in `src/memory/mod.rs
 | `conversations` | `conversations/` | Thread metadata + message JSONL transcript storage | [Conversations and Archivist](conversations-and-archivist.md) |
 | `archivist` | `archivist/` | Converts conversation turns into tree leaves | [Conversations and Archivist](conversations-and-archivist.md) |
 | `ingest` | `ingest/` | The canonicalize → chunk → score → tree pipeline | [Ingest Pipeline](ingest-pipeline.md) |
+| `providers` | `providers/` | HTTP-backed embedding/LLM providers (feature `providers-http`) | — |
+| `rpc` | `rpc/` | RPC surface for host applications (feature `rpc`) | — |
 
 The public re-exports that pull these together live at the bottom of `src/memory/mod.rs`: the high-level contracts (`Memory`, `MemoryConfig`, `WeightProfile`, `MemoryEntry`, `MemoryTaint`, namespace types, `RetrievalScoreBreakdown`, `GLOBAL_NAMESPACE`) plus the starter `InMemoryMemoryStore` / `MemoryStore` API used by the smoke test and as a simple reference backend.
 

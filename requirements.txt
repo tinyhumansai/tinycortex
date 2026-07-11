@@ -1,5 +1,7 @@
-# Benchmark suite requirements
-# Install: pip install -r benchmarks/requirements.txt
+# Requirements for the hosted benchmark harness (RAGAS/TemporalBench/etc.),
+# which is not included in this repository. The in-repo benchmark is the Rust
+# harness at benchmarks/effectiveness (no Python needed).
+# Install: pip install -r requirements.txt
 
 # --- Core (required by all benchmarks) ---
 python-dotenv>=1.0.1

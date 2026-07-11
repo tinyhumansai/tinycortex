@@ -13,9 +13,14 @@
 //! transient write-lock / I/O / disk-full / corruption conditions.
 //! [`is_host_io_error`] extends that family to persistent **host-filesystem**
 //! failures (EIO/ENOSPC/EROFS — a dying SD card or full/read-only mount) that
-//! surface as `std::io::Error` rather than a SQLite code; the host uses it to
-//! back off and page once instead of flooding (Sentry CORE-RUST-19J). The
-//! Sentry-once emission and the storage-degraded flag stay host-owned.
+//! surface as `std::io::Error` rather than a SQLite code; a host loop is meant
+//! to use it to back off long and page once instead of flooding (Sentry
+//! CORE-RUST-19J). NOTE: the `tokio`-feature runtime loop's `backoff_for`
+//! (`memory::queue::runtime`) — the one `run_once`-driving loop shipped in
+//! this crate — does not currently call it, so that gap is not yet closed
+//! here; a host driving `run_once` directly should still classify with it.
+//! The Sentry-once emission and the storage-degraded flag stay host-owned
+//! regardless.
 
 use std::sync::LazyLock;
 
@@ -51,6 +56,18 @@ pub fn bootstrap(config: &MemoryConfig) -> Result<(usize, usize)> {
 
 /// Claim and run a single job. Returns `true` when work was processed, `false`
 /// when no eligible row was available.
+///
+/// The job's lease ([`DEFAULT_LOCK_DURATION_MS`]) starts counting at claim
+/// time, before the LLM gate is acquired below — a job that waits a long time
+/// for a free permit eats into its own lease window before its handler even
+/// starts.
+///
+/// See [`LlmGate::acquire`] for the blocking-wait caveat: this function calls
+/// it from inside an `async fn`, which is the exact pattern that caveat warns
+/// about. On a `current_thread` runtime, two concurrent `run_once` calls can
+/// deadlock (one holds the only permit and needs the executor to finish its
+/// handler and drop it; the other blocks the only executor thread inside
+/// `acquire`).
 pub async fn run_once(config: &MemoryConfig, delegates: &dyn QueueDelegates) -> Result<bool> {
     let Some(job) = claim_next(config, DEFAULT_LOCK_DURATION_MS)? else {
         return Ok(false);
@@ -71,6 +88,11 @@ pub async fn run_once(config: &MemoryConfig, delegates: &dyn QueueDelegates) -> 
     Ok(true)
 }
 
+/// Translate a handler's [`Result<JobOutcome>`] into the matching store
+/// settlement call (`mark_done` / `mark_deferred` / `mark_failed_typed`).
+/// Errors from the settlement call itself (e.g. a busy database) propagate to
+/// the caller — the job's `running` row is then left for lease-expiry
+/// recovery rather than being retried inline here.
 fn settle_job(config: &MemoryConfig, job: &Job, result: Result<JobOutcome>) -> Result<()> {
     match result {
         Ok(JobOutcome::Done) => mark_done(config, job),

@@ -29,7 +29,9 @@ pub struct LlmGate {
 }
 
 struct Inner {
+    /// Slots not currently held by a [`Permit`].
     available: Mutex<usize>,
+    /// Signalled by `Permit`'s `Drop` impl so a blocked [`LlmGate::acquire`] wakes up.
     cond: Condvar,
 }
 
@@ -64,6 +66,16 @@ impl LlmGate {
     }
 
     /// Block until a permit is free, then take it.
+    ///
+    /// This parks the calling OS thread on a `parking_lot` condvar — it is a
+    /// real blocking wait, not an async one. Calling it from inside an async
+    /// task (as [`crate::memory::queue::worker::run_once`] currently does for
+    /// LLM-bound jobs) can stall or deadlock a single-threaded executor: if
+    /// every executor thread ends up blocked in `acquire` waiting for a permit
+    /// held by a task that itself needs the executor to make progress, no
+    /// thread remains free to run the code that would call `Permit`'s `Drop` impl
+    /// and wake the waiter. Prefer [`try_acquire`](Self::try_acquire) plus a
+    /// caller-side retry/backoff in async contexts.
     pub fn acquire(&self) -> Permit {
         let mut avail = self.inner.available.lock();
         while *avail == 0 {

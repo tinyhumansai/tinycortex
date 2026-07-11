@@ -205,6 +205,14 @@ pub fn get_job(config: &MemoryConfig, id: &str) -> Result<Option<Job>> {
     })
 }
 
+/// Map one `mem_tree_jobs` row (in the fixed column order used by every query
+/// in this module: `id, kind, payload_json, dedupe_key, status, attempts,
+/// max_attempts, available_at_ms, locked_until_ms, last_error, created_at_ms,
+/// started_at_ms, completed_at_ms, failure_reason, failure_class`) into a
+/// [`Job`]. Negative `attempts`/`max_attempts` (which should never occur) are
+/// clamped to 0 rather than panicking. Returns `Err` if `kind` or `status`
+/// fails to parse — callers should treat that as a schema/data invariant
+/// violation, not a transient error.
 pub(crate) fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
     let id: String = row.get(0)?;
     let kind_s: String = row.get(1)?;

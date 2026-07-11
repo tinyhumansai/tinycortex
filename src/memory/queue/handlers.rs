@@ -113,6 +113,22 @@ pub enum ReembedProgress {
 /// part the queue cannot do itself (it needs `memory_tree` / `memory_score` /
 /// `memory_store` internals). Implementations must be deterministic enough for
 /// tests; production impls wire the real subsystems.
+///
+/// ## Idempotency contract
+///
+/// The queue is at-least-once: a crash or `SQLITE_BUSY` after a delegate
+/// method has run its side effect but before the caller's follow-up enqueue
+/// (or before [`store_settle::mark_done`](crate::memory::queue::store_settle::mark_done)
+/// commits) leaves the row `running` past its lease, so
+/// [`recover_stale_locks`](crate::memory::queue::store_settle::recover_stale_locks)
+/// puts it back to `ready` and the whole handler — including this delegate
+/// call — runs again. `extract_chunk` and `seal_document` in particular are
+/// not wrapped in a single transaction with their follow-up enqueue (see
+/// `handle_extract`, `handle_seal_document`), so implementations MUST make
+/// their side effects safe to repeat: upsert rather than insert, treat
+/// "already applied" as success, and avoid effects that are observably wrong
+/// the second time (e.g. re-running a paid LLM call is wasteful but not
+/// incorrect; double-appending a chunk into a tree would be).
 #[async_trait]
 pub trait QueueDelegates: Send + Sync {
     /// Score + admit one chunk and persist its score/lifecycle. `Ok(None)` when
@@ -184,6 +200,20 @@ pub async fn handle_job(
     }
 }
 
+/// Run the `ExtractChunk` handler.
+///
+/// Payload-parse failures here return a plain `anyhow::Error` (via
+/// `.context(...)`), not a [`JobFailure::unrecoverable`] — the worker
+/// (`settle_job` in [`super::worker`]) therefore records `failure_class =
+/// NULL` on terminal failure. A malformed/legacy payload is a permanent
+/// defect, but with `failure_class = NULL` it is indistinguishable from a
+/// classifiable transient error to
+/// [`requeue_transient_failed`](crate::memory::queue::store_settle::requeue_transient_failed)'s
+/// predicate (`failure_class IS NULL OR != 'unrecoverable'`), so `self_heal`
+/// resurrects it on every scheduler tick forever. Every payload-parse branch
+/// in this module has the same gap; fixing it means classifying the parse
+/// error as [`JobFailure::unrecoverable`] before returning it, so a bad
+/// payload fails fast instead of retry-looping.
 async fn handle_extract(
     config: &MemoryConfig,
     job: &Job,
@@ -244,6 +274,20 @@ async fn handle_append_buffer(
     Ok(JobOutcome::Done)
 }
 
+/// Run the `Seal` handler for exactly one buffer level.
+///
+/// A cascading seal returns the parent payload so each level stays its own
+/// crash-recovery checkpoint (see [`SealPayload::dedupe_key`]).
+///
+/// Edge-triggered gap: [`SealPayload::dedupe_key`] is scoped to
+/// `(tree_id, level)` and only suppresses duplicates while a seal for that key
+/// is `ready`/`running` (see the partial unique index documented on
+/// [`store::enqueue`]). If a new enqueue attempt for the same level arrives
+/// while a seal is still `running` and the buffer crosses its gate again
+/// afterward, the suppressed attempt is simply dropped — nothing re-checks the
+/// gate when the in-flight seal finishes, so the newly-buffered content waits
+/// for the next `flush_stale` tick (which can be hours away) instead of being
+/// sealed promptly.
 async fn handle_seal(
     config: &MemoryConfig,
     job: &Job,
@@ -291,6 +335,17 @@ async fn handle_seal_document(
     Ok(JobOutcome::Done)
 }
 
+/// Run one step of the `ReembedBackfill` chain.
+///
+/// Only the success paths (`Wrote`, `Covered`, `NoProvider`,
+/// `StaleSignature`) clear [`set_backfill_in_progress`]; if
+/// `delegates.reembed_batch` returns `Err` the job instead flows through
+/// `settle_job` (in [`super::worker`]) and is marked `failed` — terminally so
+/// once its attempt budget is exhausted — without this function ever running
+/// again to clear the flag. [`crate::memory::queue::ops::backfill_in_progress`]
+/// then stays `true` until the process restarts, and retrieval keeps treating
+/// every empty vector-search result as "not searched yet" rather than "no
+/// such memory" for the remainder of the process's life.
 async fn handle_reembed_backfill(
     config: &MemoryConfig,
     job: &Job,
