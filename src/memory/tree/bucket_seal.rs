@@ -244,6 +244,24 @@ pub(crate) fn should_seal(config: &MemoryConfig, buf: &Buffer) -> bool {
 
 /// Seal `buf` at `level` into one summary at `level + 1`. Returns the new
 /// summary id.
+///
+/// # Errors
+/// Returns `Err` if `buf.item_ids` all fail to hydrate (e.g. their chunk/summary
+/// rows were deleted) — the function refuses to persist a summary with zero
+/// inputs. Also propagates any SQL failure from the seal transaction.
+///
+/// # NOTE: not atomic against concurrent appends
+/// `buf` is a snapshot the caller already read; hydration and the summariser
+/// call below run with **no lock held**, so an arbitrarily long await sits
+/// between the snapshot and the transaction that commits it. Any
+/// `append_to_buffer` call that lands on the same `(tree_id, level)` during
+/// that window is silently lost: [`store::clear_buffer_tx`] wipes the whole
+/// buffer row rather than removing only `buf.item_ids`. The same window also
+/// lets two concurrent cascades seal the same buffer twice — the `parent_id IS
+/// NULL` backlink guard below masks the resulting duplicate rather than
+/// preventing it. See `TR-1` in
+/// `docs/spec/audit/03-tree-archivist-conversations.md` for the fix (re-read
+/// and set-difference inside the transaction instead of clearing).
 pub(crate) async fn seal_one_level(
     config: &MemoryConfig,
     tree: &Tree,
