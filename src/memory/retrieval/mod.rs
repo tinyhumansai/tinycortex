@@ -20,13 +20,24 @@
 //! - [`cover_window`] — minimum-node cover of a `[since, until]` window.
 //! - [`fetch_leaves`] — batch-hydrate raw chunk leaves by id, capped.
 //!
-//! ## Hybrid scoring
+//! ## Hybrid scoring (defined, not yet wired)
 //!
 //! [`scoring`] supplies the deterministic signal functions (keyword overlap,
-//! freshness decay) and folds graph / vector / keyword / freshness into a
+//! freshness decay) and a composer ([`scoring::hybrid_score`]) that folds
+//! graph / vector / keyword / freshness into a
 //! [`crate::memory::types::RetrievalScoreBreakdown`] under the active
 //! [`crate::memory::config::WeightProfile`] (read from config — never
 //! hardcoded). [`mmr`] provides Maximal Marginal Relevance diversification.
+//!
+//! NOTE: as of this writing none of the primitives above call
+//! `hybrid_score`, `keyword_relevance`, `freshness`, `mmr_select`, or the
+//! [`graph_adapter`] path — every query above ranks purely by the stored
+//! admission score, the internal semantic cosine rerank helper, or recency.
+//! These functions are correct and unit-tested in isolation but are
+//! dead code from the primitives' point of view until a caller composes
+//! them. Treat this section as documenting *available building blocks*, not
+//! *active behavior* — do not assume a query result reflects graph or
+//! keyword relevance.
 //!
 //! ## Reuse
 //!
@@ -36,7 +47,8 @@
 //! - [`crate::memory::score`] for embeddings ([`Embedder`]) and the entity
 //!   index,
 //! - [`crate::memory::graph`] for co-occurrence relevance (via
-//!   [`graph_adapter::ConfigEntityIndex`]).
+//!   [`graph_adapter::ConfigEntityIndex`], itself currently unused by any
+//!   primitive here — see the note above).
 //!
 //! [`Embedder`]: crate::memory::score::embed::Embedder
 

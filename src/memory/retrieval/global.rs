@@ -27,9 +27,14 @@ use crate::memory::tree::store::{
 use super::source::{collect_source_hits, order_hits, ScoredHit};
 use super::types::{hit_from_chunk, hit_from_summary, QueryResponse};
 
+/// Default result cap applied by both primitives when the caller passes
+/// `limit = 0`.
 const DEFAULT_LIMIT: usize = 10;
 
-/// Per-entity node cap for the topic projection.
+/// Per-entity node cap for the topic projection: `resolve_topic_hits` reads
+/// at most this many newest entity-index rows for a given `entity_id` before
+/// any window filter is applied (see the gotcha documented on
+/// [`query_topic`]).
 const TOPIC_LOOKUP_CAP: usize = 200;
 
 /// Cross-source digest over `[since_ms, until_ms]`.
@@ -38,6 +43,14 @@ const TOPIC_LOOKUP_CAP: usize = 200;
 /// `source_kind`) whose time envelope overlaps the window, then orders them by
 /// recency, or — when `query` is `Some` — by semantic similarity. `limit`
 /// defaults to 10 when 0.
+///
+/// Returns an error if `until_ms < since_ms`.
+///
+/// Cost note: the window filter is applied in Rust, after
+/// `collect_source_hits` has materialized every non-deleted summary across
+/// every selected source tree (embeddings included) — see
+/// `collect_source_hits`'s docs for why this does not scale with store
+/// size.
 pub async fn query_global(
     config: &MemoryConfig,
     since_ms: i64,
@@ -71,6 +84,16 @@ pub async fn query_global(
 /// `email:alice@example.com`). Every node indexed against it is resolved into a
 /// hit (summaries hydrated with their tree scope, leaves with their source id),
 /// optionally restricted to `[since_ms, until_ms]` and reranked by `query`.
+///
+/// # Gotcha: the window filter runs after a hard row cap
+///
+/// `resolve_topic_hits` caps the entity-index lookup at `TOPIC_LOOKUP_CAP`
+/// newest rows *before* the `since_ms`/`until_ms` window is applied here. For
+/// an entity with more mentions than the cap, a window reaching further back
+/// than the cap's newest rows can return zero or partial hits even though
+/// matching rows exist further back in the index, and the returned `total`
+/// under-reports the true match count for that window. Callers should not
+/// assume completeness for a high-mention entity queried with an old window.
 pub async fn query_topic(
     config: &MemoryConfig,
     entity_id: &str,
@@ -106,6 +129,13 @@ pub async fn query_topic(
 /// Resolve every node indexed against `entity_id` into a [`ScoredHit`],
 /// preserving the entity index's newest-first order and hydrating embeddings
 /// (summary sidecar / chunk sidecar) for the optional rerank pass.
+///
+/// Caps the lookup at `TOPIC_LOOKUP_CAP` rows (see the caller-facing gotcha
+/// on [`query_topic`]). Soft-deleted summaries are excluded (`node.deleted`
+/// check below); leaf chunks have no equivalent tombstone check here, so a
+/// dropped chunk that is still indexed can still surface in topic results.
+/// An entity-index row whose `node_id` resolves to neither a summary nor a
+/// chunk (a stale index entry) is silently skipped.
 fn resolve_topic_hits(config: &MemoryConfig, entity_id: &str) -> Result<Vec<ScoredHit>> {
     let entity_hits = lookup_entity(config, entity_id, Some(TOPIC_LOOKUP_CAP))?;
     if entity_hits.is_empty() {
@@ -165,7 +195,14 @@ fn resolve_topic_hits(config: &MemoryConfig, entity_id: &str) -> Result<Vec<Scor
     Ok(out)
 }
 
-/// Epoch-milliseconds → UTC, saturating on out-of-range input.
+/// Epoch-milliseconds → UTC.
+///
+/// NOTE: despite the name suggesting a saturating conversion, out-of-range
+/// input (e.g. `i64::MIN`/`i64::MAX` sentinels, or any `ms` outside
+/// `chrono`'s representable range) does NOT saturate to `DateTime::<Utc>::MIN_UTC`
+/// / `MAX_UTC` — it falls back to `Utc::now()`. A caller passing a sentinel
+/// meant to mean "no lower/upper bound" for `since_ms`/`until_ms` will
+/// instead get "now", silently narrowing the intended window.
 fn ms_to_utc(ms: i64) -> DateTime<Utc> {
     Utc.timestamp_millis_opt(ms)
         .single()

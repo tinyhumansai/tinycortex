@@ -32,6 +32,14 @@ use super::types::{hit_from_chunk, hit_from_summary, QueryResponse, RetrievalHit
 const DEFAULT_LIMIT: usize = 200;
 
 /// Upper bound on in-window chunks scanned across all sources.
+///
+/// NOTE: this is a silent truncation with no signal distinct from the
+/// `limit`-based one. [`QueryResponse::truncated`] is derived only from
+/// `total > hits.len()` after the [`cover_window`] result-count cut. If the
+/// window contains more in-window chunks than this cap, `list_chunks`
+/// truncates before `cover_window` ever sees the rest, and the caller has no
+/// way to distinguish "there were more chunks than the scan cap allows" from
+/// "there were exactly this many, all covered by summaries".
 const MAX_WINDOW_CHUNKS: usize = 5_000;
 
 /// Derive the tree scope a chunk seals under: `path_scope` overrides
@@ -47,6 +55,21 @@ fn chunk_tree_scope(metadata: &Metadata) -> String {
 /// Compute the minimum-node cover of `[since_ms, until_ms]`. Results are grouped
 /// by source (`tree_scope`), ordered ascending by start time, then truncated to
 /// `limit` (`DEFAULT_LIMIT` when 0).
+///
+/// # Gotcha: truncation is alphabetical by source, not by relevance
+///
+/// The pre-truncation sort key is `(tree_scope, time_range_start)` — sources
+/// are grouped and ordered alphabetically by scope string, then
+/// chronologically within each source. When `total > limit`,
+/// [`Vec::truncate`] drops the tail of that ordering, which means entire
+/// sources sorting late alphabetically (e.g. `zoom:` before `slack:` truncates
+/// first) can be dropped wholesale rather than every source being
+/// proportionally represented. There is no relevance-based ranking here — the
+/// cover is a structural (not scored) result.
+///
+/// # Errors
+///
+/// Returns `Err` if `until_ms < since_ms`.
 pub fn cover_window(
     config: &MemoryConfig,
     since_ms: i64,

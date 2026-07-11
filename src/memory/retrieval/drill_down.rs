@@ -15,6 +15,15 @@
 //! - `max_depth == 0` → empty (a documented no-op).
 //! - Leaves have no children; drilling into a leaf id returns empty.
 //! - `limit` is optional; when set it truncates the final (reranked) output.
+//!
+//! NOTE: for versioned document sources, `walk_with_embeddings` has a
+//! doc-version / soft-delete ordering bug. The per-document "latest wins"
+//! check (`emitted_docs.insert`) runs *before* the soft-delete check
+//! (`summary.deleted`). If the newest revision of a document is soft-deleted,
+//! it still claims `emitted_docs` for that `doc_id` before being skipped —
+//! which permanently suppresses every older (non-deleted) revision at that
+//! level, so the document disappears from the walk entirely instead of
+//! falling back to the latest surviving revision.
 
 use std::collections::{HashMap, HashSet};
 
@@ -37,6 +46,12 @@ type WalkOutput = (Vec<RetrievalHit>, Vec<Option<Vec<f32>>>);
 
 /// Walk the summary hierarchy down `max_depth` levels and return hydrated child
 /// hits. Children at level 1 are raw chunks; deeper children are summaries.
+///
+/// # Errors
+///
+/// Propagates any underlying store read failure (summary/tree/chunk lookups).
+/// An unknown `node_id`, `max_depth == 0`, or drilling into a leaf id are NOT
+/// errors — they return `Ok(vec![])`.
 pub async fn drill_down(
     config: &MemoryConfig,
     node_id: &str,
@@ -159,6 +174,14 @@ fn walk_with_embeddings(
                         continue;
                     }
                     // Dedup duplicates at the winning version.
+                    //
+                    // NOTE (see module-level doc): this insert claims
+                    // `emitted_docs` for `doc_id` even if the soft-delete
+                    // check below then skips this node. A soft-deleted
+                    // newest revision therefore suppresses every older
+                    // sibling revision too — the whole document vanishes
+                    // from this level instead of falling back to the
+                    // latest surviving one.
                     if !emitted_docs.insert(doc_id.to_string()) {
                         continue;
                     }
