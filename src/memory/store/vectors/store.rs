@@ -84,7 +84,10 @@ impl VectorStore {
     /// `store_meta` table. On subsequent opens the stored dimensions are
     /// compared against the runtime backend and an error is returned if they
     /// mismatch (prevents silent cosine-similarity corruption from
-    /// mixed-dimension vectors).
+    /// mixed-dimension vectors) — see the private `check_or_store_meta` helper
+    /// below for known gaps in that guard (an unreadable `store_meta` row is
+    /// indistinguishable from first-open, and a corrupt stored-dims string
+    /// silently disables the check rather than failing closed).
     pub fn open(db_path: &Path, backend: Arc<dyn EmbeddingBackend>) -> anyhow::Result<Self> {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -118,6 +121,17 @@ impl VectorStore {
     }
 
     /// Persist or validate the embedding configuration in `store_meta`.
+    ///
+    /// NOTE: two related gaps, both currently present:
+    /// - A failed read of the `embed_dims` row (e.g. a transient I/O error)
+    ///   collapses to `None` via `.ok()` and is treated identically to a
+    ///   genuinely first-ever open, so it silently *overwrites*
+    ///   `embed_provider`/`embed_dims` with the current runtime backend
+    ///   instead of surfacing the read failure.
+    /// - The stored dims string is parsed with `.parse().unwrap_or(0)`; a
+    ///   corrupted value collapses to `0`, and the mismatch check is skipped
+    ///   whenever either side is `0` — so a corrupt row disables the guard
+    ///   entirely instead of failing closed.
     fn check_or_store_meta(
         conn: &Connection,
         backend: &dyn EmbeddingBackend,
@@ -179,6 +193,12 @@ impl VectorStore {
     }
 
     /// Inserts with a pre-computed embedding vector (skips the embed call).
+    ///
+    /// NOTE: the vector's length is never checked against the store's
+    /// configured dimensions (`store_meta.embed_dims`). A wrong-dimension
+    /// vector is stored as-is; [`cosine_similarity`] then returns `0.0` for
+    /// any query against it (length mismatch), so the row silently never
+    /// surfaces in search results rather than erroring at insert time.
     pub fn insert_with_vector(
         &self,
         id: &str,
@@ -407,6 +427,13 @@ pub fn vec_to_bytes(v: &[f32]) -> Vec<u8> {
 }
 
 /// Deserializes little-endian bytes back to a float vector.
+///
+/// Uses `chunks_exact(4)`, so any trailing 1-3 bytes that don't form a full
+/// `f32` are silently dropped rather than erroring — a truncated or corrupt
+/// blob yields a shorter vector instead of a decode failure. (Contrast with
+/// `crate::memory::chunks::embedding_from_blob`, the chunk-store's own blob
+/// decoder, which errors instead of truncating — the two decoders currently
+/// have different contracts for malformed input.)
 pub fn bytes_to_vec(bytes: &[u8]) -> Vec<f32> {
     bytes
         .chunks_exact(4)
@@ -419,6 +446,12 @@ pub fn bytes_to_vec(bytes: &[u8]) -> Vec<f32> {
 
 /// Computes cosine similarity between two vectors. Returns 0.0 for
 /// mismatched lengths, empty vectors, or zero-magnitude vectors.
+///
+/// The raw cosine value (mathematically in `[-1.0, 1.0]`) is clamped to
+/// `[0.0, 1.0]` before being returned, so two vectors pointing in opposite
+/// directions score identically to two unrelated (orthogonal) vectors — both
+/// report `0.0`. Callers that need to distinguish "opposite" from "unrelated"
+/// cannot do so from this score alone.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
