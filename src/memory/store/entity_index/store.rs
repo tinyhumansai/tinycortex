@@ -111,6 +111,8 @@ impl EntityIndex {
         })
     }
 
+    /// Resolve `is_user` for a single-occurrence entity via the configured
+    /// [`SelfIdentity`] resolver.
     fn is_user(&self, entity: &CanonicalEntity) -> bool {
         self.identity.is_self(entity.kind, &entity.surface)
     }
@@ -338,6 +340,14 @@ fn canonical_id_is_user(identity: &dyn SelfIdentity, canonical_id: &str) -> bool
 /// Transaction-scoped batch index, for folding into a larger atomic write via
 /// [`EntityIndex::with_transaction`]. `is_user` defaults to `false` here since
 /// the identity resolver is not in scope on a bare transaction.
+///
+/// NOTE: because the upsert is keyed on `(entity_id, node_id)` and always
+/// writes `is_user = 0`, re-indexing a node through this path clobbers a row
+/// that a prior [`EntityIndex::index_entity`]/[`EntityIndex::index_entities`]
+/// call had correctly marked `is_user = 1` — there is no read-before-write to
+/// preserve the existing flag. Callers that need `is_user` preserved across
+/// re-indexing should not mix this entry point with the identity-aware ones
+/// for the same node.
 pub fn index_entities_tx(
     tx: &Transaction<'_>,
     entities: &[CanonicalEntity],
