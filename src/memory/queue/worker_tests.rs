@@ -31,6 +31,48 @@ async fn run_once_returns_false_when_queue_is_empty() {
 }
 
 #[tokio::test]
+async fn run_once_parks_unparseable_payload_as_unrecoverable() {
+    use crate::memory::queue::scheduler;
+    use crate::memory::queue::types::JobKind;
+
+    let (_tmp, cfg) = test_config();
+    let d = RecordingDelegates::admitting();
+
+    // A poison job: its payload can never deserialize for its kind, so retrying
+    // the identical bytes is hopeless. `max_attempts = 5` proves the fix parks
+    // it on the FIRST failure rather than burning the retry budget. FlushStale is
+    // deliberately not LLM-bound, so this test never touches the shared LLM gate.
+    let poison = NewJob {
+        kind: JobKind::FlushStale,
+        payload_json: "{ this is not valid json".into(),
+        dedupe_key: None,
+        available_at_ms: None,
+        max_attempts: Some(5),
+    };
+    let id = enqueue(&cfg, &poison).unwrap().expect("enqueued");
+
+    // One worker step: claim → parse fails → settle.
+    assert!(run_once(&cfg, &d).await.unwrap());
+
+    let job = get_job(&cfg, &id).unwrap().unwrap();
+    assert_eq!(
+        job.status,
+        JobStatus::Failed,
+        "poison job must fail fast, not retry"
+    );
+    assert_eq!(job.failure_class.as_deref(), Some("unrecoverable"));
+
+    // self_heal (requeue_transient_failed) must NOT resurrect it — that was the
+    // infinite-requeue-every-tick bug (QI-2).
+    let requeued = scheduler::self_heal(&cfg).unwrap();
+    assert_eq!(requeued, 0, "unrecoverable poison job must stay parked");
+    assert_eq!(
+        get_job(&cfg, &id).unwrap().unwrap().status,
+        JobStatus::Failed
+    );
+}
+
+#[tokio::test]
 async fn run_once_claims_and_completes_a_flush_stale_job() {
     let (_tmp, cfg) = test_config();
     let d = RecordingDelegates::admitting();
