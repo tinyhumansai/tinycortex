@@ -49,7 +49,9 @@ pub fn write_node(config: &MemoryConfig, node: &TreeNode) -> Result<()> {
         metadata_line,
     );
     let content = format!("{frontmatter}{}\n", node.summary);
-    std::fs::write(&path, content)
+    // Atomic write: a crash mid-write must not leave a tree node file truncated
+    // or empty, which would corrupt the summary hierarchy on the next read.
+    crate::memory::fsutil::atomic_write(&path, content.as_bytes())
         .with_context(|| format!("write tree node {}", path.display()))?;
     Ok(())
 }

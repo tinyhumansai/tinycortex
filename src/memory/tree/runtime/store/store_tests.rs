@@ -295,3 +295,58 @@ fn collect_root_summaries_returns_empty_for_unknown_workspace() {
     let tmp = TempDir::new().unwrap();
     assert!(collect_root_summaries_with_caps(&tmp.path().join("nope"), 100, 1000).is_empty());
 }
+
+#[test]
+fn write_node_overwrite_is_atomic_and_replaces_content() {
+    let tmp = TempDir::new().unwrap();
+    let config = test_config(&tmp);
+    let path = node_file_path(&config, "test-ns", "2024/03/15/14");
+
+    write_node(
+        &config,
+        &make_node("test-ns", "2024/03/15/14", "old summary"),
+    )
+    .unwrap();
+    write_node(
+        &config,
+        &make_node("test-ns", "2024/03/15/14", "new summary"),
+    )
+    .unwrap();
+
+    // The node file holds the fully-replaced new content (old-or-new, never torn).
+    let read_back = read_node(&config, "test-ns", "2024/03/15/14")
+        .unwrap()
+        .unwrap();
+    assert_eq!(read_back.summary, "new summary");
+
+    // The atomic temp file must have been renamed away, not left behind.
+    let dir = path.parent().unwrap();
+    let leftovers: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .filter(|name| name != "14.md")
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "write_node must not leave temp files behind, found: {leftovers:?}"
+    );
+}
+
+#[test]
+fn read_children_ignores_stray_temp_files() {
+    let tmp = TempDir::new().unwrap();
+    let config = test_config(&tmp);
+
+    // A real hour leaf plus a stray atomic-write temp file in the same day dir.
+    write_node(&config, &make_node("test-ns", "2024/03/15/14", "hour 14")).unwrap();
+    let day_dir = node_file_path(&config, "test-ns", "2024/03/15/14")
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    std::fs::write(day_dir.join(".14.md.tmp-deadbeef"), b"partial junk").unwrap();
+
+    // The stray temp file must not be parsed as a node.
+    let children = read_children(&config, "test-ns", "2024/03/15").unwrap();
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0].node_id, "2024/03/15/14");
+}
