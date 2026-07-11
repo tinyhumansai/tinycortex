@@ -125,13 +125,9 @@ impl<'a> TreeFactory<'a> {
 
     /// Force-flush/seal this tree profile's currently loaded tree.
     ///
-    /// # NOTE
-    /// Calls [`force_flush_tree`] with `now = None`, which — per `TR-3` in
-    /// `docs/spec/audit/03-tree-archivist-conversations.md` — is a no-op for a
-    /// non-empty L0 buffer that is still under its token budget. Callers relying
-    /// on this to force-seal a low-volume buffer (e.g. on disconnect) should
-    /// verify the buffer actually clears; today it silently doesn't unless the
-    /// buffer already crosses the normal seal gate.
+    /// Calls [`force_flush_tree`], which always forces the seal: a non-empty
+    /// L0 buffer is sealed even when it is still under its token budget
+    /// (the disconnect case). Sealing an already-empty buffer is a no-op.
     pub async fn seal_now(
         &self,
         config: &MemoryConfig,

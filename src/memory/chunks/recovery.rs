@@ -15,11 +15,12 @@
 //!   SC-5). A real `SQLITE_CORRUPT` on the chunk DB currently wedges the
 //!   store rather than recovering.
 //!
-//! [`try_cleanup_stale_files`] unconditionally deletes `-wal`/`-shm` rather
-//! than checkpointing first; for a DB still in legacy WAL mode this can drop
-//! committed-but-uncheckpointed transactions (audit finding SC-4). It is safe
-//! only for the specific cold-start bootstrap races it targets, not as a
-//! general-purpose "fix a stuck DB" hammer.
+//! [`try_cleanup_stale_files`] never unlinks the `-wal`: it first attempts a
+//! `wal_checkpoint(TRUNCATE)` and, only if that fails, quarantines the `-wal`
+//! by renaming it to a timestamped `.quarantine` sibling so committed data is
+//! preserved for manual recovery (audit finding SC-4). Only the `-shm` is
+//! deleted outright. It targets the specific cold-start bootstrap races, not
+//! a general-purpose "fix a stuck DB" hammer.
 
 use anyhow::{Context, Result};
 use chrono::Utc;
