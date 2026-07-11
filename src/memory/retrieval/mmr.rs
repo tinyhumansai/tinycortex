@@ -4,6 +4,15 @@
 //! that balances relevance to the query against redundancy within the selected
 //! set. Ported from OpenHuman's `memory_search::vector::mmr`. Cosine similarity
 //! is reused from [`crate::memory::store::vectors`].
+//!
+//! NOTE: this module is one of two divergent `cosine_similarity`
+//! implementations in the crate. The one used here
+//! ([`crate::memory::store::vectors::cosine_similarity`]) is `f64` and clamps
+//! its result to `[0.0, 1.0]`; the one used by the semantic-rerank helper
+//! (`crate::memory::score::embed::cosine_similarity`) is `f32` and can be
+//! negative. MMR selection here therefore cannot distinguish an
+//! anti-correlated candidate from an orthogonal one — both clamp to `0.0`
+//! similarity to the already-selected set.
 
 use crate::memory::store::vectors::cosine_similarity;
 
@@ -41,6 +50,20 @@ pub struct MmrResult {
 ///
 /// For each selection step:
 /// `mmr(c) = lambda · relevance(c) − (1 − lambda) · max_similarity(c, selected)`.
+///
+/// `lambda` is clamped to `[0.0, 1.0]`; `limit` is clamped to
+/// `candidates.len()`. Returns `Vec::new()` immediately if `candidates` is
+/// empty or `limit == 0`.
+///
+/// # Gotcha: `query_vec` is currently unused
+///
+/// `query_vec` is accepted but not read — relevance-to-query is taken
+/// entirely from each candidate's precomputed [`MmrCandidate::relevance`]
+/// field, which the caller must have already derived from the query
+/// (typically via the same cosine similarity used here). Passing a
+/// mismatched or empty `query_vec` has no effect on the result; this
+/// parameter exists for API-shape parity with callers that have the query
+/// vector in hand and may be wired to something in a future revision.
 pub fn mmr_select(
     query_vec: &[f32],
     candidates: &[MmrCandidate<'_>],
