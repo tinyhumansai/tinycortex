@@ -21,6 +21,17 @@ const DEFAULT_READ_LIMIT: usize = 50;
 /// Walk a tree from `req.start_node_id` (or the root) down to `req.max_depth`
 /// levels, returning compact hits. Summary nodes and leaf chunks are both
 /// projected. Returns an empty result if the tree or start node is missing.
+///
+/// # Gotchas (see `TR-13` in `docs/spec/audit/03-tree-archivist-conversations.md`)
+/// - The resolved `start` node's `deleted` flag is never checked, nor is its
+///   membership in `tree` verified — an explicit `start_node_id` for a
+///   tombstoned or foreign summary is still walked and returned.
+/// - Only summary children are filtered on `deleted`; the L1 → chunk fan-out
+///   below has no deleted-chunk filter, so a soft-deleted chunk can still
+///   surface as a hit.
+/// - When more than one node exists at a tree's `max_level` (a transient state
+///   between sibling seals), `tree.root_id` names only one of them — a root
+///   walk silently misses the sibling subtree(s).
 pub fn read_tree(config: &MemoryConfig, req: &TreeReadRequest) -> Result<TreeReadResult> {
     let Some(tree) = store::get_tree(config, &req.tree_id)? else {
         return Ok(TreeReadResult {
