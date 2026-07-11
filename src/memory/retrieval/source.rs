@@ -15,6 +15,15 @@
 //!
 //! This is a thin read-only view over `mem_tree_trees` and `mem_tree_summaries`
 //! — no new indexes or tables.
+//!
+//! NOTE: the `time_window_days` filter above is applied in Rust *after* every
+//! summary (across every selected tree, at every level ≥ 1) has been loaded
+//! and embedding-hydrated — see `collect_source_hits`. There is no
+//! SQL-level window push-down, so a query like "last 7 days, limit 10" still
+//! pays the full O(total summaries in scope) read + hydrate cost on a store
+//! with years of history.
+//! [`crate::memory::tree::store::list_summaries_in_window`] exists and does
+//! push the window into SQL (used by [`super::cover`]) but is not used here.
 
 use anyhow::Result;
 use chrono::{Duration, Utc};
@@ -30,6 +39,7 @@ use crate::memory::tree::{Tree, TreeKind};
 use super::rerank::rerank_by_semantic_similarity;
 use super::types::{hit_from_summary, QueryResponse, RetrievalHit};
 
+/// Default result cap applied when the caller passes `limit = 0`.
 const DEFAULT_LIMIT: usize = 10;
 
 /// A summary hit paired with its (possibly sidecar-hydrated) embedding, kept
@@ -40,7 +50,8 @@ pub(crate) type ScoredHit = (RetrievalHit, Option<Vec<f32>>);
 ///
 /// `limit` defaults to 10 when 0. When `query` is `Some`, the (inert-in-tests)
 /// `embedder` is used to semantically rerank; otherwise ordering is
-/// newest-first.
+/// newest-first. See the module-level NOTE for the cost profile of
+/// `time_window_days`.
 pub async fn query_source(
     config: &MemoryConfig,
     source_id: Option<&str>,
@@ -89,6 +100,11 @@ pub(crate) async fn order_hits(
 /// Walk `mem_tree_trees` + `mem_tree_summaries` and gather every summary under
 /// the selected source trees, hydrating each summary's embedding from the
 /// per-model sidecar when the legacy in-row column is empty.
+///
+/// No time or count filtering happens here — callers ([`query_source`],
+/// [`super::global::query_global`]) apply their window filter afterwards, in
+/// Rust, over the full result. This is O(number of non-deleted summaries
+/// across the selected trees), unbounded by any `limit` argument.
 pub(crate) fn collect_source_hits(
     config: &MemoryConfig,
     source_id: Option<&str>,

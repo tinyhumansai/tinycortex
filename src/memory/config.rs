@@ -23,10 +23,19 @@ pub const DEFAULT_EMBEDDING_DIM: usize = 768;
 pub const FOLDER_FILE_SIZE_CAP_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Top-level configuration for a memory engine instance.
+///
+/// This struct performs no validation or filesystem I/O on its own — building
+/// one (via [`Self::new`], `Default::default()` on the nested configs, or
+/// deserializing from JSON/TOML) never touches disk or fails. Path sandboxing
+/// (rejecting traversal / symlink escapes out of `workspace`) and any other
+/// invariant enforcement happen where a config is actually consumed (see
+/// `memory::sources::validation`), not here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryConfig {
     /// Workspace root. Markdown content, SQLite indexes, and ledgers live under
-    /// this directory and are authoritative (local-first).
+    /// this directory and are authoritative (local-first). Not required to
+    /// exist yet at construction time — callers create it (or fail informatively)
+    /// when they first open the workspace.
     pub workspace: PathBuf,
     /// Embedding configuration.
     #[serde(default)]
@@ -44,6 +53,17 @@ pub struct MemoryConfig {
 
 impl MemoryConfig {
     /// Construct a config rooted at `workspace` with all other fields default.
+    ///
+    /// Does not touch the filesystem: `workspace` need not exist yet.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tinycortex::memory::config::{MemoryConfig, DEFAULT_EMBEDDING_DIM};
+    ///
+    /// let cfg = MemoryConfig::new("/tmp/my-workspace");
+    /// assert_eq!(cfg.embedding.dim, DEFAULT_EMBEDDING_DIM);
+    /// ```
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         Self {
             workspace: workspace.into(),
@@ -104,6 +124,15 @@ impl Default for TreeConfig {
 }
 
 /// Named hybrid-retrieval weight profiles (graph / vector / keyword / freshness).
+///
+/// Consumed by `memory::retrieval::scoring::hybrid_score`, which computes the
+/// final ranking score as the plain weighted sum
+/// `graph·graph_relevance + vector·vector_similarity + keyword·keyword_relevance
+/// + freshness·freshness`. Nothing in this type or its consumer *enforces*
+/// that the four weights sum to `1.0` — the built-in profiles are chosen that
+/// way by convention so scores land in a familiar `[0.0, 1.0]`-ish range when
+/// every signal is itself in `[0.0, 1.0]`, but a custom profile with a
+/// different total simply rescales the final score.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct WeightProfile {
     /// Weight on graph/co-occurrence proximity signal.
@@ -147,6 +176,16 @@ impl WeightProfile {
     };
 
     /// Resolve a profile by its wire name. Unknown names fall back to balanced.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tinycortex::memory::config::WeightProfile;
+    ///
+    /// assert_eq!(WeightProfile::by_name("semantic"), WeightProfile::SEMANTIC);
+    /// // Unrecognised names fail closed to the balanced default, never an error.
+    /// assert_eq!(WeightProfile::by_name("nonexistent"), WeightProfile::BALANCED);
+    /// ```
     pub fn by_name(name: &str) -> Self {
         match name {
             "semantic" => Self::SEMANTIC,
@@ -173,6 +212,13 @@ impl Default for RetrievalConfig {
 }
 
 /// Per-sync budget ceilings, enforceable when a host requests ingest.
+///
+/// This struct is the engine-wide default; distinct, independently-overridable
+/// budget fields of the same shape also live per-source on
+/// `memory::sources::types` (see that module's registry entries), which is
+/// where actual sync-time enforcement is wired today. Treat this type as the
+/// fallback a host applies when a source has not set its own override, rather
+/// than an already-enforced global cap.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SyncBudgetConfig {
     /// Token ceiling per ingest run; `None` leaves token spend unbounded.

@@ -124,6 +124,10 @@ impl<'a> TreeFactory<'a> {
     }
 
     /// Force-flush/seal this tree profile's currently loaded tree.
+    ///
+    /// Calls [`force_flush_tree`], which always forces the seal: a non-empty
+    /// L0 buffer is sealed even when it is still under its token budget
+    /// (the disconnect case). Sealing an already-empty buffer is a no-op.
     pub async fn seal_now(
         &self,
         config: &MemoryConfig,

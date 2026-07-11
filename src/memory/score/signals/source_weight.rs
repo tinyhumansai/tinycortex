@@ -46,6 +46,10 @@ pub fn score(meta: &Metadata) -> f32 {
     }
 }
 
+/// Per-[`DataSource`] base weight in `[0.0, 1.0]`, hand-tuned per the
+/// rationale in the module docs (scoped/directed communication scores
+/// higher than broadcast-style channels). Exhaustive match — adding a new
+/// `DataSource` variant is a compile error here until a weight is assigned.
 fn weight_for(ds: DataSource) -> f32 {
     match ds {
         // Personal email providers score high — typically small, directed audiences

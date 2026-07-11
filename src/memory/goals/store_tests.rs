@@ -104,3 +104,34 @@ fn rejects_symlink_escape_outside_workspace() {
     let target_body = std::fs::read_to_string(&evil_target).unwrap();
     assert!(target_body.contains("exfiltrated"));
 }
+
+#[test]
+fn save_overwrite_is_atomic_and_leaves_no_temp_litter() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Write a multi-item doc, then overwrite it with a smaller one.
+    let mut doc = GoalsDoc::default();
+    doc.add("first goal").unwrap();
+    doc.add("second goal").unwrap();
+    save(tmp.path(), &mut doc).unwrap();
+
+    let mut smaller = GoalsDoc::default();
+    smaller.add("only goal now").unwrap();
+    save(tmp.path(), &mut smaller).unwrap();
+
+    // Destination holds the fully-replaced new content (old-or-new, never torn).
+    let reloaded = load(tmp.path()).unwrap();
+    assert_eq!(reloaded.items.len(), 1);
+    assert_eq!(reloaded.items[0].text, "only goal now");
+
+    // The atomic temp file must have been renamed away, not left behind.
+    let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .filter(|name| name != GOALS_FILE)
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "save must not leave temp files behind, found: {leftovers:?}"
+    );
+}

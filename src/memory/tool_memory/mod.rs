@@ -1,5 +1,12 @@
 //! Tool-scoped memory layer for durable learnings and high-priority rules.
 //!
+//! One of the "specialized long-term memory surfaces" in the [top-level
+//! layer diagram](crate::memory), alongside [`crate::memory::goals`]. Unlike
+//! `goals`, this module does not own its persistence directly — it is a thin
+//! typed layer over [`crate::memory::traits::Memory`], so it depends
+//! downward on whatever concrete store a host wires in rather than on a
+//! dedicated file format.
+//!
 //! A first-class storage and retrieval surface for **actionable**
 //! tool-specific guidance, distinct from per-tool effectiveness statistics
 //! and from the generic `global` / `skill-*` namespaces. Ported from

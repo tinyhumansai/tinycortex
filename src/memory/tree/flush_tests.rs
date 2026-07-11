@@ -198,6 +198,40 @@ async fn force_flush_tree_reports_missing_tree() {
 }
 
 #[tokio::test]
+async fn force_flush_tree_with_none_seals_under_budget_l0() {
+    // Regression (TR-3/TR-12): `force_flush_tree(.., None, ..)` — the exact call
+    // shape `TreeFactory::seal_now` uses — must still force-seal an under-budget
+    // L0 buffer. Before the fix the force flag was derived from `now.is_some()`,
+    // so passing `None` silently made the documented force-seal a no-op.
+    let (_tmp, cfg) = test_config();
+    let tree = get_or_create_tree(&cfg, TreeKind::Source, "slack:#eng").unwrap();
+    let s = ConcatSummariser::new();
+    let now = Utc::now();
+    let c = seed_chunk(&cfg, "slack:#eng", 0, "disconnect flush content", now);
+    let leaf = LeafRef {
+        chunk_id: c.id.clone(),
+        token_count: 50,
+        timestamp: now,
+        content: c.content.clone(),
+        entities: vec![],
+        topics: vec![],
+        score: 0.5,
+    };
+    append_leaf(&cfg, &tree, &leaf, &s, &LabelStrategy::Empty)
+        .await
+        .unwrap();
+    assert_eq!(store::count_summaries(&cfg, &tree.id).unwrap(), 0);
+
+    let sealed = force_flush_tree(&cfg, &tree.id, None, &s, &LabelStrategy::Empty)
+        .await
+        .unwrap();
+
+    assert_eq!(sealed.len(), 1, "force_flush with None must seal");
+    assert!(store::get_buffer(&cfg, &tree.id, 0).unwrap().is_empty());
+    assert_eq!(store::count_summaries(&cfg, &tree.id).unwrap(), 1);
+}
+
+#[tokio::test]
 async fn force_flush_tree_seals_current_l0_buffer() {
     let (_tmp, cfg) = test_config();
     let tree = get_or_create_tree(&cfg, TreeKind::Source, "slack:#eng").unwrap();

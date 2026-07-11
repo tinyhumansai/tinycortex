@@ -127,6 +127,13 @@ impl ConversationStore {
 pub(super) enum ThreadLogEntry {
     /// Create-or-replace the metadata for `thread_id`. The latest `Upsert`
     /// wins when the log is folded; `op` wire string is `upsert`.
+    ///
+    /// NOTE (audit TR-8): `labels: Some(_)` always **replaces** the folded
+    /// label set (see `thread_index_unlocked`'s `Upsert` handling) — it is
+    /// not a merge. Callers that want to touch a thread without disturbing
+    /// its labels (e.g. per-message thread upserts) must pass `labels: None`;
+    /// `bus::persist_channel_turn` currently does not, and so resets a
+    /// user-set label back to `["general"]` on every channel message.
     Upsert {
         thread_id: String,
         title: String,

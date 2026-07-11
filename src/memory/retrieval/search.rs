@@ -12,6 +12,14 @@
 //! - `kinds` narrows the match by `entity_kind IN (...)` when non-empty.
 //! - Output is ordered by mention count DESC (then recency) so the strongest
 //!   matches surface first.
+//!
+//! NOTE: `query`'s SQLite `LIKE` metacharacters (`%`, `_`) are NOT escaped
+//! before being embedded in the `%…%` pattern — there is no `ESCAPE` clause.
+//! A literal query of `"100%"` or `"_"` is interpreted as a wildcard, not a
+//! literal string, and can match far more broadly than the caller intended
+//! (up to "everything, capped at `limit`"). Escape `%`/`_`/the escape
+//! character itself in `query` before calling if literal matching is
+//! required.
 
 use anyhow::{Context, Result};
 use rusqlite::params_from_iter;
@@ -22,7 +30,9 @@ use crate::memory::score::extract::EntityKind;
 
 use super::types::EntityMatch;
 
+/// Default result cap applied when the caller passes `limit = 0`.
 const DEFAULT_LIMIT: usize = 5;
+/// Hard ceiling on `limit` regardless of what the caller requests.
 const MAX_LIMIT: usize = 100;
 
 /// Search the entity index for canonical ids matching `query`.
@@ -32,6 +42,15 @@ const MAX_LIMIT: usize = 100;
 /// total occurrences regardless of which tree they came from. A blank /
 /// whitespace-only query returns no matches (rather than dumping the whole
 /// index via `LIKE '%%'`).
+///
+/// See the module-level NOTE: `query` is matched as a raw `LIKE` pattern with
+/// no metacharacter escaping.
+///
+/// # Errors
+///
+/// Returns `Err` on a SQLite statement-prepare or row-collection failure
+/// (including a corrupt `entity_kind` value in the index, see
+/// `row_to_match`).
 pub fn search_entities(
     config: &MemoryConfig,
     query: &str,
@@ -59,6 +78,7 @@ pub fn search_entities(
     })
 }
 
+/// Clamp `limit` into `[1, MAX_LIMIT]`, substituting [`DEFAULT_LIMIT`] for `0`.
 fn normalise_limit(limit: usize) -> usize {
     if limit == 0 {
         DEFAULT_LIMIT
@@ -110,6 +130,15 @@ fn build_sql_and_params(
     (sql, params)
 }
 
+/// Map one grouped result row (see [`build_sql_and_params`]'s `SELECT`
+/// list, by ordinal) into an [`EntityMatch`].
+///
+/// # Errors
+///
+/// Returns `Err` if `entity_kind` fails [`EntityKind::parse`] (an unrecognised
+/// or corrupt wire string in `mem_tree_entity_index`) — surfaced as a
+/// `rusqlite::Error::FromSqlConversionFailure` so the caller sees a single
+/// query failure rather than a partial result set.
 fn row_to_match(row: &rusqlite::Row<'_>) -> rusqlite::Result<EntityMatch> {
     let canonical_id: String = row.get(0)?;
     let kind_s: String = row.get(1)?;

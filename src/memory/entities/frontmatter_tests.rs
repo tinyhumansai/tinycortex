@@ -39,16 +39,41 @@ fn compose_emits_expected_front_matter_shape() {
 }
 
 #[test]
-fn extract_notes_returns_body_after_fence() {
+fn notes_body_returns_body_after_fence() {
     // The blank line separating the closing `---` fence from the body is part
     // of the preserved notes, so the body begins with a leading newline.
     let doc = compose(&alice(), "Met at the conference.");
-    assert_eq!(extract_notes(&doc), "\nMet at the conference.\n");
+    assert_eq!(
+        notes_body(&doc).as_deref(),
+        Some("\nMet at the conference.\n")
+    );
 }
 
 #[test]
-fn extract_notes_empty_without_front_matter() {
-    assert_eq!(extract_notes("no front matter here"), "");
+fn notes_body_none_without_front_matter() {
+    assert_eq!(notes_body("no front matter here"), None);
+}
+
+#[test]
+fn parse_accepts_closing_fence_at_eof() {
+    // A hand-edited file whose closing `---` sits at end-of-file with no
+    // trailing newline must still parse (regression: RS-14).
+    let doc = "---\nid: person:alice\nkind: person\n---";
+    let parsed = parse(doc).expect("EOF-fence document parses");
+    assert_eq!(parsed.id, "person:alice");
+    assert_eq!(parsed.kind, EntityKind::Person);
+}
+
+#[test]
+fn notes_body_distinguishes_empty_body_from_unparsable() {
+    // Recognizable front matter with an empty body → `Some("")`.
+    let eof = "---\nid: person:alice\nkind: person\n---";
+    assert_eq!(notes_body(eof).as_deref(), Some(""));
+    // A body after the fence round-trips verbatim.
+    let with_notes = "---\nid: person:alice\nkind: person\n---\n\nMet at conf.\n";
+    assert_eq!(notes_body(with_notes).as_deref(), Some("\nMet at conf.\n"));
+    // No recognizable front matter → `None`, so callers can refuse to clobber.
+    assert_eq!(notes_body("free text with no fence\n"), None);
 }
 
 #[test]

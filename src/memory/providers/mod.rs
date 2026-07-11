@@ -18,4 +18,7 @@
 ///
 /// Aliased here so the reqwest dependency stays confined to this feature-gated
 /// module and provider code has a single, stable client type to build against.
+/// As of this writing no provider implementation exists yet under this
+/// module; the alias exists so future providers (goals **C3**/**M3**) share
+/// one client type rather than each pulling `reqwest` in independently.
 pub type HttpClient = reqwest::Client;

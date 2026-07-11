@@ -148,7 +148,7 @@ pub async fn append_leaf(
         leaf.token_count as i64,
         leaf.timestamp,
     )?;
-    cascade_all_from(config, tree, 0, None, summariser, strategy).await
+    cascade_all_from(config, tree, 0, false, summariser, strategy).await
 }
 
 /// Queue-oriented variant of [`append_leaf`]: only stage the leaf in the L0
@@ -194,15 +194,15 @@ pub fn append_to_buffer(
     })
 }
 
-/// Seal buffers starting at `start_level` and cascade upward. When `force_now`
-/// is `Some`, the buffer at `start_level` is sealed regardless of token budget
-/// (used by time-based flush). Upper levels are sealed only when they cross
-/// their gate.
+/// Seal buffers starting at `start_level` and cascade upward. When `force` is
+/// `true`, the buffer at `start_level` is sealed regardless of its token/fan-in
+/// gate (used by time-based flush and the disconnect force-flush). Upper levels
+/// are sealed only when they cross their gate.
 pub async fn cascade_all_from(
     config: &MemoryConfig,
     tree: &Tree,
     start_level: u32,
-    force_now: Option<DateTime<Utc>>,
+    force: bool,
     summariser: &dyn Summariser,
     strategy: &LabelStrategy,
 ) -> Result<Vec<String>> {
@@ -212,7 +212,7 @@ pub async fn cascade_all_from(
 
     for _ in 0..MAX_CASCADE_DEPTH {
         let buf = store::get_buffer(config, &tree.id, level)?;
-        let forced = first_iteration && force_now.is_some();
+        let forced = first_iteration && force;
         first_iteration = false;
 
         if !forced && !should_seal(config, &buf) {
@@ -244,6 +244,24 @@ pub(crate) fn should_seal(config: &MemoryConfig, buf: &Buffer) -> bool {
 
 /// Seal `buf` at `level` into one summary at `level + 1`. Returns the new
 /// summary id.
+///
+/// # Errors
+/// Returns `Err` if `buf.item_ids` all fail to hydrate (e.g. their chunk/summary
+/// rows were deleted) — the function refuses to persist a summary with zero
+/// inputs. Also propagates any SQL failure from the seal transaction.
+///
+/// # NOTE: not atomic against concurrent appends
+/// `buf` is a snapshot the caller already read; hydration and the summariser
+/// call below run with **no lock held**, so an arbitrarily long await sits
+/// between the snapshot and the transaction that commits it. Any
+/// `append_to_buffer` call that lands on the same `(tree_id, level)` during
+/// that window is silently lost: [`store::clear_buffer_tx`] wipes the whole
+/// buffer row rather than removing only `buf.item_ids`. The same window also
+/// lets two concurrent cascades seal the same buffer twice — the `parent_id IS
+/// NULL` backlink guard below masks the resulting duplicate rather than
+/// preventing it. See `TR-1` in
+/// `docs/spec/audit/03-tree-archivist-conversations.md` for the fix (re-read
+/// and set-difference inside the transaction instead of clearing).
 pub(crate) async fn seal_one_level(
     config: &MemoryConfig,
     tree: &Tree,

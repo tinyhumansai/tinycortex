@@ -8,6 +8,23 @@
 //! The schema is declared centrally in `memory::chunks` (`schema.rs::SCHEMA`);
 //! this file only owns the CRUD operations against those tables.
 //!
+//! ## Atomicity
+//!
+//! Every write function comes in two forms: a `with_connection`-scoped
+//! variant (`upsert_score`, `index_entities`, `clear_entity_index_for_node`,
+//! …) that opens its own implicit transaction, and a `_tx` variant that takes
+//! a caller-owned [`Transaction`] so the write commits atomically with
+//! surrounding ingest writes (e.g. the chunk insert). Callers persisting a
+//! score alongside its chunk should use the `_tx` variants via
+//! [`crate::memory::score::persist_score_tx`] rather than the standalone
+//! ones, to avoid a chunk being visible with no matching score row (or vice
+//! versa) if the process crashes mid-ingest. All upserts are
+//! `INSERT OR REPLACE`, so retrying a write after a crash is safe (idempotent
+//! on the row's primary key) — except that `INSERT OR REPLACE` never
+//! *deletes* rows, which is why re-indexing a chunk's entities always calls
+//! [`crate::memory::score::store::clear_entity_index_for_node`] first (see
+//! that function's docs).
+//!
 //! ## Divergence from OpenHuman
 //!
 //! The `mem_tree_score` table in TinyCortex does not carry `llm_importance` /

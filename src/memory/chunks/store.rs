@@ -32,9 +32,30 @@ pub const CHUNK_STATUS_DROPPED: &str = "dropped";
 
 /// Upsert a batch of chunks atomically.
 ///
-/// Returns the number of rows inserted or replaced. Duplicates on `chunk.id`
-/// are replaced, making the operation idempotent for re-ingest of the same raw
-/// source. Existing embeddings (held in the sidecar table) are preserved.
+/// Returns the number of rows inserted or replaced (always `chunks.len()`,
+/// even if some of those ids already existed — this counts attempted writes,
+/// not "newly created" rows). Duplicates on `chunk.id` are replaced, making
+/// the operation idempotent for re-ingest of the same raw source. Existing
+/// embeddings (held in the sidecar table) are preserved because they key on
+/// `chunk_id` in a separate table this statement never touches.
+///
+/// Returns `Ok(0)` immediately (no DB access) for an empty `chunks` slice.
+///
+/// # Gotcha (audit finding SC-17)
+/// This `ON CONFLICT` clause only overwrites the plain-content columns; it
+/// never touches `content_path`, `content_sha256`, or `lifecycle_status`. If
+/// a chunk id was previously staged via `upsert_staged_chunks_tx` (so it has
+/// a `content_path`) or was marked `dropped` by the admission gate, calling
+/// this function again for the same id leaves those columns exactly as they
+/// were — it does not clear a stale `content_path` pointing at now-orphaned
+/// content, and it cannot resurrect a `dropped` chunk back to an admitted
+/// state. Use the staged path / [`super::store_sources::set_chunk_lifecycle_status`]
+/// explicitly when either of those needs to change.
+///
+/// # Errors
+/// Returns `Err` if beginning the transaction, preparing/executing
+/// `UPSERT_SQL` for any chunk, or committing fails. On error, no partial
+/// writes are visible (the whole batch rolls back with the transaction).
 pub fn upsert_chunks(config: &MemoryConfig, chunks: &[Chunk]) -> Result<usize> {
     if chunks.is_empty() {
         return Ok(0);
@@ -50,6 +71,9 @@ pub fn upsert_chunks(config: &MemoryConfig, chunks: &[Chunk]) -> Result<usize> {
     })
 }
 
+/// `INSERT ... ON CONFLICT(id) DO UPDATE` for the plain (non-staged) chunk
+/// columns. Deliberately omits `content_path` / `content_sha256` /
+/// `lifecycle_status` — see the gotcha on [`upsert_chunks`].
 const UPSERT_SQL: &str = "INSERT INTO mem_tree_chunks (
         id, source_kind, source_id, path_scope, source_ref, owner,
         timestamp_ms, time_range_start_ms, time_range_end_ms,
@@ -70,6 +94,14 @@ const UPSERT_SQL: &str = "INSERT INTO mem_tree_chunks (
         seq_in_source = excluded.seq_in_source,
         created_at_ms = excluded.created_at_ms";
 
+/// Bind and execute `UPSERT_SQL` once per chunk against an already-prepared
+/// statement. Split out from [`upsert_chunks`] so the statement is prepared
+/// exactly once per batch rather than once per chunk.
+///
+/// # Errors
+/// Returns `Err` if serializing `chunk.metadata.tags` to JSON fails
+/// (practically unreachable — `Vec<String>` has no fallible `Serialize`
+/// path) or if any `stmt.execute` call fails.
 fn upsert_chunks_with_statement(
     stmt: &mut rusqlite::Statement<'_>,
     chunks: &[Chunk],
@@ -98,6 +130,23 @@ fn upsert_chunks_with_statement(
 /// Upsert staged chunks (with `content_path` + `content_sha256`) using an
 /// existing transaction. The `content` column receives a ≤500-char plain-text
 /// preview of the body; the full body lives on disk at `content_path`.
+///
+/// Unlike [`upsert_chunks`]'s `UPSERT_SQL`, this statement's `ON CONFLICT`
+/// clause *does* overwrite `content_path` and `content_sha256` — it is the
+/// counterpart that keeps those columns in sync when re-staging an existing
+/// chunk id.
+///
+/// Writing the on-disk body file at `content_path` (and verifying/updating
+/// `content_sha256`) is the caller's responsibility; this function only
+/// updates the SQLite row and assumes the file already matches.
+///
+/// Currently unused outside this crate's own callers (`#[allow(dead_code)]`)
+/// — reserved for the staged-content write path once it lands.
+///
+/// # Errors
+/// Returns `Err` if preparing the statement fails, if serializing any
+/// chunk's tags to JSON fails, or if any `stmt.execute` call fails. Does not
+/// commit `tx` itself — the caller owns the transaction lifecycle.
 #[allow(dead_code)]
 pub(crate) fn upsert_staged_chunks_tx(
     tx: &Transaction<'_>,
@@ -155,11 +204,20 @@ pub(crate) fn upsert_staged_chunks_tx(
     Ok(staged.len())
 }
 
+/// Column list shared by every plain-chunk `SELECT` in this module. Ordinal
+/// positions here are load-bearing: `row_to_chunk` reads columns by
+/// numeric index, so this list and that function's `row.get(N)` calls must
+/// stay in lockstep.
 const SELECT_COLUMNS: &str = "id, source_kind, source_id, path_scope, source_ref, owner,
     timestamp_ms, time_range_start_ms, time_range_end_ms,
     tags_json, content, token_count, seq_in_source, created_at_ms";
 
 /// Fetch one chunk by its id.
+///
+/// # Errors
+/// Returns `Err` if the query fails or the row fails to decode (see
+/// `row_to_chunk` — malformed `source_kind`, `tags_json`, or timestamp
+/// values). Returns `Ok(None)`, not an error, when `id` does not exist.
 pub fn get_chunk(config: &MemoryConfig, id: &str) -> Result<Option<Chunk>> {
     with_connection(config, |conn| {
         let mut stmt = conn.prepare(&format!(
@@ -179,6 +237,14 @@ const MAX_FETCH_BATCH: usize = 500;
 
 /// Batched read of full chunk rows by id. The returned map contains only ids
 /// that exist in `mem_tree_chunks`; missing ids are silently absent.
+///
+/// `chunk_ids` is split into windows of at most `MAX_FETCH_BATCH` so a
+/// single query never approaches SQLite's bound-parameter limit.
+///
+/// # Errors
+/// Returns `Err` if any window's query preparation, execution, or row
+/// decoding (`row_to_chunk`) fails. Returns `Ok(HashMap::new())`
+/// immediately (no DB access) when `chunk_ids` is empty.
 pub fn get_chunks_batch(
     config: &MemoryConfig,
     chunk_ids: &[String],
@@ -236,7 +302,24 @@ pub struct ListChunksQuery {
     pub exclude_dropped: bool,
 }
 
-/// List chunks matching the provided filters, ordered by `timestamp` DESC.
+/// List chunks matching the provided filters, ordered by `timestamp_ms` DESC,
+/// then `seq_in_source` ASC as a tiebreaker.
+///
+/// # Gotcha (audit finding SC-15)
+/// When `query.source_scope` is `Some`, the allowlist filter has to run in
+/// Rust *after* the SQL fetch (SQLite doesn't know about the memory-source
+/// tag semantics), so this fetches up to `MAX_LIST_LIMIT` (10,000)
+/// candidate rows from SQL — ordered newest-first — before filtering and
+/// truncating to `query.limit` in Rust. If a workspace has more than 10,000
+/// chunks newer than the allowed ones, valid, in-scope rows past that SQL
+/// cutoff are silently dropped and never reach the Rust-side filter, even
+/// though they would have passed it. This only affects scoped queries; an
+/// unscoped `list_chunks` call applies `query.limit` directly in SQL and has
+/// no such gap.
+///
+/// # Errors
+/// Returns `Err` if the query fails to prepare/execute or any row fails to
+/// decode (see `row_to_chunk`).
 pub fn list_chunks(config: &MemoryConfig, query: &ListChunksQuery) -> Result<Vec<Chunk>> {
     with_connection(config, |conn| {
         let mut sql = format!("SELECT {SELECT_COLUMNS} FROM mem_tree_chunks WHERE 1=1");
@@ -297,7 +380,11 @@ pub fn list_chunks(config: &MemoryConfig, query: &ListChunksQuery) -> Result<Vec
     })
 }
 
-/// Count total chunks in the store.
+/// Count total chunks in the store (no filters — every row in
+/// `mem_tree_chunks`, regardless of lifecycle status).
+///
+/// # Errors
+/// Returns `Err` only if the underlying query fails.
 pub fn count_chunks(config: &MemoryConfig) -> Result<u64> {
     with_connection(config, |conn| {
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM mem_tree_chunks", [], |r| r.get(0))?;
@@ -308,6 +395,18 @@ pub fn count_chunks(config: &MemoryConfig) -> Result<u64> {
 /// Extraction coverage — the fraction of chunks that have at least one indexed
 /// entity in `mem_tree_entity_index`, in `[0.0, 1.0]`. Returns `0.0` when there
 /// are no chunks.
+///
+/// # Gotcha (audit finding SC-6)
+/// This joins against `mem_tree_entity_index` in *this* chunk database.
+/// `src/memory/store/entity_index/store.rs` opens what is nominally the same
+/// table at a path its own caller controls; if that path is not this chunk
+/// DB's path, entity-index writes made through that module never show up
+/// here, and this always computes coverage against an entity_index table
+/// that stays empty from this function's point of view — coverage reads as
+/// permanently `0.0` regardless of actual extraction activity.
+///
+/// # Errors
+/// Returns `Err` only if either `COUNT(*)` query fails.
 pub fn extraction_coverage(config: &MemoryConfig) -> Result<f32> {
     with_connection(config, |conn| {
         let total: i64 =
@@ -327,6 +426,9 @@ pub fn extraction_coverage(config: &MemoryConfig) -> Result<f32> {
     })
 }
 
+/// Clamp a caller-requested row limit to `[1, MAX_LIST_LIMIT]`, defaulting to
+/// [`DEFAULT_LIST_LIMIT`] when `requested` is `None`. Never returns 0 (a
+/// caller-requested limit of 0 is treated as 1, not "no rows").
 pub(super) fn normalized_limit(requested: Option<usize>) -> i64 {
     let clamped = requested
         .unwrap_or(DEFAULT_LIST_LIMIT)
@@ -334,6 +436,20 @@ pub(super) fn normalized_limit(requested: Option<usize>) -> i64 {
     i64::try_from(clamped).unwrap_or(MAX_LIST_LIMIT as i64)
 }
 
+/// Decode one `mem_tree_chunks` row (columns in exactly [`SELECT_COLUMNS`]
+/// order) into a [`Chunk`]. Shared by every plain-chunk query in this module.
+///
+/// `token_count` / `seq_in_source` are clamped to `0` if the stored `i64` is
+/// negative (defensive against a hand-edited or otherwise corrupted DB — this
+/// silently coerces rather than erroring, since a negative count/seq has no
+/// valid interpretation but also isn't worth failing the whole read over).
+/// `partial_message` is never persisted (it's a transient chunker signal) and
+/// always decodes to `false`.
+///
+/// # Errors
+/// Returns `Err` if `source_kind` fails [`SourceKind::parse`], `tags_json`
+/// fails to deserialize as `Vec<String>`, or any of the three timestamp
+/// columns fails [`ms_to_utc`] (out-of-range milliseconds).
 pub(super) fn row_to_chunk(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chunk> {
     let id: String = row.get(0)?;
     let source_kind_s: String = row.get(1)?;
@@ -381,6 +497,13 @@ pub(super) fn row_to_chunk(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chunk> {
     })
 }
 
+/// Convert milliseconds-since-epoch to a UTC timestamp.
+///
+/// # Errors
+/// Returns `Err(rusqlite::Error::FromSqlConversionFailure)` if `ms` does not
+/// map to a single valid `DateTime<Utc>` (chrono's `timestamp_millis_opt`
+/// returns `None`/`Ambiguous` — out-of-range values only; every in-range
+/// millisecond value is unambiguous under UTC).
 pub(super) fn ms_to_utc(ms: i64) -> rusqlite::Result<DateTime<Utc>> {
     Utc.timestamp_millis_opt(ms).single().ok_or_else(|| {
         rusqlite::Error::FromSqlConversionFailure(
@@ -395,6 +518,6 @@ pub(super) fn ms_to_utc(ms: i64) -> rusqlite::Result<DateTime<Utc>> {
 
 pub use super::store_sources::{
     claim_source_ingest_tx, count_chunks_by_lifecycle_status, count_raw_paths_ingested_with_prefix,
-    filter_raw_paths_not_ingested, get_chunk_lifecycle_status, is_source_ingested,
-    mark_raw_paths_ingested, set_chunk_lifecycle_status, RAW_FILE_GATE_KIND,
+    delete_source_ingest, filter_raw_paths_not_ingested, get_chunk_lifecycle_status,
+    is_source_ingested, mark_raw_paths_ingested, set_chunk_lifecycle_status, RAW_FILE_GATE_KIND,
 };

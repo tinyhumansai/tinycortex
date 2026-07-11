@@ -26,7 +26,7 @@
 //! Only the well-known scalar/list shapes the [`Entity`] uses are emitted and
 //! parsed; this is deliberately not a general YAML implementation. The free
 //! text after the closing `---` is the notes body and is never interpreted —
-//! [`extract_notes`] hands it back verbatim so upserts can round-trip it.
+//! [`notes_body`] hands it back verbatim so upserts can round-trip it.
 
 use chrono::{DateTime, Utc};
 
@@ -98,20 +98,35 @@ fn unquote(s: &str) -> String {
 
 /// Split a document into `(front_matter_yaml, notes_body)`. Returns `None`
 /// when the leading `---` fence or its closing `---` is absent.
+///
+/// The closing fence is accepted in two forms: `\n---\n` followed by a notes
+/// body, or `\n---` at end-of-file (an empty body). The EOF form matters
+/// because a hand-editor that strips the trailing newline would otherwise make
+/// an otherwise valid file unparsable — and an unparsable file is silently
+/// overwritten on the next upsert.
 fn split_front_matter(text: &str) -> Option<(&str, &str)> {
     let rest = text.strip_prefix("---\n")?;
-    let end = rest.find("\n---\n")?;
-    let (yaml, after) = rest.split_at(end);
-    let body = after.strip_prefix("\n---\n").unwrap_or(after);
-    Some((yaml, body))
+    if let Some(end) = rest.find("\n---\n") {
+        let (yaml, after) = rest.split_at(end);
+        let body = after.strip_prefix("\n---\n").unwrap_or(after);
+        return Some((yaml, body));
+    }
+    // Closing fence sitting at end-of-file with no trailing newline.
+    if let Some(yaml) = rest.strip_suffix("\n---") {
+        return Some((yaml, ""));
+    }
+    None
 }
 
-/// Return just the notes body of a document, or an empty string when the file
-/// has no recognisable front matter.
-pub(crate) fn extract_notes(text: &str) -> String {
-    split_front_matter(text)
-        .map(|(_, body)| body.to_string())
-        .unwrap_or_default()
+/// Return the notes body when the document has recognisable front matter, or
+/// `None` when the leading or closing fence is absent.
+///
+/// A file with an *empty* body parses as `Some("")`, distinct from one the
+/// parser cannot recognise at all (`None`). Callers that rewrite entity files
+/// use `None` as a signal to refuse the write rather than clobber content they
+/// failed to understand.
+pub(crate) fn notes_body(text: &str) -> Option<String> {
+    split_front_matter(text).map(|(_, body)| body.to_string())
 }
 
 /// Parse a full entity document. Returns `None` when the front matter is

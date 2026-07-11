@@ -3,7 +3,9 @@ use crate::memory::store::content::compose::chunk::{compose_chunk_file, rewrite_
 use crate::memory::store::content::compose::summary::{
     compose_summary_md, rewrite_summary_tags, scope_short_label, SummaryComposeInput,
 };
-use crate::memory::store::content::compose::yaml::{split_front_matter, yaml_scalar};
+use crate::memory::store::content::compose::yaml::{
+    scan_fm_field, split_front_matter, yaml_scalar,
+};
 use crate::memory::store::content::compose::{MEMORY_ARTIFACT_FORMAT, OPENHUMAN_CORE_VERSION};
 use crate::memory::store::content::paths::SummaryTreeKind;
 use chrono::TimeZone;
@@ -101,6 +103,85 @@ fn yaml_scalar_quotes_special_characters() {
     assert_eq!(yaml_scalar("slack:#eng"), "\"slack:#eng\"");
     assert_eq!(yaml_scalar("hello world"), "hello world");
     assert_eq!(yaml_scalar(""), "\"\"");
+}
+
+// ─── frontmatter-yaml hardening (SC-1, SC-2, SC-19) ───────────────────────
+
+/// SC-1: a file whose closing fence is `\n---` at EOF (no trailing newline,
+/// empty body) must parse instead of panicking on an out-of-bounds slice.
+#[test]
+fn split_front_matter_handles_eof_fence_without_trailing_newline() {
+    let content = "---\nsource_id: foo\n---";
+    let (fm, body) = split_front_matter(content).expect("eof fence must parse");
+    assert_eq!(fm, "---\nsource_id: foo\n---");
+    assert_eq!(body, "");
+}
+
+/// SC-1: genuinely malformed front matter returns `None`, never panics.
+#[test]
+fn split_front_matter_malformed_returns_none() {
+    assert!(split_front_matter("---\n").is_none());
+    assert!(split_front_matter("---\nno closing fence").is_none());
+    assert!(split_front_matter("not front matter").is_none());
+    // Empty front matter, EOF fence.
+    let (fm, body) = split_front_matter("---\n\n---").expect("empty fm parses");
+    assert_eq!(fm, "---\n\n---");
+    assert_eq!(body, "");
+}
+
+/// SC-2: `yaml_scalar` must quote values with control characters and escape
+/// newlines/tabs so provider values cannot inject front-matter lines.
+#[test]
+fn yaml_scalar_escapes_control_characters() {
+    assert_eq!(yaml_scalar("a\nb"), "\"a\\nb\"");
+    assert_eq!(yaml_scalar("a\tb"), "\"a\\tb\"");
+    assert_eq!(yaml_scalar("a\rb"), "\"a\\rb\"");
+    // A value that tries to terminate the block must be neutralised.
+    assert_eq!(yaml_scalar("x\n---\n"), "\"x\\n---\\n\"");
+}
+
+/// SC-2: a provider value carrying `\n---\n` must round-trip through
+/// compose -> split -> scan without corrupting the body or injecting lines.
+#[test]
+fn adversarial_newline_value_round_trips_with_body_intact() {
+    let mut chunk = sample_chunk();
+    let evil = "evil\n---\nowner: attacker\ntags:\n  - injected";
+    chunk.metadata.source_id = evil.into();
+
+    let (full, body) = compose_chunk_file(&chunk);
+    let full_str = std::str::from_utf8(&full).unwrap();
+
+    let (fm, b) = split_front_matter(full_str).expect("must split");
+    // Body bytes are exactly the original content — the injection did not
+    // shift the closing fence.
+    assert_eq!(b.as_bytes(), body.as_slice());
+    assert_eq!(b.as_bytes(), chunk.content.as_bytes());
+    // The value is recovered verbatim, decoded back from its escaped form.
+    let recovered = scan_fm_field(fm, "source_id").expect("source_id present");
+    assert_eq!(recovered, evil);
+    // The injection is confined to a single escaped line: no standalone
+    // `owner: attacker` line leaked, and `owner` still resolves to the real
+    // metadata owner rather than the attacker-supplied value.
+    assert!(fm.lines().all(|l| l.trim() != "owner: attacker"));
+    assert_eq!(
+        scan_fm_field(fm, "owner").as_deref(),
+        Some("alice@example.com")
+    );
+}
+
+/// SC-19: a value containing `\"` (backslash then quote) must round-trip —
+/// the unescape order must not corrupt it.
+#[test]
+fn backslash_quote_value_round_trips() {
+    let mut chunk = sample_chunk();
+    let raw = r#"a\"b\\c"#; // a \ " b \ \ c
+    chunk.metadata.source_id = raw.into();
+
+    let (full, _body) = compose_chunk_file(&chunk);
+    let full_str = std::str::from_utf8(&full).unwrap();
+    let (fm, _) = split_front_matter(full_str).expect("must split");
+    let recovered = scan_fm_field(fm, "source_id").expect("source_id present");
+    assert_eq!(recovered, raw);
 }
 
 fn sample_email_chunk() -> Chunk {

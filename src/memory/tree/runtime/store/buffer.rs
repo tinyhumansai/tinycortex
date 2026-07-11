@@ -9,7 +9,13 @@ use serde_json::Value;
 use super::paths::buffer_dir;
 use crate::memory::config::MemoryConfig;
 
-/// Append raw content to the ingestion buffer as a timestamped file.
+/// Append raw content to the ingestion buffer as a timestamped file named
+/// `{epoch_ms}_{uuid8}.md`, so [`buffer_read`]'s lexicographic filename sort is
+/// also chronological (within the same buffer) for entries at least a
+/// millisecond apart. When `metadata` is `Some`, it is JSON-serialised into a
+/// `---\nmetadata: ...\n---\n` header prepended to `content`; see
+/// `strip_buffer_frontmatter` (private, this module) for the read-side caveat
+/// this creates.
 pub fn buffer_write(
     config: &MemoryConfig,
     namespace: &str,
@@ -85,6 +91,17 @@ pub fn buffer_drain(config: &MemoryConfig, namespace: &str) -> Result<Vec<(Strin
     Ok(entries)
 }
 
+/// Strip an optional `---\nmetadata: ...\n---\n` header written by
+/// [`buffer_write`], returning just the body.
+///
+/// # NOTE: truncates user content that merely begins with `---` (`TR-14a`)
+/// This only checks whether the trimmed input starts with `---` — it does not
+/// verify the header actually contains a recognised `metadata:` line written
+/// by [`buffer_write`]. Raw ingested content that happens to start with a
+/// literal `---` (e.g. a markdown horizontal rule or an untrusted YAML-looking
+/// blob) has everything up to and including the next `\n---` line silently
+/// swallowed as if it were frontmatter. See
+/// `docs/spec/audit/03-tree-archivist-conversations.md`.
 fn strip_buffer_frontmatter(raw: &str) -> String {
     let trimmed = raw.trim_start();
     if !trimmed.starts_with("---") {

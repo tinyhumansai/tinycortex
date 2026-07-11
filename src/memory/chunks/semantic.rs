@@ -5,6 +5,15 @@
 //! of an LLM or an embedding model. It prioritizes splitting on headings and
 //! paragraph boundaries while preserving context by carrying over headings
 //! to subsequent chunks.
+//!
+//! This is a distinct chunker from [`super::produce`]: [`chunk_markdown`]
+//! (this module, re-exported as `chunk_semantic`) targets pre-chunking a
+//! *single* large document by heading/paragraph structure for
+//! LLM-context-sized pieces, using the simpler `chars/4` token heuristic
+//! throughout (no [`super::types::conservative_token_estimate`] safety
+//! margin). [`super::produce::chunk_markdown`] is the source-kind-aware
+//! ingest-time chunker that produces the persisted [`super::types::Chunk`].
+//! Neither one calls the other; callers pick whichever fits their use case.
 
 use std::rc::Rc;
 
@@ -133,6 +142,9 @@ pub fn chunk_markdown(text: &str, max_tokens: usize) -> Vec<Chunk> {
     chunks
 }
 
+/// Clear `current` and, if this section has a heading, re-seed the buffer
+/// with `heading_prefix` so the next emitted chunk still carries heading
+/// context even though it starts a fresh paragraph run.
 fn reset_chunk_buffer(current: &mut String, heading_prefix: Option<&str>) {
     current.clear();
     if let Some(prefix) = heading_prefix {

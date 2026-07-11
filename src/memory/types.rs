@@ -1,10 +1,28 @@
 //! Core public data contracts for the TinyCortex memory engine.
 //!
 //! These types are the stable surface shared across every layer (storage,
-//! ingestion, retrieval, RPC). They are pure data — no storage side effects —
-//! and are ported faithfully from OpenHuman's `memory` and `memory_store`
-//! modules so wire formats (snake_case enum strings, serde defaults) stay
-//! byte-compatible when OpenHuman imports this crate.
+//! ingestion, retrieval, RPC). They are pure data — no storage side effects,
+//! no interior mutability, freely `Clone`/`Send`/`Sync` — and are ported
+//! faithfully from OpenHuman's `memory` and `memory_store` modules so wire
+//! formats (snake_case enum strings, serde defaults) stay byte-compatible when
+//! OpenHuman imports this crate.
+//!
+//! ## Wire-compatibility contract
+//!
+//! Every `#[serde(rename_all = "snake_case")]` enum here has its variant
+//! strings persisted in on-disk indexes (SQLite columns, markdown frontmatter)
+//! and/or sent over the RPC boundary. Renaming a variant, or a struct field
+//! that lacks `#[serde(default)]`, is a breaking change for any host reading
+//! previously-written data. When adding a field, prefer `#[serde(default)]` so
+//! older persisted rows continue to deserialize.
+//!
+//! ## Fail-closed provenance
+//!
+//! [`MemoryTaint`] is the one field in this module with a safety-relevant
+//! default: it decodes unknown/corrupt persisted strings as
+//! [`MemoryTaint::ExternalSync`] rather than [`MemoryTaint::Internal`], so a
+//! caller that forgets to persist taint, or an index that has drifted, fails
+//! toward *more* restrictive tool-use policy rather than less.
 
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +51,15 @@ pub enum MemoryTaint {
 
 impl MemoryTaint {
     /// Serialised form used by the SQLite `memory_docs.taint` column.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tinycortex::memory::types::MemoryTaint;
+    ///
+    /// assert_eq!(MemoryTaint::Internal.as_db_str(), "internal");
+    /// assert_eq!(MemoryTaint::ExternalSync.as_db_str(), "external_sync");
+    /// ```
     pub fn as_db_str(&self) -> &'static str {
         match self {
             Self::Internal => "internal",
@@ -43,6 +70,22 @@ impl MemoryTaint {
     /// Reverse of [`Self::as_db_str`]. Unknown values fail closed to the more
     /// restrictive [`MemoryTaint::ExternalSync`] so policy gates refuse
     /// external-effect tools on content of unknown provenance.
+    ///
+    /// Note this is *not* a strict inverse of [`Self::as_db_str`]: it never
+    /// errors, so a malformed or unexpected `raw` string (empty, wrong case,
+    /// truncated by a partial write, …) silently maps to
+    /// [`MemoryTaint::ExternalSync`] rather than surfacing as a parse failure.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tinycortex::memory::types::MemoryTaint;
+    ///
+    /// assert_eq!(MemoryTaint::from_db_str("internal"), MemoryTaint::Internal);
+    /// assert_eq!(MemoryTaint::from_db_str("external_sync"), MemoryTaint::ExternalSync);
+    /// // Unrecognised input fails closed rather than erroring.
+    /// assert_eq!(MemoryTaint::from_db_str("garbage"), MemoryTaint::ExternalSync);
+    /// ```
     pub fn from_db_str(raw: &str) -> Self {
         match raw {
             "internal" => Self::Internal,
@@ -66,6 +109,15 @@ pub enum MemoryCategory {
     Custom(String),
 }
 
+/// Renders the wire label for the built-in variants (`"core"`, `"daily"`,
+/// `"conversation"`) and the raw inner name for [`MemoryCategory::Custom`].
+///
+/// This is a human-readable rendering only and is **not** the same as the
+/// `serde` wire format: `Custom(name)` serializes to JSON as
+/// `{"custom": name}` (serde's default externally-tagged representation for a
+/// newtype variant), whereas [`Display`](std::fmt::Display) renders it as bare
+/// `name` with no `"custom"` wrapper. Do not round-trip through `Display` for
+/// persistence or RPC — use `serde_json` (de)serialization instead.
 impl std::fmt::Display for MemoryCategory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -97,8 +149,9 @@ pub struct MemoryEntry {
     pub session_id: Option<String>,
     /// Optional relevance / confidence score (typically 0.0–1.0).
     pub score: Option<f64>,
-    /// Provenance taint. See [`MemoryTaint`].
-    /// Provenance taint; unknown persisted values decode as `external_sync`.
+    /// Provenance taint (see [`MemoryTaint`]). Absent on legacy JSON, in which
+    /// case it defaults to [`MemoryTaint::Internal`]; unknown persisted string
+    /// values decode as [`MemoryTaint::ExternalSync`].
     #[serde(default)]
     pub taint: MemoryTaint,
 }
@@ -159,8 +212,9 @@ pub struct NamespaceDocumentInput {
     /// Explicit document id; generated when absent.
     #[serde(default)]
     pub document_id: Option<String>,
-    /// Provenance taint; defaults to [`MemoryTaint::Internal`] for legacy JSON.
-    /// Provenance taint; unknown persisted values decode as `external_sync`.
+    /// Provenance taint; defaults to [`MemoryTaint::Internal`] for legacy JSON
+    /// missing this field. Unknown persisted string values decode as
+    /// [`MemoryTaint::ExternalSync`].
     #[serde(default)]
     pub taint: MemoryTaint,
 }

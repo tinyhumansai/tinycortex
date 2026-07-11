@@ -14,6 +14,24 @@
 //!   [`extract::ChatProvider`].
 //! - [`embed::Embedder`] — the embedding backend, defaulting to the
 //!   deterministic [`embed::InertEmbedder`].
+//!
+//! ## Position in the layer diagram
+//!
+//! `score` sits between [`crate::memory::chunks`] (produces the [`Chunk`]s
+//! it scores) and [`crate::memory::tree`]/[`crate::memory::queue`] (which
+//! call [`score_chunk`]/[`score_chunks`] during ingest and act on
+//! [`ScoreResult::kept`]). Per the crate-wide layering rule, `score` never
+//! calls upward into `tree`, `queue`, or `retrieval`.
+//!
+//! ## Concurrency / atomicity
+//!
+//! [`score_chunk`] itself is pure-ish (no store access) and safe to call
+//! concurrently for different chunks — the only shared state is whatever the
+//! configured [`extract::EntityExtractor`] / LLM provider holds internally.
+//! Persistence ([`persist_score`] / [`persist_score_tx`]) is where atomicity
+//! matters: use the `_tx` variant when persisting a score alongside its chunk
+//! write so both land in the same SQLite transaction (see
+//! [`store`]'s module docs for the full write contract).
 
 /// Embedding backends ([`embed::Embedder`]) and the deterministic
 /// [`embed::InertEmbedder`] default.
@@ -190,7 +208,17 @@ pub async fn score_chunk(chunk: &Chunk, cfg: &ScoringConfig) -> Result<ScoreResu
                         scoring_token_count,
                         &extracted,
                     );
-                    true
+                    // `LlmEntityExtractor::extract` never returns `Err`: every
+                    // failure path (transport, HTTP status, malformed JSON)
+                    // soft-falls back to `Ok(ExtractedEntities::default())`
+                    // with `llm_importance: None`. So an `Ok` alone does NOT
+                    // mean an importance signal was produced. Only treat the
+                    // LLM as "consulted" — and thus switch to the full,
+                    // importance-weighted combine — when an importance value is
+                    // actually present. Otherwise a `0.0` importance would flow
+                    // through the `llm_importance` weight and drag borderline
+                    // chunks below the drop threshold, silently discarding them.
+                    extracted.llm_importance.is_some()
                 }
                 Err(_e) => {
                     // LLM extractor failed — fall back to cheap signals only.
@@ -206,14 +234,16 @@ pub async fn score_chunk(chunk: &Chunk, cfg: &ScoringConfig) -> Result<ScoreResu
 
     // 4. Final weighted combine.
     //
-    // If the LLM ran, its importance signal is populated → use the full
-    // `combine` which includes the `llm_importance` weight.
+    // If the LLM ran AND produced an importance signal, `llm_consulted` is
+    // `true` → use the full `combine` which includes the `llm_importance`
+    // weight.
     //
-    // If the LLM was skipped (short-circuited or not configured) OR failed,
-    // using the full combine would pin `llm_importance * w.llm_importance =
-    // 0 * 2.0` into the numerator while still dividing by the full denominator
-    // — artificially dragging the total down. Fall back to `combine_cheap_only`
-    // which excludes that term from both numerator and denominator.
+    // If the LLM was skipped (short-circuited or not configured), failed, or
+    // soft-fell back to an empty extraction with no importance, using the full
+    // combine would pin `llm_importance * w.llm_importance = 0 * 2.0` into the
+    // numerator while still dividing by the full denominator — artificially
+    // dragging the total down. Fall back to `combine_cheap_only` which excludes
+    // that term from both numerator and denominator.
     let mut total = if llm_consulted {
         self::signals::combine(&signals, &cfg.weights)
     } else {
@@ -325,6 +355,15 @@ pub async fn score_chunks_fast(chunks: &[Chunk], cfg: &ScoringConfig) -> Result<
 /// Co-occurrence graph edges (OpenHuman's E2GraphRAG accumulation) are not
 /// written here: TinyCortex's `memory::graph` module is not yet ported, so this
 /// helper persists the score row and the entity index only.
+///
+/// NOTE (RS-13): the entity index is only cleared/re-indexed when
+/// `result.kept` is `true`. If a chunk is scored a second time (e.g. a
+/// re-score after content edit) and flips from kept to dropped, this function
+/// takes the `!result.kept` branch and never calls
+/// [`store::clear_entity_index_for_node`] — the entity-index rows from the
+/// earlier, kept scoring are left behind as phantom rows pointing at a
+/// now-dropped chunk. Callers that need drop-time cleanup must clear the
+/// entity index themselves before calling this function.
 pub fn persist_score(
     config: &MemoryConfig,
     result: &ScoreResult,
@@ -358,7 +397,8 @@ pub fn persist_score(
 /// Transactional variant of [`persist_score`] — writes the score row and
 /// entity-index rows on the caller's open [`Transaction`] so the persistence
 /// is atomic with the surrounding ingest write. Same kept/clear-before-reindex
-/// semantics as [`persist_score`].
+/// semantics as [`persist_score`], including the same phantom-row gotcha on a
+/// kept→dropped re-score (see the RS-13 note there).
 pub fn persist_score_tx(
     tx: &Transaction<'_>,
     result: &ScoreResult,

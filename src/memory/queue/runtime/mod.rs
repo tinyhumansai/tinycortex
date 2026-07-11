@@ -79,6 +79,13 @@ pub async fn run_worker(
 /// Each tick enqueues a dedupe-suppressed `flush_stale` job and requeues
 /// transiently-failed jobs. Transient errors are swallowed (the next tick
 /// retries); corruption is returned to the host.
+///
+/// This loop does not call
+/// [`recover_stale_locks`](crate::memory::queue::store_settle::recover_stale_locks)
+/// — see the caveat on [`scheduler::self_heal`]. Stale-lock recovery only
+/// happens once, at [`run`]'s [`worker::bootstrap`] call, so a row stranded
+/// `running` past its lease in a long-lived process stays invisible to every
+/// later scheduler tick until the process restarts.
 pub async fn run_scheduler(
     config: &MemoryConfig,
     opts: &SchedulerLoopConfig,
@@ -125,9 +132,24 @@ pub async fn run(
 ///
 /// Classification order matters: corruption is checked first (fatal), then the
 /// transient families in descending severity.
+///
+/// This does **not** check [`worker::is_host_io_error`]. A persistent
+/// host-filesystem failure (EIO/ENOSPC/EROFS — a dying disk, a full or
+/// remounted-read-only mount) surfacing as a `std::io::Error` therefore falls
+/// through every arm here and gets the generic `opts.error_backoff` rather
+/// than a long, page-once backoff, even though `is_host_io_error`'s own
+/// documentation describes exactly this loop as the intended caller. A host
+/// that hits this condition will re-poll and retry at the short generic
+/// interval instead of backing off.
 fn backoff_for(err: &anyhow::Error, opts: &WorkerLoopConfig) -> Option<Duration> {
     if worker::is_sqlite_corrupt(err) {
         return None;
+    }
+    if worker::is_host_io_error(err) {
+        // Persistent host-filesystem failure (EIO/ENOSPC/EROFS surfaced as a raw
+        // std::io::Error). User-only-fixable and never self-clears — back off
+        // long, like disk-full, instead of hammering the generic error arm.
+        return Some(opts.host_io_backoff);
     }
     if worker::is_sqlite_disk_full(err) {
         return Some(opts.disk_full_backoff);

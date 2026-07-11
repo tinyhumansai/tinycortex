@@ -67,7 +67,17 @@ pub fn check_embed_dim(v: Vec<f32>, label: &str) -> Result<Vec<f32>> {
 ///
 /// Returns `0.0` when either vector has zero magnitude (including empty
 /// vectors) to keep the rerank sort stable instead of surfacing `NaN`. Length
-/// mismatch also returns `0.0`.
+/// mismatch also returns `0.0`. Otherwise returns the raw cosine value in
+/// `[-1.0, 1.0]` — unlike
+/// [`crate::memory::store::vectors::store::cosine_similarity`] (`f64`,
+/// clamped to `[0.0, 1.0]`), anti-correlated vectors here yield a negative
+/// score rather than `0.0`.
+///
+/// NOTE: this crate has two independent `cosine_similarity` implementations
+/// (this one and the `f64`, `[0,1]`-clamped one used by MMR reranking in
+/// `store::vectors::store`) that disagree on sign and precision. Callers that
+/// mix results from both call sites cannot reliably compare them; prefer
+/// consolidating on one before adding a third caller.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;

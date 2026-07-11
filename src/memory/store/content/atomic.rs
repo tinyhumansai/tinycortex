@@ -113,9 +113,12 @@ pub fn stage_summary_with_layout(
     let body_bytes = composed.body.as_bytes();
     let sha256 = sha256_hex(body_bytes);
 
+    let full_bytes = composed.full.as_bytes();
+
     // Idempotent re-stage: matching on-disk body sha → return unchanged.
-    // Mismatch → the file is stale; overwrite atomically so the db row and disk
-    // file stay consistent.
+    // Mismatch → the file is stale; overwrite it via temp-file + rename so the
+    // destination is only ever the old or the new file, never missing between a
+    // `remove_file` and a re-write if the process crashes.
     if abs_path.exists() {
         let disk_sha = read_body_sha256(&abs_path).unwrap_or_default();
         if disk_sha == sha256 {
@@ -125,11 +128,11 @@ pub fn stage_summary_with_layout(
                 content_sha256: sha256,
             });
         }
-        let _ = std::fs::remove_file(&abs_path);
+        crate::memory::fsutil::atomic_write(&abs_path, full_bytes)
+            .map_err(|e| anyhow::anyhow!("atomic overwrite {:?}: {e}", abs_path))?;
+    } else {
+        write_if_new(&abs_path, full_bytes)?;
     }
-
-    let full_bytes = composed.full.as_bytes();
-    write_if_new(&abs_path, full_bytes)?;
 
     Ok(StagedSummary {
         summary_id: input.summary_id.to_string(),

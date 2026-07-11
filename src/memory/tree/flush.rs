@@ -45,8 +45,7 @@ pub async fn flush_stale_buffers(
         let Some(tree) = tree_by_id.get(&buf.tree_id) else {
             continue; // orphan buffer — tree row gone
         };
-        let sealed =
-            cascade_all_from(config, tree, buf.level, Some(now), summariser, strategy).await?;
+        let sealed = cascade_all_from(config, tree, buf.level, true, summariser, strategy).await?;
         seals += sealed.len();
     }
     Ok(seals)
@@ -68,6 +67,15 @@ pub async fn flush_stale_buffers_default(
 }
 
 /// Force-seal one tree's L0 buffer now (e.g. "user disconnected this account").
+///
+/// This always forces the seal, even for an under-budget buffer — that is the
+/// whole point of the disconnect path. The `now` parameter is retained for
+/// call-site compatibility but is not used to gate the seal; the force is
+/// unconditional.
+///
+/// # Errors
+/// Propagates any error from [`cascade_all_from`], including "no tree with id
+/// {tree_id}" if the tree row does not exist.
 pub async fn force_flush_tree(
     config: &MemoryConfig,
     tree_id: &str,
@@ -75,9 +83,10 @@ pub async fn force_flush_tree(
     summariser: &dyn Summariser,
     strategy: &LabelStrategy,
 ) -> Result<Vec<String>> {
+    let _ = now;
     let tree = store::get_tree(config, tree_id)?
         .ok_or_else(|| anyhow::anyhow!("no tree with id {tree_id}"))?;
-    cascade_all_from(config, &tree, 0, now, summariser, strategy).await
+    cascade_all_from(config, &tree, 0, true, summariser, strategy).await
 }
 
 #[cfg(test)]

@@ -99,6 +99,17 @@ impl SourceReader for FolderReader {
         Ok(items)
     }
 
+    /// Read one file's content by its `item_id` (the slash-normalised path
+    /// relative to the source's `path`, as produced by
+    /// [`list_items`](Self::list_items)).
+    ///
+    /// NOTE: only path traversal is guarded here (via [`ensure_within_base`]);
+    /// the source's configured glob is *not* re-applied. Any `item_id` that
+    /// resolves to a real file under `path` is readable, even if it would not
+    /// have been matched — and thus would not have been listed — by
+    /// [`list_items`](Self::list_items)'s glob filter. A source scoped to
+    /// `docs/**/*.md` can still be made to read `docs/.env` by passing that
+    /// item id directly.
     async fn read_item(
         &self,
         source: &MemorySourceEntry,

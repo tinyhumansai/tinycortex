@@ -94,11 +94,11 @@ pub use raw_refs::{
 };
 pub use store::{
     claim_source_ingest_tx, count_chunks, count_chunks_by_lifecycle_status,
-    count_raw_paths_ingested_with_prefix, extraction_coverage, filter_raw_paths_not_ingested,
-    get_chunk, get_chunk_lifecycle_status, get_chunks_batch, is_source_ingested, list_chunks,
-    mark_raw_paths_ingested, set_chunk_lifecycle_status, upsert_chunks, ListChunksQuery,
-    CHUNK_STATUS_ADMITTED, CHUNK_STATUS_BUFFERED, CHUNK_STATUS_DROPPED,
-    CHUNK_STATUS_PENDING_EXTRACTION, CHUNK_STATUS_SEALED, RAW_FILE_GATE_KIND,
+    count_raw_paths_ingested_with_prefix, delete_source_ingest, extraction_coverage,
+    filter_raw_paths_not_ingested, get_chunk, get_chunk_lifecycle_status, get_chunks_batch,
+    is_source_ingested, list_chunks, mark_raw_paths_ingested, set_chunk_lifecycle_status,
+    upsert_chunks, ListChunksQuery, CHUNK_STATUS_ADMITTED, CHUNK_STATUS_BUFFERED,
+    CHUNK_STATUS_DROPPED, CHUNK_STATUS_PENDING_EXTRACTION, CHUNK_STATUS_SEALED, RAW_FILE_GATE_KIND,
 };
 pub use store_delete::{
     delete_chunks_by_owner, delete_chunks_by_source, delete_chunks_by_source_prefix,

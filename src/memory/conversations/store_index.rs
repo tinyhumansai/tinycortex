@@ -221,6 +221,11 @@ impl ConversationStore {
                 }
             })
             .collect();
+        // NOTE: both fields are compared as raw strings (lexicographic), not
+        // parsed timestamps. RFC3339 sorts correctly this way only when every
+        // value shares the same offset representation; mixed `+00:00` / `Z` /
+        // non-UTC offsets across threads can misorder the listing — see audit
+        // TR-16.
         threads.sort_by(|a, b| {
             b.last_message_at
                 .cmp(&a.last_message_at)

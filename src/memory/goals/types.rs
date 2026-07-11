@@ -81,6 +81,13 @@ impl GoalsDoc {
     }
 
     /// Render the document back to markdown suitable for `MEMORY_GOALS.md`.
+    ///
+    /// NOTE: this emits only the header and the recognised `- [id] text`
+    /// item lines — any free prose, sub-bullets, or other hand-added content
+    /// a user wrote into the file is not represented in [`GoalsDoc`] and is
+    /// therefore dropped on the next `parse` → mutate → `render` round-trip
+    /// (e.g. via `add`/`edit`/`delete`/reflection). Treat this file as
+    /// machine-owned rather than freely hand-editable.
     pub fn render(&self) -> String {
         let mut out = String::from(HEADER);
         out.push_str("\n\n");

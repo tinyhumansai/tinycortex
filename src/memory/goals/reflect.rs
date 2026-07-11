@@ -121,6 +121,12 @@ fn normalise(text: &str) -> String {
 
 /// Apply `mutations` to `doc` deterministically, de-duplicating additions by
 /// normalised text. Returns `(applied, skipped)` counts. Does not persist.
+///
+/// NOTE: the normalised-duplicate check only guards `Add`. An `Edit` that
+/// rewrites one goal's text to match another existing goal's (normalised)
+/// text is still applied as-is, so a generator can converge the list to
+/// several items with identical text. Callers that need strict uniqueness
+/// must check for this themselves.
 fn apply_mutations(doc: &mut GoalsDoc, mutations: &[GoalMutation]) -> (usize, usize) {
     let mut applied = 0usize;
     let mut skipped = 0usize;

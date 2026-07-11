@@ -21,6 +21,7 @@ fn fast_worker_opts() -> WorkerLoopConfig {
         busy_backoff: Duration::from_millis(2),
         io_backoff: Duration::from_millis(2),
         disk_full_backoff: Duration::from_millis(2),
+        host_io_backoff: Duration::from_millis(2),
         error_backoff: Duration::from_millis(2),
     }
 }
@@ -103,6 +104,17 @@ fn backoff_classifies_corruption_as_fatal() {
         Some("database disk image is malformed".into()),
     ));
     assert!(backoff_for(&corrupt, &opts).is_none());
+}
+
+#[test]
+fn backoff_classifies_host_io_error_as_long_backoff() {
+    let opts = WorkerLoopConfig::default();
+    // EIO (raw OS error 5): a persistent host-filesystem failure surfaced as a
+    // std::io::Error, not a SQLite code. It must take the long host-IO arm, not
+    // the generic error_backoff.
+    let host_io = anyhow::Error::from(std::io::Error::from_raw_os_error(5));
+    assert_eq!(backoff_for(&host_io, &opts), Some(opts.host_io_backoff));
+    assert_ne!(backoff_for(&host_io, &opts), Some(opts.error_backoff));
 }
 
 #[test]

@@ -6,6 +6,17 @@
 //! follows as markdown. Bodies pass through [`email_clean::clean_body`] before
 //! rendering to strip reply chains, marketing footers, legal disclaimers, and
 //! other boilerplate.
+//!
+//! NOTE: `from`/`to`/`cc`/`subject` headers are rendered verbatim (no
+//! escaping — [`email_clean::md_escape`] exists but is not applied here) into
+//! the `---\nFrom: ...` boundary block the downstream chunker splits on
+//! (known gap, see audit finding QI-14 in
+//! `docs/spec/audit/04-queue-ingest.md`). A body or header value containing a
+//! line of the form `---` immediately followed by a `From:` line can inject a
+//! bogus message boundary and split one email into multiple spurious chunks.
+//! Callers that accept untrusted header/body content should sanitise these
+//! fields before calling [`canonicalise`] if boundary injection must be
+//! prevented.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

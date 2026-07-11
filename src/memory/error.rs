@@ -2,6 +2,15 @@
 //! surface. Modules that mirror OpenHuman's `anyhow`-based signatures may keep
 //! using `anyhow::Result`; this enum is for contracts that benefit from
 //! matchable variants (validation, not-found, taint, IO).
+//!
+//! `?` converts `std::io::Error` and `serde_json::Error` into
+//! [`MemoryError::Io`] / [`MemoryError::Serde`] automatically via the derived
+//! `#[from]` impls, and any `anyhow::Error` (including one produced by `?` on
+//! a foreign error type inside an `anyhow`-returning function) into
+//! [`MemoryError::Other`]. The purpose-built variants ([`MemoryError::NotFound`],
+//! [`MemoryError::Invalid`], [`MemoryError::BudgetExceeded`],
+//! [`MemoryError::PathEscape`]) are constructed explicitly by callers that want
+//! matchable, typed failure — they are never inferred from a foreign error.
 
 use thiserror::Error;
 

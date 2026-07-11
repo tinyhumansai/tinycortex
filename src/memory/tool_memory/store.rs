@@ -29,6 +29,11 @@ use crate::memory::types::MemoryCategory;
 /// Keeps the cache-friendly prefix bounded even when callers stash a long
 /// list of Critical rules over time. Lower-priority rules are still
 /// available via [`ToolMemoryStore::list_rules`].
+///
+/// NOTE: [`ToolMemoryStore::rules_for_prompt`] enforces this cap with a
+/// plain `truncate` after sorting, so it is possible (if unlikely at 30) for
+/// a Critical rule to be excluded from the prompt injection once this many
+/// higher-priority/fresher Critical+High rules exist.
 pub const TOOL_MEMORY_PROMPT_CAP: usize = 30;
 
 /// High-level store for tool-scoped memory rules.
@@ -52,6 +57,33 @@ impl ToolMemoryStore {
     /// If a rule with the same `(tool_name, id)` already exists, its
     /// `created_at` is preserved. `tool_name` is sourced from the rule
     /// itself to avoid storage/namespace skew.
+    ///
+    /// Validation is limited to "non-empty `tool_name`" and "non-empty
+    /// `rule` body" — callers should be aware of the following gaps:
+    ///
+    /// NOTE: `rule.rule` is not rejected or sanitized for embedded newlines.
+    /// [`render_tool_memory_rules`](super::render::render_tool_memory_rules)
+    /// concatenates the rule body verbatim into the pinned system-prompt
+    /// block, so a stored rule containing `"...\n### \`shell\`\n- ..."` can
+    /// forge what looks like a second tool section inside a block the
+    /// prompt frames as a hard constraint. This matters because rules can
+    /// arrive from [`ToolMemorySource::PostTurn`] auto-capture of untrusted
+    /// tool-failure text. Sanitize/reject `\n`/`\r` before calling this if
+    /// the rule body may be attacker-influenced.
+    ///
+    /// NOTE: `tool_name` is stored verbatim (only the derived namespace is
+    /// lower-cased via [`tool_memory_namespace`]), so `"Email"` and
+    /// `"email"` land in the same namespace but are treated as two distinct
+    /// tools by [`list_rules`](Self::list_rules) grouping and by
+    /// [`render_tool_memory_rules`](super::render::render_tool_memory_rules)'s
+    /// per-tool heading. Normalize `tool_name` before calling if case
+    /// consistency matters to the caller.
+    ///
+    /// NOTE: this is a racy read (`fetch_rule`) → write (`Memory::store`)
+    /// with no mutation lock (unlike the process-wide lock the `goals`
+    /// module uses around its own load→mutate→save sequences). Concurrent
+    /// upserts of the same `(tool_name, id)` can interleave and lose an
+    /// update.
     pub async fn put_rule(&self, mut rule: ToolMemoryRule) -> Result<ToolMemoryRule, String> {
         if rule.tool_name.trim().is_empty() {
             return Err("tool_name is required".to_string());
@@ -146,7 +178,13 @@ impl ToolMemoryStore {
     /// they must be eagerly surfaced (Critical + High), grouped by tool
     /// name. Result is bounded by [`TOOL_MEMORY_PROMPT_CAP`] entries
     /// total — Critical rules are always preferred over High when the
-    /// cap is reached.
+    /// cap is reached (the truncate happens after a Critical-first sort).
+    ///
+    /// NOTE: the cap is a hard `truncate`, not a per-priority reservation.
+    /// If more than [`TOOL_MEMORY_PROMPT_CAP`] Critical rules exist across
+    /// the scanned tools, the ones sorted past the cap (oldest `updated_at`
+    /// within Critical) are silently dropped from the prompt injection —
+    /// there is no overflow signal to the caller.
     ///
     /// `tools` constrains which tool namespaces to inspect; passing an
     /// empty slice scans every known tool namespace via
