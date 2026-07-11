@@ -248,6 +248,12 @@ pub fn sanitize_json(value: &Value) -> Sanitized<Value> {
     sanitize_json_inner(value, 0)
 }
 
+/// Recursive worker behind [`sanitize_json`].
+///
+/// `depth` counts nesting from the call in `sanitize_json` (which starts at
+/// `0`); once it reaches [`MAX_JSON_SANITIZE_DEPTH`] the whole subtree at that
+/// point is replaced by a single redaction marker rather than walked further,
+/// bounding recursion against pathologically deep or adversarial JSON.
 fn sanitize_json_inner(value: &Value, depth: usize) -> Sanitized<Value> {
     if depth >= MAX_JSON_SANITIZE_DEPTH {
         return Sanitized {
@@ -305,6 +311,15 @@ fn sanitize_json_inner(value: &Value, depth: usize) -> Sanitized<Value> {
     }
 }
 
+/// True when a JSON object key's name itself suggests it holds a secret
+/// (`api_key`, `token`, `password`, …), independent of the value's contents.
+///
+/// Matching keys are redacted wholesale in [`sanitize_json_inner`] — the
+/// value is replaced rather than scanned, since a key named e.g. `password`
+/// is assumed sensitive even if its value doesn't match any
+/// [`REDACTION_PATTERNS`] regex. Matching is on the key with all
+/// non-alphanumeric characters stripped and lowercased, so `API-Key`,
+/// `api_key`, and `apiKey` are all treated identically.
 fn is_sensitive_key(key: &str) -> bool {
     let normalized: String = key
         .chars()

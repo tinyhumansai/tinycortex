@@ -115,6 +115,11 @@ impl KvStore {
     }
 
     /// Read a global key, returning `None` if absent.
+    ///
+    /// NOTE: a present row whose `value_json` fails to parse (corrupt data)
+    /// also returns `Ok(None)` — `serde_json::from_str(..).ok()` collapses
+    /// "absent" and "present but corrupt" into the same result, so callers
+    /// cannot distinguish the two from this return value alone.
     pub fn get_global(&self, key: &str) -> Result<Option<Value>, String> {
         let conn = self.conn.lock();
         let value: Option<String> = conn
@@ -155,6 +160,9 @@ impl KvStore {
     }
 
     /// Read a namespace-scoped key, returning `None` if absent.
+    ///
+    /// Same caveat as [`Self::get_global`]: a corrupt stored `value_json`
+    /// also reads back as `Ok(None)`, indistinguishable from a missing key.
     pub fn get_namespace(&self, namespace: &str, key: &str) -> Result<Option<Value>, String> {
         let conn = self.conn.lock();
         let value: Option<String> = conn
@@ -191,6 +199,10 @@ impl KvStore {
 
     /// List all keys in a namespace, most recently updated first, as a JSON
     /// array of `{key, value, updatedAt}` objects.
+    ///
+    /// A row whose `value_json` fails to parse contributes `"value": null`
+    /// rather than being skipped or erroring — corrupt rows still appear in
+    /// the listing, just with a null payload.
     pub fn list_namespace(&self, namespace: &str) -> Result<Vec<Value>, String> {
         let conn = self.conn.lock();
         let mut stmt = conn
@@ -231,6 +243,9 @@ impl KvStore {
     }
 
     /// All records in a namespace as typed [`MemoryKvRecord`]s, newest first.
+    ///
+    /// Same corrupt-row handling as [`Self::list_namespace`]: an unparsable
+    /// `value_json` surfaces as `Value::Null` rather than an error.
     pub fn records_namespace(&self, namespace: &str) -> Result<Vec<MemoryKvRecord>, String> {
         let ns = Self::sanitize_namespace(namespace);
         let conn = self.conn.lock();
@@ -260,6 +275,9 @@ impl KvStore {
     }
 
     /// All global records as typed [`MemoryKvRecord`]s, newest first.
+    ///
+    /// Same corrupt-row handling as [`Self::list_namespace`]: an unparsable
+    /// `value_json` surfaces as `Value::Null` rather than an error.
     pub fn records_global(&self) -> Result<Vec<MemoryKvRecord>, String> {
         let conn = self.conn.lock();
         let mut stmt = conn
