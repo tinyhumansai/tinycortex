@@ -56,21 +56,29 @@ pub(crate) fn upsert_buffer_tx(tx: &Transaction<'_>, buf: &Buffer) -> Result<()>
     Ok(())
 }
 
-/// Reset a buffer at `(tree_id, level)` to empty (used at seal time).
+/// Consume exactly a previously-read buffer snapshot during a seal.
 ///
-/// # NOTE
-/// This unconditionally wipes the whole buffer row rather than removing only
-/// the ids that were actually sealed. The caller in
-/// [`crate::memory::tree::bucket_seal::seal_one_level`] snapshots the buffer,
-/// awaits an arbitrarily long summariser call with no lock held, and only then
-/// runs this inside the seal transaction — if another `append_to_buffer` call
-/// lands on the same `(tree_id, level)` in that window, its item is clobbered
-/// here and is never summarised. Callers that need to seal only a known
-/// snapshot should re-read the buffer here and remove the snapshotted ids by
-/// set-difference instead of clearing unconditionally (tracked as `TR-1` in
-/// `docs/spec/audit/03-tree-archivist-conversations.md`).
-pub(crate) fn clear_buffer_tx(tx: &Transaction<'_>, tree_id: &str, level: u32) -> Result<()> {
-    upsert_buffer_tx(tx, &Buffer::empty(tree_id, level))
+/// The current row must still begin with the snapshot ids. Items appended
+/// while the summariser was running remain in their original order. If a
+/// competing seal already changed the prefix, the transaction fails instead
+/// of inserting a duplicate summary or deleting unrelated items.
+pub(crate) fn consume_snapshot_tx(tx: &Transaction<'_>, snapshot: &Buffer) -> Result<()> {
+    let mut current = get_buffer_conn(tx, &snapshot.tree_id, snapshot.level)?;
+    if !current.item_ids.starts_with(&snapshot.item_ids) {
+        anyhow::bail!(
+            "buffer changed while sealing tree_id={} level={}",
+            snapshot.tree_id,
+            snapshot.level
+        );
+    }
+
+    current.item_ids.drain(..snapshot.item_ids.len());
+    current.token_sum = current.token_sum.saturating_sub(snapshot.token_sum).max(0);
+    if current.item_ids.is_empty() {
+        current.oldest_at = None;
+        current.token_sum = 0;
+    }
+    upsert_buffer_tx(tx, &current)
 }
 
 /// List stale **L0** buffers ordered by `oldest_at_ms` ASC. Only L0 (raw-leaf)

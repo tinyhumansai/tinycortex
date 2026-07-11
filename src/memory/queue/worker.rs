@@ -15,10 +15,8 @@
 //! failures (EIO/ENOSPC/EROFS — a dying SD card or full/read-only mount) that
 //! surface as `std::io::Error` rather than a SQLite code; a host loop is meant
 //! to use it to back off long and page once instead of flooding (Sentry
-//! CORE-RUST-19J). NOTE: the `tokio`-feature runtime loop's `backoff_for`
-//! (`memory::queue::runtime`) — the one `run_once`-driving loop shipped in
-//! this crate — does not currently call it, so that gap is not yet closed
-//! here; a host driving `run_once` directly should still classify with it.
+//! CORE-RUST-19J). The `tokio`-feature runtime loop's `backoff_for`
+//! (`memory::queue::runtime`) includes this classifier.
 //! The Sentry-once emission and the storage-degraded flag stay host-owned
 //! regardless.
 
@@ -39,6 +37,11 @@ use crate::memory::queue::types::{Job, JobFailure, JobOutcome};
 /// upstream single-permit semaphore); LLM-bound jobs hold a permit for the
 /// duration of their handler.
 static LLM_GATE: LazyLock<LlmGate> = LazyLock::new(LlmGate::default);
+
+/// Short delay used when an LLM job is claimed while the process-wide gate is
+/// full. Deferring releases the job lease and attempt immediately, avoiding a
+/// blocking wait on an async executor thread.
+const LLM_GATE_RETRY_MS: i64 = 50;
 
 /// The global LLM gate (exposed so hosts/tests can inspect or share it).
 pub fn llm_gate() -> &'static LlmGate {
@@ -69,6 +72,14 @@ pub fn bootstrap(config: &MemoryConfig) -> Result<(usize, usize)> {
 /// handler and drop it; the other blocks the only executor thread inside
 /// `acquire`).
 pub async fn run_once(config: &MemoryConfig, delegates: &dyn QueueDelegates) -> Result<bool> {
+    run_once_with_gate(config, delegates, &LLM_GATE).await
+}
+
+async fn run_once_with_gate(
+    config: &MemoryConfig,
+    delegates: &dyn QueueDelegates,
+    gate: &LlmGate,
+) -> Result<bool> {
     let Some(job) = claim_next(config, DEFAULT_LOCK_DURATION_MS)? else {
         return Ok(false);
     };
@@ -76,7 +87,16 @@ pub async fn run_once(config: &MemoryConfig, delegates: &dyn QueueDelegates) -> 
     // LLM-bound jobs hold a permit from the global gate for the lifetime of the
     // handler; non-LLM jobs (AppendBuffer, FlushStale) run without one.
     let permit: Option<Permit> = if job.kind.is_llm_bound() {
-        Some(LLM_GATE.acquire())
+        let Some(permit) = gate.try_acquire() else {
+            mark_deferred(
+                config,
+                &job,
+                chrono::Utc::now().timestamp_millis() + LLM_GATE_RETRY_MS,
+                "llm concurrency gate busy",
+            )?;
+            return Ok(true);
+        };
+        Some(permit)
     } else {
         None
     };

@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use super::*;
 use crate::memory::config::MemoryConfig;
+use crate::memory::queue::store::get_job;
 use crate::memory::queue::store::{count_by_status, enqueue};
 use crate::memory::queue::test_support::RecordingDelegates;
 use crate::memory::queue::types::{FlushStalePayload, JobStatus, NewJob};
@@ -91,6 +92,45 @@ async fn scheduler_loop_enqueues_flush_stale_then_stops() {
 
     // At least one flush_stale job was enqueued by the loop.
     assert!(count_by_status(&cfg, JobStatus::Ready).unwrap() >= 1);
+}
+
+#[tokio::test]
+async fn scheduler_tick_recovers_an_expired_running_job() {
+    use crate::memory::chunks::with_connection;
+
+    let (_tmp, cfg) = test_config();
+    let new_job = NewJob::flush_stale(&FlushStalePayload::default(), "expired", 1).unwrap();
+    let id = enqueue(&cfg, &new_job).unwrap().unwrap();
+    with_connection(&cfg, |conn| {
+        conn.execute(
+            "UPDATE mem_tree_jobs
+                SET status = 'running', locked_until_ms = 0, started_at_ms = 0
+              WHERE id = ?1",
+            rusqlite::params![&id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    let shutdown = Shutdown::new();
+    let opts = SchedulerLoopConfig {
+        tick: Duration::from_secs(60),
+    };
+    let stop_after_first_tick = async {
+        loop {
+            if get_job(&cfg, &id).unwrap().unwrap().status == JobStatus::Ready {
+                shutdown.trigger();
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    };
+    let (result, ()) = tokio::join!(run_scheduler(&cfg, &opts, &shutdown), stop_after_first_tick);
+    result.unwrap();
+    assert_eq!(
+        get_job(&cfg, &id).unwrap().unwrap().status,
+        JobStatus::Ready
+    );
 }
 
 #[test]

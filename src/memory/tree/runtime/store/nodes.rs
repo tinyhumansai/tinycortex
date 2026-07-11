@@ -14,14 +14,9 @@ use crate::memory::tree::runtime::types::{
 
 /// Write a tree node to disk as a markdown file with YAML frontmatter.
 ///
-/// # NOTE: not atomic (`TR-7`)
-/// This is a plain `std::fs::write` over the target path — no temp-file +
-/// rename, unlike [`crate::memory::store::content::atomic::write_if_new`]
-/// elsewhere in the crate. A crash mid-write leaves a truncated file;
-/// `parse_node_markdown` (private, this module) happily parses whatever bytes landed (every
-/// frontmatter field falls back to a default), so the corruption is silent and
-/// gets baked into future re-summarisation and [`super::super::engine::rebuild_tree`]
-/// runs. See `docs/spec/audit/03-tree-archivist-conversations.md`.
+/// The replacement uses the crate's same-directory temp-file + rename helper,
+/// so readers observe either the previous complete node or the new one, never
+/// a partially-written markdown file (TR-7).
 pub fn write_node(config: &MemoryConfig, node: &TreeNode) -> Result<()> {
     let path = node_file_path(config, &node.namespace, &node.node_id);
     if let Some(parent) = path.parent() {

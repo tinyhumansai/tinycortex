@@ -129,6 +129,28 @@ async fn run_once_holds_an_llm_permit_for_llm_bound_jobs() {
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn run_once_defers_instead_of_blocking_when_llm_gate_is_full() {
+    let (_tmp, cfg) = test_config();
+    let d = RecordingDelegates::admitting();
+    let gate = crate::memory::queue::gate::LlmGate::new(1);
+    let held = gate.try_acquire().unwrap();
+    let new_job = NewJob::reembed_backfill(&ReembedBackfillPayload {
+        signature: "sig".into(),
+    })
+    .unwrap();
+    let id = enqueue(&cfg, &new_job).unwrap().unwrap();
+
+    // This would deadlock a current-thread runtime if the worker used the
+    // gate's blocking acquire path.
+    assert!(run_once_with_gate(&cfg, &d, &gate).await.unwrap());
+    let job = get_job(&cfg, &id).unwrap().unwrap();
+    assert_eq!(job.status, JobStatus::Ready);
+    assert_eq!(job.attempts, 0);
+    assert_eq!(gate.available_permits(), 0);
+    drop(held);
+}
+
 #[test]
 fn bootstrap_purges_retired_and_recovers_locks() {
     use crate::memory::chunks::with_connection;

@@ -250,18 +250,10 @@ pub(crate) fn should_seal(config: &MemoryConfig, buf: &Buffer) -> bool {
 /// rows were deleted) — the function refuses to persist a summary with zero
 /// inputs. Also propagates any SQL failure from the seal transaction.
 ///
-/// # NOTE: not atomic against concurrent appends
-/// `buf` is a snapshot the caller already read; hydration and the summariser
-/// call below run with **no lock held**, so an arbitrarily long await sits
-/// between the snapshot and the transaction that commits it. Any
-/// `append_to_buffer` call that lands on the same `(tree_id, level)` during
-/// that window is silently lost: [`store::clear_buffer_tx`] wipes the whole
-/// buffer row rather than removing only `buf.item_ids`. The same window also
-/// lets two concurrent cascades seal the same buffer twice — the `parent_id IS
-/// NULL` backlink guard below masks the resulting duplicate rather than
-/// preventing it. See `TR-1` in
-/// `docs/spec/audit/03-tree-archivist-conversations.md` for the fix (re-read
-/// and set-difference inside the transaction instead of clearing).
+/// The potentially slow summariser runs without a database lock. The commit
+/// transaction therefore re-reads and consumes only the snapshotted prefix;
+/// concurrent appends remain buffered, while a competing seal causes this
+/// transaction to abort cleanly.
 pub(crate) async fn seal_one_level(
     config: &MemoryConfig,
     tree: &Tree,
@@ -321,7 +313,9 @@ pub(crate) async fn seal_one_level(
         tree_kind: tree.kind,
         level: target_level,
         parent_id: None,
-        child_ids: buf.item_ids.clone(),
+        // Hydration can skip deleted inputs. Never claim missing children in
+        // the persisted summary merely because their ids remained buffered.
+        child_ids: inputs.iter().map(|input| input.id.clone()).collect(),
         content: output.content,
         token_count: output.token_count,
         entities: node_entities,
@@ -378,7 +372,7 @@ pub(crate) async fn seal_one_level(
                 .context("Failed to backlink summary to parent summary")?;
             }
         }
-        store::clear_buffer_tx(&tx, &tree_id, level)?;
+        store::consume_snapshot_tx(&tx, buf)?;
 
         // Append the new summary to the parent buffer.
         let mut parent = store::get_buffer_conn(&tx, &tree_id, target_level)?;
