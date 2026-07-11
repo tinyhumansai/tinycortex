@@ -39,7 +39,13 @@ fn set_chunk_lifecycle_status_conn(conn: &Connection, chunk_id: &str, status: &s
         "UPDATE mem_tree_chunks SET lifecycle_status = ?1 WHERE id = ?2",
         params![status, chunk_id],
     )?;
-    if changed == 0 {}
+    // A lifecycle transition targeting a chunk that does not exist is always a
+    // caller bug (the chunk must be upserted before its status is advanced).
+    // Silently reporting success here would mask a lost/absent chunk and let the
+    // pipeline believe it scheduled work it never did, so surface it instead.
+    if changed == 0 {
+        anyhow::bail!("set_chunk_lifecycle_status: no chunk row for id={chunk_id}");
+    }
     Ok(())
 }
 
@@ -107,6 +113,28 @@ pub fn claim_source_ingest_tx(
         params![source_kind.as_str(), source_id, now_ms],
     )?;
     Ok(inserted > 0)
+}
+
+/// Release a previously-claimed source gate row so a later retry can re-claim it.
+///
+/// Compensation for a document ingest that claimed the gate but then failed
+/// before its chunks + jobs were durably persisted. Without this, a single
+/// failed ingest would permanently mark the source ingested with zero chunks
+/// and every retry would short-circuit as already-ingested. Idempotent: a
+/// missing row is a no-op.
+pub fn delete_source_ingest(
+    config: &MemoryConfig,
+    source_kind: SourceKind,
+    source_id: &str,
+) -> Result<()> {
+    with_connection(config, |conn| {
+        conn.execute(
+            "DELETE FROM mem_tree_ingested_sources \
+             WHERE source_kind = ?1 AND source_id = ?2",
+            params![source_kind.as_str(), source_id],
+        )?;
+        Ok(())
+    })
 }
 
 // ── Raw-archive file coverage gate ───────────────────────────────────────────
