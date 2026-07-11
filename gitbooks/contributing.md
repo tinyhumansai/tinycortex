@@ -6,21 +6,37 @@ description: How to build, test, format, document, and contribute to the TinyCor
 
 This page covers how to build, test, format, and document the **TinyCortex** Rust crate (`tinycortex` on crates.io), the repository layout conventions contributors are expected to follow, the commit/PR style, and how to run the benchmark suite that lives alongside the crate.
 
-TinyCortex is a single root-level Rust library crate. There is no hosted service, server binary, or language SDK to build here — everything in `src/` compiles into one `cdylib`/`rlib` library that host applications (OpenHuman or your own) embed.
+TinyCortex is a single root-level Rust library crate. There is no hosted service, server binary, or language SDK to build here — everything in `src/` compiles into one plain Rust library (`rlib`) that host applications (OpenHuman or your own) embed as a Cargo dependency.
 
 ## Prerequisites
 
 You need a stable Rust toolchain with Rust 2021 edition support. Install via [rustup](https://rustup.rs/) and confirm `cargo` is on your `PATH`.
 
-The crate pulls in a few native dependencies through Cargo, so a working C toolchain is required for the first build:
+The crate pulls in one native dependency by default, so a working C toolchain is required for the first build:
 
-| Dependency | Why it needs a native build |
-| --- | --- |
-| `rusqlite` (with the `bundled` feature) | compiles a vendored SQLite from C; no system SQLite needed |
-| `git2` | links against libgit2 for the git-backed [Diff Layer](diff-layer.md) |
-| `sha2`, `uuid`, `rand` | content hashing, ids, and sampling |
+| Dependency | When | Why it needs a native build |
+| --- | --- | --- |
+| `rusqlite` (with the `bundled` feature) | always | compiles a vendored SQLite from C; no system SQLite needed |
+| `git2` | only with the `git-diff` feature | links against libgit2 for the git-backed [Diff Layer](diff-layer.md) |
 
-Because `rusqlite` is configured with `bundled`, you do **not** need a system SQLite install — but you do need a C compiler (`cc`/clang) available for the bundled build. The full dependency set is declared in `Cargo.toml` at the repo root.
+Because `rusqlite` is configured with `bundled`, you do **not** need a system SQLite install — but you do need a C compiler (`cc`/clang) available for the bundled build. `git2` is **optional and off by default**; a plain `cargo build` never compiles it. The full dependency set is declared in `Cargo.toml` at the repo root.
+
+### Cargo features
+
+The default feature set is empty (`default = []`), and several whole modules are compiled out unless you enable their feature:
+
+| Feature | Gates | What it enables |
+| --- | --- | --- |
+| `tokio` | `memory::queue::runtime` | async background worker loops for the job queue (turns `tokio` into a real dependency) |
+| `git-diff` | `memory::diff` | the git-backed diff ledger, snapshots, checkpoints, and read markers (pulls in `git2`/libgit2) |
+| `providers-http` | `memory::providers` | HTTP-backed embedding/LLM providers |
+| `rpc` | `memory::rpc` | the RPC surface |
+
+A bare `cargo test` therefore silently skips the `diff`, `providers`, `rpc`, and `queue::runtime` modules. CI runs `cargo test --all-features` plus a per-feature matrix — to test everything the way CI does, run:
+
+```bash
+cargo test --all-features
+```
 
 ## Build, test, and check
 
@@ -43,9 +59,9 @@ cargo test --test <name>   # a single integration test file under tests/
 cargo test <substring>     # only tests whose name matches the substring
 ```
 
-Test layout follows two conventions from `AGENTS.md`:
+Test layout follows two conventions:
 
-- **Unit tests** live next to the module they cover, in a dedicated `test.rs` file inside the module directory — not inline at the bottom of the implementation file.
+- **Unit tests** live next to the module they cover, in a dedicated `<name>_tests.rs` file per implementation file (e.g. `store.rs` + `store_tests.rs`) — not inline at the bottom of the implementation file.
 - **Integration tests** live under the top-level `tests/` directory and exercise the crate through its public API.
 
 Dev-only dependencies used by tests are declared under `[dev-dependencies]` in `Cargo.toml`:
@@ -74,7 +90,7 @@ Drop `--no-deps` if you want the rendered docs for dependencies too. When adding
 | `src/` | the Rust crate source — all library code |
 | `tests/` | integration tests that drive the public API |
 | `docs/` | migration and specification docs (OpenHuman port notes) |
-| `benchmarks/` | benchmark notebooks and helpers (RAGAS, BABILong, TemporalBench, LoCoMo, HotPotQA, etc.) |
+| `benchmarks/` | the retrieval-effectiveness harness (`effectiveness/`) plus reported platform evaluation results |
 | `examples/` | example notebooks and scenarios |
 | `gitbooks/` | long-form prose documentation |
 | `paper/` | research paper sources |
@@ -86,18 +102,18 @@ Note that `Cargo.toml` deliberately **excludes** the non-Rust directories (`.git
 
 Modules are organized to stay high-level and cohesive. Three rules from `AGENTS.md` are enforced by convention in review:
 
-1. **`type.rs` for types.** All type definitions for a module go in a dedicated `type.rs` file inside that module directory.
-2. **`test.rs` for tests.** Tests live in a separate `test.rs` file, not mixed into implementation files.
-3. **500-line cap.** Avoid letting any source file grow beyond ~500 lines of code. Split behavior into focused submodules before you reach that point.
+1. **`types.rs` for types.** All type definitions for a module go in a dedicated `types.rs` file inside that module directory.
+2. **`<name>_tests.rs` for tests.** Each implementation file gets its own sibling test file (`store_tests.rs`, `types_tests.rs`, …), not tests mixed into implementation files.
+3. **~500-line guideline.** Avoid letting a source file grow much beyond ~500 lines of code; split behavior into focused submodules before that point. (A couple of legacy files still exceed this — new code shouldn't add more.)
 
 A typical engine module (for example under `src/memory/tree/`) therefore looks like:
 
 ```text
 src/memory/<area>/
-  mod.rs      # module docs (//!), re-exports, wiring
-  type.rs     # struct/enum/trait definitions for this area
-  <impl>.rs   # focused behavior files, each well under ~500 LOC
-  test.rs     # unit tests for this area
+  mod.rs           # module docs (//!), re-exports, wiring
+  types.rs         # struct/enum/trait definitions for this area
+  <impl>.rs        # focused behavior files, each around ~500 LOC or less
+  <impl>_tests.rs  # unit tests for the matching implementation file
 ```
 
 ### Coding style
@@ -139,16 +155,15 @@ git worktree add ../neocortex-feature-x -b your-name/feature-x
 
 ## Running benchmarks
 
-The benchmarks are **not** part of the Rust crate — they live under `benchmarks/` as Python notebooks and helpers and are excluded from the published package. They evaluate the memory system against external suites (RAGAS, BABILong, TemporalBench, Vending-Bench, LoCoMo, HotPotQA, and others) using the shared `nb_helpers/` utilities for config, datasets, pipeline, and metrics.
-
-To set up the benchmark/helper environment from the repo root:
+The benchmarks are **not** part of the published Rust crate — they live under `benchmarks/` and are excluded from the package. The runnable suite is the **retrieval-effectiveness harness**, a standalone Rust crate that path-depends on `tinycortex`:
 
 ```bash
-pip install -r requirements.txt
-pip install -e .
+cd benchmarks/effectiveness
+cargo run --bin effectiveness
+cargo test    # metrics + dataset-validation unit tests
 ```
 
-Then run the relevant notebook(s) under `benchmarks/`. For reproducibility, fix random seeds and document the environment used for any reported numbers. Corpus download, test-set generation, evaluation, and charting are driven by scripts under `scripts/`.
+It measures recall@k, precision@k, hit@k, MRR, and nDCG@k over labeled datasets and writes dated JSON reports under `results/` (gitignored). The RAGAS / TemporalBench / BABILong / Vending-Bench figures shown on the [Benchmarks](benchmarks.md) page come from a hosted evaluation harness that is not in this repository.
 
 {% hint style="info" %}
 See [Benchmarks](benchmarks.md) for what each suite measures and how results are reported.
