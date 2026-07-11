@@ -68,6 +68,20 @@ pub async fn flush_stale_buffers_default(
 }
 
 /// Force-seal one tree's L0 buffer now (e.g. "user disconnected this account").
+///
+/// # NOTE: `now = None` is a no-op for an under-budget buffer
+/// [`cascade_all_from`] only treats the seal as forced when `force_now.is_some()`
+/// — the `DateTime` payload itself is never read, only its `Option` discriminant.
+/// [`crate::memory::tree::factory::TreeFactory::seal_now`] calls this with
+/// `now = None`, so the documented "force-seal now" behavior silently does
+/// nothing when the L0 buffer is non-empty but still under its token budget —
+/// exactly the disconnect scenario this function exists for. Pass `Some(Utc::now())`
+/// (or any timestamp) to actually force the seal. Tracked as `TR-3`/`TR-12` in
+/// `docs/spec/audit/03-tree-archivist-conversations.md`.
+///
+/// # Errors
+/// Propagates any error from [`cascade_all_from`], including "no tree with id
+/// {tree_id}" if the tree row does not exist.
 pub async fn force_flush_tree(
     config: &MemoryConfig,
     tree_id: &str,
