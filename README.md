@@ -2,7 +2,7 @@
 <img src="./docs/images/image-neocortex.png" style="max-width: 400px"/>
 <h1>TinyCortex 🧠 — Human-like AI Memory in Rust</h1>
 
-**Forgets the noise ◦ 10M+ token context ◦ ~4000 tokens/sec ◦ Conscious Recall**
+**Forgets the noise ◦ Local-first & inspectable ◦ Markdown as source of truth ◦ Built in Rust**
 
 [![Crates.io](https://img.shields.io/crates/v/tinycortex.svg)](https://crates.io/crates/tinycortex)
 [![docs.rs](https://img.shields.io/docsrs/tinycortex)](https://docs.rs/tinycortex)
@@ -16,9 +16,9 @@
 
 The human brain is a master at compression. It doesn't try to remember every passing detail; instead it aggressively prunes noise to keep a sharp, focused, easily accessible recall of what truly matters. Traditional AI memory systems do the opposite — they try to remember _everything_ and retrieve whatever is _similar_. But similar doesn't mean important. The result? Your AI drowns in stale, irrelevant context that degrades every response.
 
-**TinyCortex** takes the brain's approach: it **intelligently forgets noise**. Low-value memories naturally decay while the knowledge you recall, interact with, and build upon is reinforced. The result is a memory engine that stays lean and focused, chops through 10M+ tokens accurately at up to ~4000 tokens/second, and gets sharper with every interaction.
+**TinyCortex** takes the brain's approach: it **intelligently forgets noise**. A multi-signal admission gate drops low-value content at ingest, and retrieval applies exponential time-decay so stale memories fade from recall while fresh, high-signal knowledge ranks first. The result is a memory engine that stays lean and focused instead of drowning in stale context.
 
-TinyCortex scores extremely highly on [RAGAS](https://www.ragas.io/), [BABILong](https://github.com/booydar/babilong/), [Vending-Bench](https://andonlabs.com/evals/vending-bench-2), [LoCoMo](https://github.com/snap-research/locomo), and [HotPotQA](https://hotpotqa.github.io/).
+The hosted TinyCortex platform has been evaluated on [RAGAS](https://www.ragas.io/), TemporalBench, [BABILong](https://github.com/booydar/babilong/), and [Vending-Bench](https://andonlabs.com/evals/vending-bench-2) — see [Benchmarks](#-benchmarks) below for the reported results and what you can reproduce from this repo.
 
 > **What this repository is:** the open-source **Rust core** of TinyCortex — the local-first memory engine — published on [crates.io](https://crates.io/crates/tinycortex) as [`tinycortex`](https://crates.io/crates/tinycortex). It is a _library_: you embed it in your own agent, service, or app. The hosted TinyCortex platform is currently in closed alpha — [reach out](mailto:founders@tinyhumans.ai) for access.
 
@@ -26,30 +26,31 @@ TinyCortex scores extremely highly on [RAGAS](https://www.ragas.io/), [BABILong]
 
 ## Intelligent Noise Filtering
 
-Memories that aren't accessed naturally decay over time; frequently recalled knowledge becomes more durable. The store stays lean on its own — no manual cleanup.
+Every chunk passes a multi-signal admission gate at ingest — low-value content is dropped before it ever pollutes the store — and retrieval ranking applies exponential time-decay (7-day half-life by default) so stale memories fade from recall. The store stays lean on its own — no manual cleanup.
 
 ![Interaction graph highlighting important knowledge](docs/images/gif/AppleEmailGraph.gif)
 
 ## Interaction-Aware Scoring
 
-Not all memories are equal. Views, replies, reactions, mentions, and authored content all signal what matters. Knowledge people engage with rises to the top; ignored information fades away.
+Not all memories are equal. Authored messages, replies, DMs, and mentions all signal what matters, and each carries its own weight in the admission score. Knowledge people engage with rises to the top; ignored information fades away.
 
 ![Memory decay over time](docs/images/gif/BobMemoryDecayVideo.gif)
 
 ## Local-First & Inspectable
 
-Markdown files are the source of truth. SQLite chunk rows, summary trees, vectors, and a git-backed change ledger are _derived_ indexes that accelerate reads and can be rebuilt from canonical content. Every item carries source provenance and a security `taint` (internal vs. external-sync).
+Markdown files are the source of truth. SQLite chunk rows, summary trees, vectors, and a git-backed change ledger (opt-in via the `git-diff` Cargo feature) are _derived_ indexes that accelerate reads and can be rebuilt from canonical content. Every item carries source provenance and a security `taint` (internal vs. external-sync).
 
-## Conscious Recall
+## Recency-Weighted Recall
 
-Conscious recall proactively surfaces the most relevant memories for the current moment instead of waiting for an explicit query. It tracks recent activity, combines it with time-based decay, and pulls forward the memories that are both recent and repeatedly interacted with — a focused slice of long-term history rather than a noisy dump.
+Retrieval blends keyword relevance, vector similarity, graph proximity, and freshness into a single explainable score, so what comes back is a focused slice of long-term history rather than a noisy dump. Summary-tree hotness tracking promotes frequently written topics into their own trees. (The fully proactive "conscious recall" experience — surfacing memories without an explicit query — is part of the hosted TinyCortex platform, built on these primitives.)
 
 # ⚡ Getting Started
 
-TinyCortex is a Rust library. Add it to your project:
+TinyCortex is a Rust library. Add it to your project (the example below also uses `tokio` and `anyhow`, which are not pulled in by the crate itself):
 
 ```bash
-cargo add tinycortex
+cargo add tinycortex anyhow
+cargo add tokio --features macros,rt-multi-thread
 ```
 
 Store and recall a memory with the built-in in-memory backend:
@@ -106,6 +107,8 @@ Full details live in the **[documentation](https://tinyhumans.gitbook.io/tinycor
 
 # 📈 Benchmarks
 
+> **Scope:** the results below were measured for the hosted TinyCortex platform (`tinycortex_v1`) using an evaluation harness that is **not part of this repository**, so they are reported rather than locally reproducible. The benchmark that ships with this repo is the [retrieval-effectiveness harness](./benchmarks/effectiveness/README.md) (recall@k, precision@k, MRR, nDCG@k over labeled datasets).
+
 ### RAGAS — Retrieval Quality (Sherlock Holmes Corpus)
 
 Standard RAG quality metrics via [RAGAS](https://docs.ragas.io/). TinyCortex leads in **Answer Relevancy (0.97)** and **Context Precision (0.75)**, outperforming FastGraphRAG, Gemini VDB, Mem0, and SuperMemory.
@@ -114,7 +117,7 @@ Standard RAG quality metrics via [RAGAS](https://docs.ragas.io/). TinyCortex lea
 
 ### TemporalBench — Temporal Reasoning
 
-Accuracy across ordering, state-at-time, recency, interval, and sequence questions. TinyCortex hits **100% on recency** — surfacing the most recent events thanks to its time-decay model.
+Accuracy across ordering, state-at-time, recency, interval, and sequence questions. TinyCortex hits **100% on recency** — surfacing the most recent events thanks to its time-decay ranking.
 
 ![chart_temporalbench](docs/images/chart_temporalbench.png)
 
@@ -124,7 +127,7 @@ An agent runs a simulated vending-machine business over 30 days. TinyCortex achi
 
 ![chart_vendingbench](docs/images/chart_vendingbench.png)
 
-See [`benchmarks/`](./benchmarks/README.md) to reproduce these on your own corpus.
+See [`benchmarks/`](./benchmarks/README.md) for the full reported tables and for the in-repo retrieval-effectiveness harness you can run yourself (`cd benchmarks/effectiveness && cargo run --bin effectiveness`).
 
 # 📚 Documentation
 
