@@ -1,6 +1,6 @@
 # Contributing to TinyCortex
 
-Thank you for your interest in contributing to **TinyCortex** — the AI memory system that forgets noise and remembers what matters. We welcome contributions to documentation, packages (3rd party integrations), benchmarks, and examples.
+Thank you for your interest in contributing to **TinyCortex** — the AI memory system that forgets noise and remembers what matters. This repository is the open-source **Rust core**: a single library crate (`tinycortex` on crates.io). We welcome contributions to the crate, its tests, the benchmark harness, and the documentation.
 
 ## Table of Contents
 
@@ -20,17 +20,20 @@ By participating in this project, you agree to be respectful and constructive. W
 1. **Fork and clone the repository**
 
    ```bash
-   git clone https://github.com/YOUR_USERNAME/tinycortex-docs.git
-   cd tinycortex-docs
+   git clone https://github.com/YOUR_USERNAME/tinycortex.git
+   cd tinycortex
    ```
 
-2. **Set up your environment**
-   - **Benchmarks & helpers**: From the repo root, install dependencies:
-     ```bash
-     pip install -r requirements.txt
-     pip install -e .
-     ```
-   - **Packages**: If you're working on a package under `packages/<name>/`, use that package's install instructions (e.g. `uv sync` or `pip install -e .` in its directory).
+2. **Set up your environment** — you need a stable Rust toolchain ([rustup](https://rustup.rs/)) and a C compiler (`rusqlite` builds a bundled SQLite; no system SQLite needed). Then:
+
+   ```bash
+   cargo check                  # fast validation
+   cargo test                   # unit + integration tests (default features)
+   cargo test --all-features    # everything, including feature-gated modules — this is what CI runs
+   cargo fmt --all              # format before committing
+   ```
+
+   The default feature set is empty; `tokio` (async queue runtime), `git-diff` (git-backed diff ledger, needs libgit2 via `git2`), `providers-http`, and `rpc` gate whole modules. See [gitbooks/contributing.md](gitbooks/contributing.md) for details.
 
 3. **Create a branch** for your work:
    ```bash
@@ -39,43 +42,41 @@ By participating in this project, you agree to be respectful and constructive. W
 
 ## Project Structure
 
-| Path                   | Description                                                                                                                                             |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/`   | **All 3rd party integrations.** Each subfolder is a separate integration. |
-| `benchmarks/` | Benchmark notebooks (RAGAS, BABILong, TemporalBench, Vending-Bench, LoCoMo, HotPotQA, etc.) and `nb_helpers/`                                           |
-| `examples/`            | Example notebooks and scenarios for using TinyCortex                                                                                                     |
-| `gitbooks/`            | Documentation (getting started, how memory works)                                                                                                       |
-| `helpers/`             | Shared adapters, chunking, and types used by benchmarks                                                                                                 |
-| `scripts/`             | Corpus download, test set generation, evaluation, charting                                                                                              |
+| Path          | Description                                                                                              |
+| ------------- | -------------------------------------------------------------------------------------------------------- |
+| `src/`        | The Rust crate source — all library code lives under `src/memory/`                                        |
+| `tests/`      | Integration tests that drive the crate's public API                                                       |
+| `benchmarks/` | The retrieval-effectiveness harness (`effectiveness/`, a standalone Rust crate) plus reported platform evaluation results |
+| `examples/`   | Example scenarios for using TinyCortex                                                                    |
+| `gitbooks/`   | Long-form documentation (getting started, architecture, module guides)                                    |
+| `docs/`       | Migration and specification docs (OpenHuman port notes)                                                   |
+| `paper/`      | Research paper sources                                                                                    |
 
 ## How to Contribute
 
-- **Documentation**
-  Fix typos, clarify explanations, or add new guides under `gitbooks/` or in the main `README.md`. Keep tone consistent with the existing docs.
+- **Code**
+  Follow the module conventions: `types.rs` for a module's type definitions, one `<name>_tests.rs` per implementation file, files around ~500 lines or less. Preserve machine-readable ids and enum wire strings when porting contracts from OpenHuman. Document public APIs with rustdoc.
 
-- **Packages (3rd party integrations)**
-  The `packages/` directory holds all 3rd party integrations (SDKs, plugins, etc.). Include tests where applicable; some packages have publish workflows that run on pushes to `main` when that package's files change. New integrations belong as new subfolders under `packages/`.
+- **Documentation**
+  Fix typos, clarify explanations, or add new guides under `gitbooks/` or in the main `README.md`. Keep tone consistent with the existing docs, and keep claims in parity with the code.
 
 - **Benchmarks**
-  Benchmark notebooks live in `benchmarks/`. Use `nb_helpers` for config, datasets, pipeline, and metrics. Ensure runs are reproducible (fixed seeds, documented env).
-
-- **Examples**
-  New or updated example notebooks in `examples/notebooks/` or scenarios in `examples/scenarios/` are welcome. Keep them runnable with the current SDK and dependencies.
+  The runnable benchmark is `benchmarks/effectiveness` (`cd benchmarks/effectiveness && cargo run --bin effectiveness`). Growing the labeled dataset or adding backends (see its README's roadmap) are welcome contributions. Ensure runs are reproducible and document the environment for any reported numbers.
 
 - **Bug reports & feature ideas**
   Open an issue with a clear description, steps to reproduce (for bugs), and context (version, OS, etc.) where relevant.
 
 ## Pull Request Process
 
-1. **Keep changes focused** — One logical change per PR (e.g. one fix, one feature, or one doc section).
+1. **Keep changes focused** — One logical change per PR (e.g. one fix, one feature, or one doc section). Prefer small, focused commits with Conventional Commit-style subjects (`fix:`, `feat:`, `docs:`, `refactor:`, `chore:`, `test:`).
 
-2. **Update docs** if your change affects usage, APIs, or setup (e.g. new env vars, new SDK options).
+2. **Update docs** if your change affects usage, APIs, or setup (e.g. new feature flags, changed wire strings, scoring weights).
 
-3. **Test locally** — For package changes, run the relevant tests or example scripts; for benchmarks, run the affected notebook(s).
+3. **Test locally** — Run `cargo test --all-features` and `cargo fmt --all`; for benchmark changes, run the effectiveness harness.
 
-4. **Push your branch** and open a PR against `main`. Describe what you changed and why.
+4. **Push your branch** and open a PR against `main`. Describe what you changed and why, and list the tests you ran.
 
-5. **Address review feedback** — Maintainers may request edits; we’ll work with you to get the PR merged.
+5. **Address review feedback** — Maintainers may request edits; we'll work with you to get the PR merged.
 
 We may squash commits when merging to keep history clean.
 
