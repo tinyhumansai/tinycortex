@@ -27,7 +27,15 @@ pub fn tree_active_signature(config: &MemoryConfig) -> String {
     format!("{}@{}", config.embedding.model, config.embedding.dim)
 }
 
-/// Store a chunk's embedding under the active model signature.
+/// Store a chunk's embedding under the active model signature (see
+/// [`tree_active_signature`]).
+///
+/// Upserts: calling this again for the same `chunk_id` (under the same active
+/// signature) replaces the stored vector rather than erroring or duplicating.
+///
+/// # Errors
+/// Returns `Err` if `embedding.len()` does not fit in an `i64` (practically
+/// unreachable), or if the underlying `INSERT ... ON CONFLICT` fails.
 pub fn set_chunk_embedding(config: &MemoryConfig, chunk_id: &str, embedding: &[f32]) -> Result<()> {
     let signature = tree_active_signature(config);
     set_chunk_embedding_for_signature(config, chunk_id, &signature, embedding)
@@ -36,6 +44,10 @@ pub fn set_chunk_embedding(config: &MemoryConfig, chunk_id: &str, embedding: &[f
 /// Core upsert into `mem_tree_chunk_embeddings` over an arbitrary `&Connection`.
 /// `rusqlite::Transaction` derefs to `Connection`, so an in-tx caller passes
 /// `&tx` and the sidecar row commits atomically with the surrounding work.
+///
+/// # Errors
+/// Returns `Err` if `embedding.len()` overflows `i64` (practically
+/// unreachable) or the `INSERT ... ON CONFLICT` statement fails.
 fn upsert_chunk_embedding_conn(
     conn: &Connection,
     chunk_id: &str,
@@ -60,6 +72,9 @@ fn upsert_chunk_embedding_conn(
 
 /// Core upsert into `mem_tree_summary_embeddings` over an arbitrary
 /// `&Connection`. Used only by the legacy→sidecar migration here.
+///
+/// # Errors
+/// See [`upsert_chunk_embedding_conn`] (identical failure modes).
 fn upsert_summary_embedding_conn(
     conn: &Connection,
     summary_id: &str,
@@ -83,6 +98,12 @@ fn upsert_summary_embedding_conn(
 }
 
 /// Store a chunk embedding for a specific provider/model/dimension signature.
+///
+/// Upserts by `(chunk_id, model_signature)` — safe to call repeatedly for the
+/// same key; the latest call wins.
+///
+/// # Errors
+/// See [`set_chunk_embedding`].
 pub fn set_chunk_embedding_for_signature(
     config: &MemoryConfig,
     chunk_id: &str,
@@ -94,7 +115,11 @@ pub fn set_chunk_embedding_for_signature(
     })
 }
 
-/// Transaction-scoped variant of [`set_chunk_embedding_for_signature`].
+/// Transaction-scoped variant of [`set_chunk_embedding_for_signature`]; the
+/// caller commits (or rolls back) `tx`.
+///
+/// # Errors
+/// See [`upsert_chunk_embedding_conn`].
 pub(crate) fn set_chunk_embedding_for_signature_tx(
     tx: &rusqlite::Transaction<'_>,
     chunk_id: &str,
@@ -105,6 +130,9 @@ pub(crate) fn set_chunk_embedding_for_signature_tx(
 }
 
 /// Transaction-scoped summary embedding upsert (used by the legacy migration).
+///
+/// # Errors
+/// See [`upsert_summary_embedding_conn`].
 pub(crate) fn set_summary_embedding_for_signature_tx(
     tx: &rusqlite::Transaction<'_>,
     summary_id: &str,
@@ -116,6 +144,15 @@ pub(crate) fn set_summary_embedding_for_signature_tx(
 
 /// Persistently record that `(chunk_id, signature)` cannot be re-embedded so a
 /// future backfill worklist can exclude it instead of looping on the same row.
+///
+/// Upserts by `(chunk_id, model_signature)`: a repeat call for the same key
+/// overwrites `reason` and `skipped_at_ms` rather than erroring.
+///
+/// # Errors
+/// Returns `Err` if `chunk_id` or `model_signature` fails
+/// [`validate_reembed_skip_key`] (empty after trimming, over
+/// [`REEMBED_SKIP_KEY_MAX_LEN`], or contains a NUL byte), or if the `INSERT`
+/// fails.
 pub fn mark_chunk_reembed_skipped(
     config: &MemoryConfig,
     chunk_id: &str,
@@ -140,7 +177,11 @@ pub fn mark_chunk_reembed_skipped(
 }
 
 /// Remove a single chunk tombstone so re-embed backfill can retry the row.
-/// Idempotent.
+/// Idempotent — deleting a non-existent tombstone is a successful no-op.
+///
+/// # Errors
+/// Returns `Err` if key validation fails (see
+/// [`mark_chunk_reembed_skipped`]) or the `DELETE` fails.
 pub fn clear_chunk_reembed_skipped(
     config: &MemoryConfig,
     chunk_id: &str,
@@ -159,7 +200,12 @@ pub fn clear_chunk_reembed_skipped(
 }
 
 /// Clear all chunk and summary tombstones for a model signature. Returns the
-/// total number of rows removed across both tombstone tables. Idempotent.
+/// total number of rows removed across both tombstone tables. Idempotent —
+/// calling again with nothing left to clear returns `Ok(0)`.
+///
+/// # Errors
+/// Returns `Err` if `model_signature` fails [`validate_reembed_skip_key`] or
+/// either `DELETE` fails.
 pub fn clear_reembed_skipped_for_signature(
     config: &MemoryConfig,
     model_signature: &str,
@@ -182,6 +228,13 @@ pub fn clear_reembed_skipped_for_signature(
 /// helpers. Rejects NUL bytes so SQLite bindings cannot be truncated.
 pub(crate) const REEMBED_SKIP_KEY_MAX_LEN: usize = 2048;
 
+/// Validate and trim a `chunk_id` / `model_signature` value before it reaches
+/// a reembed-skipped table query. `label` is only used to make the error
+/// message identify which argument failed.
+///
+/// # Errors
+/// Returns `Err` if `value`, after trimming, is empty, exceeds
+/// [`REEMBED_SKIP_KEY_MAX_LEN`] bytes, or contains a NUL byte.
 pub(crate) fn validate_reembed_skip_key<'a>(label: &str, value: &'a str) -> Result<&'a str> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -197,6 +250,15 @@ pub(crate) fn validate_reembed_skip_key<'a>(label: &str, value: &'a str) -> Resu
 }
 
 /// Fetch a chunk embedding for exactly one provider/model/dimension signature.
+///
+/// Returns `Ok(None)` when no row exists for `(chunk_id, model_signature)` —
+/// absence is not an error.
+///
+/// # Errors
+/// Returns `Err` if the query fails, or if [`embedding_from_blob`] rejects
+/// the stored blob (negative/zero-remainder-mismatched dim, or a blob length
+/// not a multiple of 4 bytes — both indicate on-disk corruption of this row,
+/// not a normal "no embedding" state).
 pub fn get_chunk_embedding_for_signature(
     config: &MemoryConfig,
     chunk_id: &str,
@@ -219,16 +281,36 @@ pub fn get_chunk_embedding_for_signature(
     })
 }
 
-/// Fetch a chunk's embedding for the active model signature.
+/// Fetch a chunk's embedding for the active model signature (see
+/// [`tree_active_signature`]). See [`get_chunk_embedding_for_signature`] for
+/// the return/error contract.
 pub fn get_chunk_embedding(config: &MemoryConfig, chunk_id: &str) -> Result<Option<Vec<f32>>> {
     let signature = tree_active_signature(config);
     get_chunk_embedding_for_signature(config, chunk_id, &signature)
 }
 
+/// Little-endian `f32` vector → `BLOB`. The inverse of [`embedding_from_blob`].
 pub(crate) fn embedding_to_blob(embedding: &[f32]) -> Vec<u8> {
     embedding.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
 
+/// Decode a little-endian `f32` vector `BLOB` back into `Vec<f32>`, validating
+/// it against the DB's own recorded `dim` column. `label` only qualifies the
+/// error message (e.g. `"chunk embedding"` vs. a future summary-embedding
+/// caller).
+///
+/// Always returns `Ok(Some(_))` on success — the `Option` in the return type
+/// exists purely so callers can `?`-propagate this directly from inside a
+/// `match row { None => Ok(None), Some(..) => embedding_from_blob(..) }` arm
+/// without an extra `.map`.
+///
+/// # Errors
+/// Returns `Err` if `dim` is negative, if `bytes.len()` is not a multiple of
+/// 4, or if the decoded float count does not equal `dim` — all three
+/// indicate the stored row is internally inconsistent (corruption or a bug
+/// upstream), not a normal "different embedding space" mismatch (that case is
+/// handled by comparing signatures/dims *before* calling this, e.g. in
+/// [`super::migrations::migrate_legacy_embeddings_to_sidecar`]).
 fn embedding_from_blob(bytes: &[u8], dim: i64, label: &str) -> Result<Option<Vec<f32>>> {
     if dim < 0 {
         anyhow::bail!("{label} has negative dimension {dim}");
@@ -258,6 +340,18 @@ const MAX_EMBEDDING_BATCH: usize = 500;
 /// Returns a `HashMap<chunk_id, Vec<f32>>` containing only the chunks that have
 /// a vector under `model_signature`. Missing chunks are simply absent (callers
 /// treat that the same as a `None` from the single-row helper).
+///
+/// `chunk_ids` is split into windows of at most [`MAX_EMBEDDING_BATCH`] so a
+/// single query never approaches SQLite's bound-parameter limit; each window
+/// runs as its own `SELECT ... WHERE chunk_id IN (...)` inside the same
+/// [`super::connection::with_connection`] call (not separately transacted —
+/// reads only).
+///
+/// # Errors
+/// Returns `Err` if `chunk_ids` is non-empty and any window's query
+/// preparation, execution, or blob decoding ([`embedding_from_blob`]) fails.
+/// Returns `Ok(HashMap::new())` immediately (no DB access) when `chunk_ids`
+/// is empty.
 pub fn get_chunk_embeddings_for_signature_batch(
     config: &MemoryConfig,
     chunk_ids: &[String],
@@ -307,7 +401,9 @@ pub fn get_chunk_embeddings_for_signature_batch(
     })
 }
 
-/// Batched read of chunk embeddings under the **active** model signature.
+/// Batched read of chunk embeddings under the **active** model signature. See
+/// [`get_chunk_embeddings_for_signature_batch`] for the batching and error
+/// contract.
 pub fn get_chunk_embeddings_batch(
     config: &MemoryConfig,
     chunk_ids: &[String],

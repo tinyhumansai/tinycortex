@@ -2,6 +2,20 @@
 //!
 //! Each migration is version-gated via `PRAGMA user_version` so it runs exactly
 //! once per vault. Called from [`super::connection`] during DB initialisation.
+//!
+//! ## Contract
+//! Both migrations here follow the same shape: read `user_version`, bail out
+//! if it is already at/past the migration's target version, otherwise do the
+//! work inside one `unchecked_transaction`, commit, then bump
+//! `user_version` in a *separate* statement after the commit. That last step
+//! is not itself transactional with the migration body — a crash between
+//! commit and the `pragma_update` re-runs the (idempotent, `DELETE`/copy-only)
+//! migration body on next open, which is safe. The reverse is not safe: see
+//! the NOTE on [`migrate_legacy_embeddings_to_sidecar`] (audit finding SC-10).
+//!
+//! Neither migration is exercised by an automated test in this module (audit
+//! test-coverage gap) — both are asserted only via the module's behavior at
+//! `connection::init_db` call time.
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
@@ -20,6 +34,24 @@ use crate::memory::config::MemoryConfig;
 /// Version-gated: `PRAGMA user_version < TREE_EMBEDDING_MIGRATION_VERSION`
 /// triggers the copy; otherwise it is a no-op. Dim-mismatched rows are skipped
 /// (left for a later re-embed backfill); the legacy column is preserved.
+///
+/// # NOTE — skipped rows are stranded (audit finding SC-10)
+/// `PRAGMA user_version` is bumped to [`super::TREE_EMBEDDING_MIGRATION_VERSION`]
+/// unconditionally once this function reaches the end, including the case
+/// where every row for a table was skipped for dim mismatch. Because this
+/// migration is version-gated and one-shot, a dim-mismatched legacy blob
+/// skipped here is never retried by this migration on any later open — it
+/// permanently keeps only its legacy `.embedding` column and never gets a
+/// `mem_tree_chunk_embeddings` / `mem_tree_summary_embeddings` sidecar row
+/// from this path. (A later re-embed backfill, if run, can still populate the
+/// sidecar independently; this migration itself will not.)
+///
+/// # Errors
+/// Returns `Err` if reading/bumping `user_version` fails, if preparing/
+/// executing the per-table `SELECT` fails, or if writing a converted vector
+/// into the sidecar table fails. The whole copy runs inside one transaction,
+/// so any error here leaves `user_version` un-bumped and the sidecar tables
+/// untouched — safe to retry on the next open.
 pub(super) fn migrate_legacy_embeddings_to_sidecar(
     conn: &Connection,
     config: &MemoryConfig,
@@ -77,6 +109,22 @@ pub(super) fn migrate_legacy_embeddings_to_sidecar(
 /// of source trees. This removes their now-orphaned DB rows and on-disk summary
 /// folders so old vaults clean themselves up on next open. Version-gated via
 /// `PRAGMA user_version`; a no-op on workspaces that never had those trees.
+///
+/// Deletion order matters: child rows (summary embeddings, reembed-skip
+/// markers, entity-index rows keyed by tree/summary) are removed before their
+/// parent `mem_tree_summaries` / `mem_tree_trees` rows, so this works whether
+/// or not `ON DELETE CASCADE` is declared for a given foreign key.
+///
+/// The on-disk `wiki/summaries/global*` / `topic-*` folder cleanup after the
+/// DB transaction is best-effort: a filesystem error there is swallowed
+/// (`let _ =`) rather than propagated, so a failed directory removal does not
+/// block the `user_version` bump — those folders may survive as harmless
+/// orphans if cleanup fails, but the DB-side purge still completes.
+///
+/// # Errors
+/// Returns `Err` if any `DELETE` statement or the transaction commit fails, or
+/// if bumping `user_version` afterward fails. Does not return `Err` for
+/// filesystem cleanup failures (see above).
 pub(super) fn purge_global_topic_trees(conn: &Connection, config: &MemoryConfig) -> Result<()> {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
