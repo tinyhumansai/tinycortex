@@ -30,6 +30,17 @@
 //!
 //! - [`types`]: [`GraphEdge`] and the [`EntityOccurrenceIndex`] read contract.
 //! - [`query`]: the co-occurrence derivation and its helpers.
+//!
+//! ## Concurrency and cost
+//!
+//! This module holds no state and performs no writes, so there is nothing to
+//! lock here — every call is a pure read against whatever
+//! [`EntityOccurrenceIndex`] the caller injects, and repeated calls with the
+//! same index contents are idempotent. The derivation itself is **not** O(1):
+//! [`co_occurring_entities`] issues one `entities_on_node` lookup per node the
+//! subject appears on, so its cost scales with the subject's occurrence count,
+//! not a fixed query budget. Callers on hot paths (e.g. per-request retrieval)
+//! should cap `limit` and be mindful of the underlying index's per-call cost.
 
 pub mod query;
 pub mod types;

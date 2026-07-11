@@ -5,6 +5,26 @@
 //! YAML front matter and preserve any user-edited notes body, so the vault can
 //! be hand-edited (in Obsidian, an editor, or by another tool) without losing
 //! those edits on the next programmatic write.
+//!
+//! ## Atomicity
+//!
+//! Each write goes through the private `write_entity_atomic` helper: content is written to a
+//! sibling `.entity-<uuid>.tmp` file, `fsync`'d, then moved into place with
+//! `rename` (atomic on the same filesystem). A reader never observes a
+//! partially-written file, and a crash mid-write leaves the previous file (or
+//! no file) intact plus an orphaned `.tmp` file that is never automatically
+//! swept.
+//!
+//! ## Concurrency
+//!
+//! There is no locking. [`put_entity`] performs a read-modify-write: it reads
+//! the existing notes body, then writes a new file combining those notes with
+//! the fresh front matter. Two concurrent `put_entity` calls for the same
+//! canonical id race on that read — the loser's rename still lands atomically,
+//! but whichever caller read first can clobber the other's front-matter
+//! update (notes are preserved either way since both read the same
+//! pre-write body). Callers that need strict single-writer semantics must
+//! serialize `put_entity` externally (e.g. per-workspace mutex).
 
 use std::fs;
 use std::io::Write;
@@ -75,6 +95,19 @@ pub fn put_entity(config: &MemoryConfig, mut entity: Entity) -> Result<Entity> {
     Ok(entity)
 }
 
+/// Write `bytes` to `path` without ever exposing a partially-written file.
+///
+/// Writes to a `.entity-<uuid>.tmp` sibling in the same directory, `fsync`s it,
+/// then `rename`s it over `path` — atomic on POSIX filesystems (and on
+/// Windows, where `rename` replaces an existing destination). On any failure
+/// before the rename completes, the temp file is best-effort removed; on
+/// success the temp file no longer exists. `path`'s parent directory must
+/// already exist (callers create it via `fs::create_dir_all` beforehand).
+///
+/// Idempotent from the caller's point of view: calling this twice with the
+/// same `bytes` leaves the same file on disk. Not safe to call concurrently
+/// for the same `path` from multiple threads/processes without external
+/// serialization — see the module-level concurrency note.
 fn write_entity_atomic(path: &PathBuf, bytes: &[u8]) -> Result<()> {
     let parent = path
         .parent()
