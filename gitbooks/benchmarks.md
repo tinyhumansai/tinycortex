@@ -6,8 +6,8 @@ description: Headline benchmark results for TinyCortex Mark 1 (mk1) across retri
 
 Benchmark results for TinyCortex Mark 1 (`mk1` / `tinycortex_v1`). All benchmarks compare TinyCortex against other memory and RAG methods including vector databases, FastGraphRAG, Mem0, SuperMemory, and directfeed (raw context window).
 
-{% hint style="info" %}
-**Scope note.** These numbers reflect evaluations of the broader TinyCortex system (the `tinycortex_v1` configuration — GraphRAG with time-decay and interaction weighting), not a micro-benchmark of any single Rust function in this crate. Treat them as system-level results that the open-source Rust core contributes to, alongside the hosted evaluation harness. All figures are kept as reported.
+{% hint style="warning" %}
+**Scope note — these results are reported, not reproducible from the repository.** The numbers below reflect evaluations of the broader TinyCortex system (the `tinycortex_v1` configuration — GraphRAG with time-decay and interaction weighting), produced by a hosted evaluation harness that is **not part of the open-source repository**. Neither the harness nor the comparison methods are vendored there, and the charts are pre-rendered. The only benchmark you can run from the repo today is the retrieval-effectiveness harness described in [Run your own](#run-your-own). All figures are kept as reported.
 {% endhint %}
 
 ## Methods compared
@@ -43,7 +43,7 @@ Benchmark results for TinyCortex Mark 1 (`mk1` / `tinycortex_v1`). All benchmark
 **Methods compared:** tinycortex_v1, fastgraphrag, gemini_vdb, mem0, supermemory
 
 <div align="center">
-<img src=".gitbook/assets/chart_ragas.png" alt="RAGAS Benchmark Scores" width="700"/>
+<img src="https://raw.githubusercontent.com/tinyhumansai/tinycortex/main/docs/images/chart_ragas.png" alt="RAGAS Benchmark Scores" width="700"/>
 </div>
 
 **Key results:**
@@ -69,7 +69,7 @@ TinyCortex achieves the highest Answer Relevancy score by a significant margin (
 **Methods compared:** tinycortex_v1, directfeed, e2graphrag, mem0, supermemory
 
 <div align="center">
-<img src=".gitbook/assets/chart_temporalbench.png" alt="TemporalBench Accuracy" width="700"/>
+<img src="https://raw.githubusercontent.com/tinyhumansai/tinycortex/main/docs/images/chart_temporalbench.png" alt="TemporalBench Accuracy" width="700"/>
 </div>
 
 **Key results:**
@@ -82,7 +82,7 @@ TinyCortex achieves the highest Answer Relevancy score by a significant margin (
 | State at Time | 60% | **80%** | e2graphrag |
 | Sequence | 30% | **80%** | directfeed |
 
-TinyCortex achieves **perfect accuracy on recency questions** (100%), directly demonstrating the effectiveness of its Ebbinghaus time-decay model — recent memories naturally have higher retention scores. The directfeed method (feeding full context to the LLM) performs well on interval and sequence questions where having the complete timeline helps, but this approach doesn't scale beyond context window limits.
+TinyCortex achieves **perfect accuracy on recency questions** (100%), reflecting its time-decay ranking — recent memories score higher at query time. The directfeed method (feeding full context to the LLM) performs well on interval and sequence questions where having the complete timeline helps, but this approach doesn't scale beyond context window limits.
 
 ---
 
@@ -95,7 +95,7 @@ TinyCortex achieves **perfect accuracy on recency questions** (100%), directly d
 **Methods compared:** tinycortex_v1, directfeed
 
 <div align="center">
-<img src=".gitbook/assets/heatmap_babilong.png" alt="BABILong Heatmap" width="600"/>
+<img src="https://raw.githubusercontent.com/tinyhumansai/tinycortex/main/docs/images/heatmap_babilong.png" alt="BABILong Heatmap" width="600"/>
 </div>
 
 **Key results:**
@@ -121,7 +121,7 @@ TinyCortex is the **only method that successfully retrieves needles**, scoring 3
 **Methods compared:** tinycortex_v1, mem0, scratchpad, supermemory
 
 <div align="center">
-<img src=".gitbook/assets/chart_vendingbench.png" alt="Vending-Bench P&L" width="700"/>
+<img src="https://raw.githubusercontent.com/tinyhumansai/tinycortex/main/docs/images/chart_vendingbench.png" alt="Vending-Bench P&L" width="700"/>
 </div>
 
 **Key results:**
@@ -139,24 +139,19 @@ TinyCortex achieves the **highest cumulative P&L by day 30** (~$295). The intera
 
 ## Run your own
 
-The benchmark suite lives in the [`benchmarks/`](https://github.com/tinyhumansai/tinycortex/tree/main/benchmarks) directory of the repository and is driven by a Python harness (separate from the Rust crate). You can run all benchmarks or target specific methods:
+The reproducible benchmark that ships with the repository is the **retrieval-effectiveness harness** in [`benchmarks/effectiveness/`](https://github.com/tinyhumansai/tinycortex/tree/main/benchmarks/effectiveness) — a standalone Rust crate that path-depends on `tinycortex` and measures retrieval quality (recall@k, precision@k, hit@k, MRR, nDCG@k) over labeled datasets:
 
 ```bash
-# Setup
-pip install -r requirements.txt
-bash scripts/download_corpus.sh
-
-# Run all benchmarks
-python run.py
-
-# Run specific methods
-python run.py --methods tinycortex,vdb --max-questions 10
-
-# View results
-python scripts/chart.py --chart bar
+cd benchmarks/effectiveness
+cargo run --bin effectiveness
+# options: --dataset PATH   (default: data/fixtures_v1.json)
+#          --out DIR        (default: results/)
+#          --label LABEL    (default: $GIT_SHA or "local")
 ```
 
-The harness depends on `requirements.txt` in the benchmarks directory and a downloadable corpus. It calls into the same retrieval and scoring behavior implemented by the Rust core — see [Retrieval](retrieval.md) and [Scoring and Extraction](scoring-and-extraction.md) for how time-decay, interaction weighting, and graph traversal feed these results.
+It currently runs the lexical `InMemoryMemoryStore` baseline over a hand-labeled seed corpus (10 documents / 12 queries) and writes a dated JSON report under `results/` (gitignored) so runs are diffable across commits. Engine-backed and real-embedding modes are on the roadmap — see the crate's [README](https://github.com/tinyhumansai/tinycortex/blob/main/benchmarks/effectiveness/README.md).
+
+The RAGAS / TemporalBench / BABILong / Vending-Bench evaluations above were produced by a separate hosted harness that is not in the repository and cannot currently be re-run locally. See [Retrieval](retrieval.md) and [Scoring and Extraction](scoring-and-extraction.md) for the time-decay, interaction weighting, and graph mechanics implemented in the Rust core.
 
 ## See also
 
