@@ -68,19 +68,25 @@ fn has_likely_secret_detects_common_patterns() {
 }
 
 #[test]
-fn has_likely_pii_detects_email_and_phone_and_ssn() {
-    assert!(has_likely_pii("contact alice@example.com"));
-    assert!(has_likely_pii("call +15551234567"));
+fn has_likely_pii_strict_boundary_flags_formatted_national_ids() {
+    // The write-rejection boundary is the *strict* set: formatted national IDs
+    // only. Bare-numeric / phone-shaped runs and email are excluded (too many
+    // false positives against scanner-built identifiers); they are still
+    // scrubbed by content redaction. Exhaustive coverage lives in `pii`'s tests.
     assert!(has_likely_pii("ssn 123-45-6789"));
+    assert!(has_likely_pii("CPF 111.444.777-35"));
+    assert!(has_likely_pii("cliente RFC VECJ880326XK4"));
+    assert!(!has_likely_pii("call +15551234567")); // phone: content-scrub only
+    assert!(!has_likely_pii("contact alice@example.com")); // email: out of scope
     assert!(!has_likely_pii("just a normal note"));
 }
 
 #[test]
 fn sanitize_text_scrubs_pii_after_secrets() {
-    let input = "Token sk-abcdefghijklmnopqrstuvwxyz; email a@b.com; phone +15551234567";
+    let input = "Token sk-abcdefghijklmnopqrstuvwxyz; CPF 111.444.777-35; phone +15551234567";
     let sanitized = sanitize_text(input);
     assert!(!sanitized.value.contains("sk-abcdefghijklmnopqrstuvwxyz"));
-    assert!(!sanitized.value.contains("a@b.com"));
+    assert!(!sanitized.value.contains("111.444.777-35"));
     assert!(!sanitized.value.contains("+15551234567"));
     assert!(sanitized.report.pii_redactions >= 2);
 }
