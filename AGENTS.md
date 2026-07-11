@@ -14,7 +14,7 @@ TinyCortex is a root-level Rust crate. Core source lives in `src/`, integration 
 
 Use Rust 2021 and standard `cargo fmt` style. Keep public type names direct and domain-specific. Preserve machine-readable ids and enum wire strings when porting contracts from OpenHuman.
 
-Keep modules high-level and cohesive. Avoid letting any source file grow beyond 500 lines of code; split behavior into focused modules before that point. Put all type definitions for a module in a dedicated `type.rs` file inside that module, and keep tests in a separate `test.rs` file rather than mixing tests into implementation files.
+Keep modules high-level and cohesive. Avoid letting any source file grow beyond 500 lines of code; split behavior into focused modules before that point. Put all type definitions for a module in a dedicated `types.rs` file inside that module, and keep tests in per-file `<name>_tests.rs` siblings (e.g. `store.rs` + `store_tests.rs`) rather than mixing tests into implementation files.
 
 Document public APIs, module contracts, and non-obvious behavior thoroughly. Prefer clear module-level docs and item docs over relying on implementation details to explain intent.
 
