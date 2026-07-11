@@ -22,16 +22,37 @@
 //!   `Done` (covered / no provider / stale signature), toggling the
 //!   process-global backfill flag.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
+use serde::de::DeserializeOwned;
 
 use crate::memory::config::MemoryConfig;
 use crate::memory::queue::ops::set_backfill_in_progress;
 use crate::memory::queue::store;
 use crate::memory::queue::types::{
-    AppendBufferPayload, AppendTarget, ExtractChunkPayload, FlushStalePayload, Job, JobKind,
-    JobOutcome, NewJob, NodeRef, ReembedBackfillPayload, SealDocumentPayload, SealPayload,
+    AppendBufferPayload, AppendTarget, ExtractChunkPayload, FlushStalePayload, Job, JobFailure,
+    JobKind, JobOutcome, NewJob, NodeRef, ReembedBackfillPayload, SealDocumentPayload, SealPayload,
 };
+
+/// Deserialize a claimed job's `payload_json` into its typed payload,
+/// classifying any parse failure as an **unrecoverable** [`JobFailure`].
+///
+/// A malformed payload is a deterministic input defect: the identical bytes can
+/// never parse, so retrying is hopeless. The typed failure is attached to the
+/// `anyhow` chain (the worker downcasts it back out at settle time via
+/// [`mark_failed_typed`](crate::memory::queue::store_settle::mark_failed_typed))
+/// so the poison job is parked as `failed` with `failure_class = unrecoverable`
+/// on the first attempt — instead of surfacing as an untyped error that leaves
+/// `failure_class` NULL and lets `self_heal`
+/// ([`requeue_transient_failed`](crate::memory::queue::store_settle::requeue_transient_failed))
+/// resurrect it every scheduler tick forever (QI-2).
+fn parse_payload<T: DeserializeOwned>(job: &Job, what: &str) -> Result<T> {
+    serde_json::from_str(&job.payload_json).map_err(|err| {
+        anyhow::Error::new(err)
+            .context(JobFailure::unrecoverable("malformed_payload"))
+            .context(format!("parse {what} payload"))
+    })
+}
 
 /// Default age for an L0 `flush_stale` when the payload doesn't override it.
 /// One hour means low-volume sources get summaries within a working session.
@@ -168,8 +189,7 @@ async fn handle_extract(
     job: &Job,
     delegates: &dyn QueueDelegates,
 ) -> Result<JobOutcome> {
-    let payload: ExtractChunkPayload =
-        serde_json::from_str(&job.payload_json).context("parse ExtractChunk payload")?;
+    let payload: ExtractChunkPayload = parse_payload(job, "ExtractChunk")?;
     let Some(decision) = delegates.extract_chunk(config, &payload.chunk_id).await? else {
         // Chunk row vanished between enqueue and claim — nothing to do.
         return Ok(JobOutcome::Done);
@@ -204,8 +224,7 @@ async fn handle_append_buffer(
     job: &Job,
     delegates: &dyn QueueDelegates,
 ) -> Result<JobOutcome> {
-    let payload: AppendBufferPayload =
-        serde_json::from_str(&job.payload_json).context("parse AppendBuffer payload")?;
+    let payload: AppendBufferPayload = parse_payload(job, "AppendBuffer")?;
     let Some(decision) = delegates
         .append_node(config, &payload.node, &payload.target)
         .await?
@@ -230,8 +249,7 @@ async fn handle_seal(
     job: &Job,
     delegates: &dyn QueueDelegates,
 ) -> Result<JobOutcome> {
-    let payload: SealPayload =
-        serde_json::from_str(&job.payload_json).context("parse Seal payload")?;
+    let payload: SealPayload = parse_payload(job, "Seal")?;
     // Seal exactly one level. A cascading seal returns the parent payload so
     // each level stays its own crash-recovery checkpoint.
     if let Some(parent) = delegates.seal_level(config, &payload).await? {
@@ -245,8 +263,7 @@ async fn handle_flush_stale(
     job: &Job,
     delegates: &dyn QueueDelegates,
 ) -> Result<JobOutcome> {
-    let payload: FlushStalePayload =
-        serde_json::from_str(&job.payload_json).context("parse FlushStale payload")?;
+    let payload: FlushStalePayload = parse_payload(job, "FlushStale")?;
     let age_secs = payload.max_age_secs.unwrap_or(L0_DEFAULT_FLUSH_AGE_SECS);
     let now_ms = chrono::Utc::now().timestamp_millis();
     for buf in delegates.list_stale_buffers(config, age_secs).await? {
@@ -265,8 +282,7 @@ async fn handle_seal_document(
     job: &Job,
     delegates: &dyn QueueDelegates,
 ) -> Result<JobOutcome> {
-    let payload: SealDocumentPayload =
-        serde_json::from_str(&job.payload_json).context("parse SealDocument payload")?;
+    let payload: SealDocumentPayload = parse_payload(job, "SealDocument")?;
     if payload.chunk_ids.is_empty() {
         // Empty version set — nothing to seal.
         return Ok(JobOutcome::Done);
@@ -280,8 +296,7 @@ async fn handle_reembed_backfill(
     job: &Job,
     delegates: &dyn QueueDelegates,
 ) -> Result<JobOutcome> {
-    let payload: ReembedBackfillPayload =
-        serde_json::from_str(&job.payload_json).context("parse ReembedBackfill payload")?;
+    let payload: ReembedBackfillPayload = parse_payload(job, "ReembedBackfill")?;
 
     match delegates.reembed_batch(config, &payload.signature).await? {
         ReembedProgress::Wrote {

@@ -129,6 +129,12 @@ fn backoff_for(err: &anyhow::Error, opts: &WorkerLoopConfig) -> Option<Duration>
     if worker::is_sqlite_corrupt(err) {
         return None;
     }
+    if worker::is_host_io_error(err) {
+        // Persistent host-filesystem failure (EIO/ENOSPC/EROFS surfaced as a raw
+        // std::io::Error). User-only-fixable and never self-clears — back off
+        // long, like disk-full, instead of hammering the generic error arm.
+        return Some(opts.host_io_backoff);
+    }
     if worker::is_sqlite_disk_full(err) {
         return Some(opts.disk_full_backoff);
     }
