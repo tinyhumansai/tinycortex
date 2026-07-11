@@ -10,13 +10,13 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use uuid::Uuid;
 
 use crate::memory::config::MemoryConfig;
 use crate::memory::entities::canonical::slugify_id;
-use crate::memory::entities::frontmatter::{compose, extract_notes, parse};
+use crate::memory::entities::frontmatter::{compose, notes_body, parse};
 use crate::memory::entities::types::{Entity, EntityKind};
 
 /// Directory under the content root that holds entity files.
@@ -51,9 +51,21 @@ pub fn put_entity(config: &MemoryConfig, mut entity: Entity) -> Result<Entity> {
     fs::create_dir_all(&dir).with_context(|| format!("failed to mkdir -p {}", dir.display()))?;
     let path = entity_path(config, entity.kind, &entity.id);
 
-    // Preserve any free-form notes the user typed into the file.
+    // Preserve any free-form notes the user typed into the file. A non-empty
+    // file whose front matter we cannot recognise is refused rather than
+    // overwritten: `notes_body` returning `None` means the parser did not
+    // understand the file, and blindly rewriting it would destroy whatever the
+    // user had hand-typed there.
     let existing_notes = match fs::read_to_string(&path) {
-        Ok(text) => extract_notes(&text),
+        Ok(text) if text.is_empty() => String::new(),
+        Ok(text) => notes_body(&text).ok_or_else(|| {
+            anyhow!(
+                "refusing to overwrite {}: file is non-empty but has no \
+                 recognisable entity front matter; resolve it manually to \
+                 avoid destroying its contents",
+                path.display()
+            )
+        })?,
         Err(_) => String::new(),
     };
 
