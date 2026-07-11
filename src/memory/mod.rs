@@ -41,6 +41,8 @@ pub mod conversations;
 #[cfg(feature = "git-diff")]
 pub mod diff;
 pub mod entities;
+/// Shared filesystem primitives (crash-safe atomic writes).
+pub mod fsutil;
 pub mod goals;
 pub mod graph;
 pub mod ingest;
