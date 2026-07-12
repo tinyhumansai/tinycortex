@@ -45,7 +45,7 @@ pub fn raw_coverage(
     tree_scope: &str,
     archive_source_id: &str,
 ) -> anyhow::Result<RawCoverage> {
-    let content_root = config.workspace.join("memory_tree/content");
+    let content_root = crate::memory::chunks::content_root(config);
     let source_directory = raw_source_dir(&content_root, archive_source_id);
     if !source_directory.exists() {
         return Ok(RawCoverage::default());
@@ -412,10 +412,10 @@ mod tests {
     #[test]
     fn coverage_is_incremental_and_ignores_source_metadata() {
         let temp = tempfile::tempdir().unwrap();
-        let config = MemoryConfig::new(temp.path());
-        let root = config
-            .workspace
-            .join("memory_tree/content/raw/github-com-org-repo/issues");
+        let mut config = MemoryConfig::new(temp.path());
+        let custom_root = temp.path().join("custom-content");
+        config.content_root = Some(custom_root.clone());
+        let root = custom_root.join("raw/github-com-org-repo/issues");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("100_one.md"), "one").unwrap();
         std::fs::write(root.join("200_two.md"), "two").unwrap();

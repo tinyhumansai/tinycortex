@@ -354,6 +354,33 @@ fn delete_chunks_by_source_removes_chunks_side_rows_and_ingest_gate() {
 }
 
 #[test]
+fn delete_chunks_by_source_cascades_path_scoped_tree() {
+    let (_tmp, cfg) = test_config();
+    let mut chunk = sample_chunk("notion:item", 0, 1_700_000_000_000);
+    chunk.metadata.source_kind = SourceKind::Document;
+    chunk.metadata.path_scope = Some("notion:workspace".into());
+    upsert_chunks(&cfg, std::slice::from_ref(&chunk)).unwrap();
+    crate::memory::tree::registry::get_or_create_tree(
+        &cfg,
+        crate::memory::tree::store::TreeKind::Source,
+        "notion:workspace",
+    )
+    .unwrap();
+
+    assert_eq!(
+        delete_chunks_by_source(&cfg, SourceKind::Document, "notion:item").unwrap(),
+        1
+    );
+    assert!(crate::memory::tree::store::get_tree_by_scope(
+        &cfg,
+        crate::memory::tree::store::TreeKind::Source,
+        "notion:workspace",
+    )
+    .unwrap()
+    .is_none());
+}
+
+#[test]
 fn delete_chunks_by_owner_preserves_other_owners_for_same_source() {
     let (_tmp, cfg) = test_config();
     let mut target = sample_chunk("slack:shared", 0, 1_700_000_000_000);

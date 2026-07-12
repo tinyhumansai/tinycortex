@@ -130,7 +130,7 @@ fn delete_chunks_by_source_filter(
 
         let chunks = {
             let mut stmt = tx.prepare(
-                "SELECT id, source_id, owner, content_path
+                "SELECT id, source_id, owner, content_path, path_scope
                    FROM mem_tree_chunks
                   WHERE source_kind = ?1",
             )?;
@@ -140,11 +140,14 @@ fn delete_chunks_by_source_filter(
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
                 ))
             })?;
             rows.filter_map(|row| match row {
-                Ok((id, source_id, owner, content_path)) if matches_chunk(&source_id, &owner) => {
-                    Some(Ok((id, source_id, content_path)))
+                Ok((id, source_id, owner, content_path, path_scope))
+                    if matches_chunk(&source_id, &owner) =>
+                {
+                    Some(Ok((id, source_id, content_path, path_scope)))
                 }
                 Ok(_) => None,
                 Err(error) => Some(Err(error)),
@@ -155,10 +158,16 @@ fn delete_chunks_by_source_filter(
 
         let deleted_source_ids: HashSet<String> = chunks
             .iter()
-            .map(|(_, source_id, _)| source_id.clone())
+            .map(|(_, source_id, _, _)| source_id.clone())
+            .collect();
+        let deleted_tree_scopes: HashSet<String> = chunks
+            .iter()
+            .map(|(_, source_id, _, path_scope)| {
+                path_scope.clone().unwrap_or_else(|| source_id.clone())
+            })
             .collect();
 
-        for (chunk_id, _source_id, content_path) in &chunks {
+        for (chunk_id, _source_id, content_path, _path_scope) in &chunks {
             tx.execute(
                 "DELETE FROM mem_tree_score WHERE chunk_id = ?1",
                 params![chunk_id],
@@ -229,11 +238,20 @@ fn delete_chunks_by_source_filter(
             )?;
         }
 
-        for source_id in &orphaned_deleted_sources {
+        for scope in &deleted_tree_scopes {
+            let remaining: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM mem_tree_chunks
+                  WHERE source_kind = ?1 AND COALESCE(path_scope, source_id) = ?2",
+                params![source_kind.as_str(), scope],
+                |row| row.get(0),
+            )?;
+            if remaining != 0 {
+                continue;
+            }
             if let Some(tree) = crate::memory::tree::store::get_tree_by_scope_conn(
                 &tx,
                 crate::memory::tree::store::TreeKind::Source,
-                source_id,
+                scope,
             )? {
                 let cascade = crate::memory::tree::store::delete_tree_cascade_tx(&tx, &tree.id)?;
                 content_paths.extend(cascade.content_paths);

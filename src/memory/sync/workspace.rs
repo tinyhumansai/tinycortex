@@ -106,7 +106,7 @@ impl SyncPipeline for WorkspaceSourcePipeline {
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "unknown".into());
             versions.insert(item.id.clone(), version.clone());
-            if state.item_versions.get(&item.id) == Some(&version) {
+            if item.updated_at_ms.is_some() && state.item_versions.get(&item.id) == Some(&version) {
                 continue;
             }
             let source_id = self.source_id(&item.id);
@@ -431,6 +431,21 @@ mod tests {
             .get_mut("post-1")
             .unwrap()
             .body = "second".into();
+        assert_eq!(
+            pipeline
+                .tick(&config, &context)
+                .await
+                .unwrap()
+                .records_ingested,
+            1
+        );
+        host.external_items.lock().unwrap()[0].updated_at_ms = None;
+        host.external_bodies
+            .lock()
+            .unwrap()
+            .get_mut("post-1")
+            .unwrap()
+            .body = "timestamp-less refresh".into();
         assert_eq!(
             pipeline
                 .tick(&config, &context)

@@ -63,7 +63,7 @@ serde_json = "1"
 schemars = "1"
 sha2 = "0.10"
 thiserror = "2"
-tinyagents = { git = "https://github.com/senamakel/tinyagents", rev = "f60981b" }
+tinyagents = { git = "https://github.com/senamakel/tinyagents", rev = "777cd76" }
 toml = "0.8"
 uuid = { version = "1", features = ["serde", "v4"] }
 walkdir = "2"
