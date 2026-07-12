@@ -160,6 +160,9 @@ async fn document_subtree_stages_versioned_passthrough_root() {
             .item_ids,
         vec![root_id]
     );
+    let published = store::get_tree(&cfg, &tree.id).unwrap().unwrap();
+    assert_eq!(published.root_id.as_deref(), Some(root.id.as_str()));
+    assert_eq!(published.max_level, root.level);
 }
 
 #[tokio::test]

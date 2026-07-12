@@ -347,11 +347,31 @@ async fn hydrate_summary_inputs_preserves_order_and_skips_missing() {
         version_ms: None,
     };
     let sum_a = mk("sum-a", "BODY-A", 11, 0.11, "entity:alice");
-    let sum_b = mk("sum-b", "BODY-B", 22, 0.22, "entity:bob");
+    let full_body_b = "B".repeat(700);
+    let sum_b = mk("sum-b", &full_body_b, 22, 0.22, "entity:bob");
+    let staged_b = crate::memory::store::content::stage_summary(
+        &crate::memory::chunks::content_root(&cfg),
+        &crate::memory::store::content::SummaryComposeInput {
+            summary_id: &sum_b.id,
+            tree_kind: crate::memory::store::content::SummaryTreeKind::Source,
+            tree_id: &tree.id,
+            tree_scope: &tree.scope,
+            level: sum_b.level,
+            child_ids: &sum_b.child_ids,
+            child_basenames: None,
+            child_count: sum_b.child_ids.len(),
+            time_range_start: ts,
+            time_range_end: ts,
+            sealed_at: ts,
+            body: &full_body_b,
+        },
+        "slack-eng",
+    )
+    .unwrap();
     crate::memory::chunks::with_connection(&cfg, |conn| {
         let tx = conn.unchecked_transaction()?;
         store::insert_summary_tx(&tx, &sum_a, "test")?;
-        store::insert_summary_tx(&tx, &sum_b, "test")?;
+        store::insert_staged_summary_tx(&tx, &sum_b, Some(&staged_b), "test")?;
         tx.commit()?;
         Ok(())
     })
@@ -363,7 +383,7 @@ async fn hydrate_summary_inputs_preserves_order_and_skips_missing() {
     assert_eq!(out[0].id, "sum-b");
     assert_eq!(out[1].id, "sum-a");
     assert_eq!(out[0].token_count, 22);
-    assert_eq!(out[0].content, "BODY-B");
+    assert_eq!(out[0].content, full_body_b);
     assert_eq!(out[1].content, "BODY-A");
     assert_eq!(out[0].entities, vec!["entity:bob".to_string()]);
 }

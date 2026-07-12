@@ -13,16 +13,16 @@ use parking_lot::Mutex as PMutex;
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 #[cfg(test)]
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::migrations::{migrate_legacy_embeddings_to_sidecar, purge_global_topic_trees};
 use super::recovery::{is_io_open_error, try_cleanup_stale_files};
 use super::schema::SCHEMA;
-use super::{SQLITE_BUSY_TIMEOUT, db_path_for};
+use super::{db_path_for, SQLITE_BUSY_TIMEOUT};
 use crate::memory::config::MemoryConfig;
 
 // ── Schema-apply instrumentation (test-only) ─────────────────────────────────

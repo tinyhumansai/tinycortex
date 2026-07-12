@@ -619,6 +619,27 @@ pub async fn seal_document_subtree_with_services(
         doc_root.token_count as i64,
         doc_root.time_range_start,
     )?;
+    let root_id = doc_root.id.clone();
+    let root_level = doc_root.level;
+    with_connection(config, move |connection| {
+        let transaction = connection.unchecked_transaction()?;
+        let (current_root, current_max): (Option<String>, u32) = transaction.query_row(
+            "SELECT root_id, max_level FROM mem_tree_trees WHERE id = ?1",
+            [&tree.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if current_root.is_none() || root_level > current_max {
+            store::update_tree_after_seal_tx(
+                &transaction,
+                &tree.id,
+                &root_id,
+                root_level,
+                Utc::now(),
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    })?;
     cascade_all_from_with_services(
         config,
         tree,

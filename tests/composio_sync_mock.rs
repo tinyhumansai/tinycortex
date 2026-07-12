@@ -189,7 +189,7 @@ async fn max_items_stops_before_fetching_another_page() {
         .expect(1)
         .mount(&server)
         .await;
-    let (_captures, context) = test_context();
+    let (captures, context) = test_context();
     let pipeline = GmailSyncPipeline::new(
         ComposioClient::new(direct_config(server.uri(), "key")),
         "capped-conn",
@@ -200,6 +200,13 @@ async fn max_items_stops_before_fetching_another_page() {
     assert_eq!(outcome.records_ingested, 1);
     assert_eq!(outcome.actions_called, 1);
     assert!(outcome.more_pending);
+    let state = SyncState::load(captures.as_ref(), "gmail", "capped-conn")
+        .await
+        .unwrap();
+    assert_eq!(
+        state.cursor, None,
+        "capped runs must not advance the cursor"
+    );
 }
 
 #[tokio::test]

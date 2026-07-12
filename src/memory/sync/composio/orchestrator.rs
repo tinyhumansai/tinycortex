@@ -386,7 +386,7 @@ async fn run_pages(
                 more_pending = true;
             }
         }
-        if source.per_scope_cursors() && !scope_failed {
+        if source.per_scope_cursors() && !scope_failed && !more_pending {
             if let Some(cursor) = scope_newest_cursor.as_deref() {
                 source.advance_scope_cursor(state, scope, cursor);
                 state.save(context.state.as_ref()).await?;
@@ -394,7 +394,7 @@ async fn run_pages(
         }
     }
 
-    if !source.per_scope_cursors() {
+    if !source.per_scope_cursors() && !more_pending {
         if let Some(cursor) = newest_cursor {
             state.advance_cursor(cursor);
         }
