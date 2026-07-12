@@ -17,7 +17,7 @@ use chrono::Utc;
 
 use crate::memory::chunks::{
     self, chunk_markdown, claim_source_ingest_tx, delete_source_ingest, get_chunk_lifecycle_status,
-    is_source_ingested, set_chunk_lifecycle_status, set_chunk_raw_refs, upsert_chunks,
+    is_source_ingested, set_chunk_lifecycle_status, set_chunk_raw_refs, upsert_staged_chunks_tx,
     with_connection, ChunkerInput, ChunkerOptions, SourceKind, CHUNK_STATUS_PENDING_EXTRACTION,
 };
 use crate::memory::config::MemoryConfig;
@@ -146,7 +146,7 @@ async fn persist_score_enqueue(
 ) -> Result<IngestSummary> {
     // 3. Write each chunk body to the content store (atomic write + sha256).
     let content_root = chunks::content_root(config);
-    content::stage_chunks(&content_root, &chunks)
+    let staged = content::stage_chunks(&content_root, &chunks)
         .map_err(|e| anyhow!("stage_chunks failed: {e}"))?;
 
     // 4. Snapshot each chunk's CURRENT lifecycle BEFORE the upsert. A chunk that
@@ -159,7 +159,12 @@ async fn persist_score_enqueue(
     }
 
     // 5. Persist chunk rows (idempotent on deterministic chunk id).
-    let chunks_written = upsert_chunks(config, &chunks)?;
+    let chunks_written = with_connection(config, |connection| {
+        let transaction = connection.unchecked_transaction()?;
+        let count = upsert_staged_chunks_tx(&transaction, &staged)?;
+        transaction.commit()?;
+        Ok(count)
+    })?;
 
     // 5b. Raw-archive-backed bodies: attach refs so a worker can resolve them.
     if let Some(refs) = opts.raw_refs.as_ref() {
