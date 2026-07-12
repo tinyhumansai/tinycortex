@@ -297,7 +297,7 @@ fn summary_embeddings_are_scoped_by_model_signature() {
 }
 
 #[test]
-fn buffer_upsert_and_clear() {
+fn buffer_upsert_and_consume_snapshot() {
     let (_tmp, cfg) = test_config();
     insert_tree(&cfg, &sample_tree("tree-1", "slack:#eng")).unwrap();
     let ts = Utc.timestamp_millis_opt(1_700_000_000_000).unwrap();
@@ -319,7 +319,7 @@ fn buffer_upsert_and_clear() {
 
     with_connection(&cfg, |conn| {
         let tx = conn.unchecked_transaction()?;
-        clear_buffer_tx(&tx, "tree-1", 0)?;
+        consume_snapshot_tx(&tx, &buf)?;
         tx.commit()?;
         Ok(())
     })

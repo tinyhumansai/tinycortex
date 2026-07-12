@@ -39,15 +39,12 @@ use super::types::{IngestOptions, IngestSummary, TreeJobSink};
 ///
 /// # Atomicity / failure-mode caveats (see `docs/spec/audit/04-queue-ingest.md`)
 ///
-/// - **The gate is not part of the write it authorizes (QI-1).** The document
-///   gate (step 2) is claimed and committed in its own transaction, separate
-///   from content staging (step 3), chunk upsert (step 5), and scoring (step
-///   6, which can fail via `bail!`). If any of those later steps fails or the
-///   process crashes after the gate commits, every retry sees the gate as
-///   already claimed and returns an "already ingested" [`IngestSummary`] — the
-///   document is then **permanently** un-ingestable (zero chunks, no jobs,
-///   silently "done" forever) until an operator manually clears the gate row.
-///   There is currently no rollback or compensation on this path.
+/// - **The gate is a compensated reservation (QI-1).** The document gate is
+///   claimed before asynchronous scoring so concurrent ingests cannot both
+///   proceed. Any ordinary error in a later stage releases that reservation,
+///   allowing a retry. A hard process kill in the narrow interval between the
+///   claim and persistence still requires stale-reservation recovery by the
+///   host; SQLite transactions cannot span the asynchronous scoring call.
 /// - **Step 7 (persist score → set lifecycle → enqueue) is a non-atomic,
 ///   per-chunk 3-write sequence with a TOCTOU on the `prior` snapshot taken in
 ///   step 4 (QI-12).** A crash between the lifecycle write and the enqueue

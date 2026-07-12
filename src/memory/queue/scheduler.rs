@@ -32,14 +32,11 @@ pub fn enqueue_flush_stale(config: &MemoryConfig) -> Result<Option<String>> {
 /// SQLITE_BUSY) so chunks never sit unprocessed until the next manual sync.
 /// Unrecoverable failures stay parked. Returns the number requeued.
 ///
-/// This only touches terminally-`failed` rows. It does **not** call
+/// This only touches terminally-`failed` rows. It does **not** itself call
 /// [`recover_stale_locks`](crate::memory::queue::store_settle::recover_stale_locks)
-/// — a row stranded `running` past its lease (a crashed sibling process
-/// sharing `chunks.db`, or a settle write that itself failed) is invisible to
-/// both `self_heal` and `claim_next` until something calls
-/// `recover_stale_locks` explicitly. In this crate that only happens once, at
-/// [`crate::memory::queue::worker::bootstrap`] time — a long-lived process
-/// that only drives the scheduler tick never recovers such a row on its own.
+/// because the optional async scheduler invokes recovery at the start of every
+/// tick. Hosts that call this synchronous helper directly should pair it with
+/// lease recovery as part of their own scheduler tick.
 pub fn self_heal(config: &MemoryConfig) -> Result<u64> {
     requeue_transient_failed(config)
 }

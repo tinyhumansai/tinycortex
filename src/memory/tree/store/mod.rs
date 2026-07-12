@@ -41,9 +41,8 @@ pub use summaries::{
 };
 
 // ── Buffers ─────────────────────────────────────────────────────────────────
-pub use buffers::{
-    clear_buffer_tx, get_buffer, get_buffer_conn, list_stale_buffers, upsert_buffer_tx,
-};
+pub(crate) use buffers::{consume_snapshot_tx, get_buffer_conn, upsert_buffer_tx};
+pub use buffers::{get_buffer, list_stale_buffers};
 
 // ── Type + constant re-exports ──────────────────────────────────────────────
 pub use types::{

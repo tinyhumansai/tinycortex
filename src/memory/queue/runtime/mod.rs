@@ -12,8 +12,8 @@
 //!   back off by [`WorkerLoopConfig::idle_backoff`]; transient SQLite errors
 //!   back off by kind (busy / I/O / disk-full) and re-poll; corruption is fatal
 //!   and returned to the host (mirroring OpenHuman's quarantine policy).
-//! - [`run_scheduler`]: on a fixed cadence, enqueue `flush_stale` (dedupe-safe)
-//!   and `self_heal` transiently-failed jobs.
+//! - [`run_scheduler`]: on a fixed cadence, recover expired leases, enqueue
+//!   `flush_stale` (dedupe-safe), and `self_heal` transiently-failed jobs.
 //! - [`run`]: [`bootstrap`] once, then drive both loops concurrently until
 //!   shutdown or a fatal error.
 //!
@@ -80,18 +80,17 @@ pub async fn run_worker(
 /// transiently-failed jobs. Transient errors are swallowed (the next tick
 /// retries); corruption is returned to the host.
 ///
-/// This loop does not call
-/// [`recover_stale_locks`](crate::memory::queue::store_settle::recover_stale_locks)
-/// — see the caveat on [`scheduler::self_heal`]. Stale-lock recovery only
-/// happens once, at [`run`]'s [`worker::bootstrap`] call, so a row stranded
-/// `running` past its lease in a long-lived process stays invisible to every
-/// later scheduler tick until the process restarts.
 pub async fn run_scheduler(
     config: &MemoryConfig,
     opts: &SchedulerLoopConfig,
     shutdown: &Shutdown,
 ) -> Result<()> {
     while !shutdown.is_triggered() {
+        if let Err(err) = crate::memory::queue::store_settle::recover_stale_locks(config) {
+            if worker::is_sqlite_corrupt(&err) {
+                return Err(err);
+            }
+        }
         if let Err(err) = scheduler::enqueue_flush_stale(config) {
             if worker::is_sqlite_corrupt(&err) {
                 return Err(err);
@@ -133,14 +132,6 @@ pub async fn run(
 /// Classification order matters: corruption is checked first (fatal), then the
 /// transient families in descending severity.
 ///
-/// This does **not** check [`worker::is_host_io_error`]. A persistent
-/// host-filesystem failure (EIO/ENOSPC/EROFS — a dying disk, a full or
-/// remounted-read-only mount) surfacing as a `std::io::Error` therefore falls
-/// through every arm here and gets the generic `opts.error_backoff` rather
-/// than a long, page-once backoff, even though `is_host_io_error`'s own
-/// documentation describes exactly this loop as the intended caller. A host
-/// that hits this condition will re-poll and retry at the short generic
-/// interval instead of backing off.
 fn backoff_for(err: &anyhow::Error, opts: &WorkerLoopConfig) -> Option<Duration> {
     if worker::is_sqlite_corrupt(err) {
         return None;

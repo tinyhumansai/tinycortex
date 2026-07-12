@@ -14,6 +14,26 @@ use crate::memory::tree::registry::get_or_create_tree;
 use crate::memory::tree::store::{self, TreeKind, INPUT_TOKEN_BUDGET, SUMMARY_FANOUT};
 use crate::memory::tree::summarise::ConcatSummariser;
 use chrono::{TimeZone, Utc};
+use std::sync::Arc;
+use tokio::sync::Notify;
+
+struct PausingSummariser {
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+#[async_trait::async_trait]
+impl Summariser for PausingSummariser {
+    async fn summarise(
+        &self,
+        inputs: &[SummaryInput],
+        _ctx: &SummaryContext<'_>,
+    ) -> anyhow::Result<crate::memory::tree::summarise::SummaryOutput> {
+        self.started.notify_one();
+        self.release.notified().await;
+        Ok(fallback_summary(inputs, 256))
+    }
+}
 
 fn test_config() -> (TempDir, MemoryConfig) {
     let tmp = TempDir::new().unwrap();
@@ -230,6 +250,49 @@ async fn crossing_budget_triggers_seal() {
     })
     .unwrap();
     assert_eq!(parent.as_deref(), Some(second[0].as_str()));
+}
+
+#[tokio::test]
+async fn seal_preserves_items_appended_while_summariser_is_running() {
+    let (_tmp, cfg) = test_config();
+    let tree = get_or_create_tree(&cfg, TreeKind::Source, "slack:#eng").unwrap();
+    let c1 = seed_chunk(&cfg, 0, "first", 10, vec![]);
+    let c2 = seed_chunk(&cfg, 1, "second", 10, vec![]);
+    let ts = Utc.timestamp_millis_opt(1_700_000_000_000).unwrap();
+    append_to_buffer(&cfg, &tree.id, 0, &c1.id, 10, ts).unwrap();
+    let snapshot = store::get_buffer(&cfg, &tree.id, 0).unwrap();
+
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let summariser = PausingSummariser {
+        started: started.clone(),
+        release: release.clone(),
+    };
+    let observer = NoopSealObserver;
+    let services = SealServices {
+        summariser: &summariser,
+        embedder: None,
+        observer: &observer,
+    };
+    let seal = seal_one_level_with_services(
+        &cfg,
+        &tree,
+        &snapshot,
+        &services,
+        &LabelStrategy::Empty,
+        false,
+    );
+    let append = async {
+        started.notified().await;
+        append_to_buffer(&cfg, &tree.id, 0, &c2.id, 10, ts).unwrap();
+        release.notify_one();
+    };
+
+    let (sealed, ()) = tokio::join!(seal, append);
+    sealed.unwrap();
+    let remaining = store::get_buffer(&cfg, &tree.id, 0).unwrap();
+    assert_eq!(remaining.item_ids, vec![c2.id]);
+    assert_eq!(remaining.token_sum, 10);
 }
 
 #[tokio::test]
