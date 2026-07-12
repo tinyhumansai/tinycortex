@@ -98,7 +98,7 @@ impl Memory for MockMemory {
 
     async fn namespace_summaries(&self) -> anyhow::Result<Vec<NamespaceSummary>> {
         let mut counts: HashMap<String, usize> = HashMap::new();
-        for ((ns, _), _) in self.entries.lock().iter() {
+        for (ns, _) in self.entries.lock().keys() {
             *counts.entry(ns.clone()).or_default() += 1;
         }
         Ok(counts

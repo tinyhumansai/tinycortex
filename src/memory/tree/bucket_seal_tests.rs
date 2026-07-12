@@ -82,7 +82,7 @@ fn seed_chunk(
         created_at: ts,
         partial_message: false,
     };
-    upsert_chunks(cfg, &[c.clone()]).unwrap();
+    upsert_chunks(cfg, std::slice::from_ref(&c)).unwrap();
     c
 }
 

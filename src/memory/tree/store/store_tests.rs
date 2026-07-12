@@ -429,7 +429,7 @@ fn get_trees_batch_returns_present_ids_and_skips_missing() {
     assert_eq!(map.len(), 2);
     assert_eq!(map.get("tree-a").unwrap(), &a);
     assert_eq!(map.get("tree-b").unwrap(), &b);
-    assert!(map.get("ghost").is_none());
+    assert!(!map.contains_key("ghost"));
 }
 
 #[test]
@@ -482,7 +482,7 @@ fn summary_batch_embedding_lookup_returns_only_signature_scoped_rows() {
     let map_a = get_summary_embeddings_for_signature_batch(&cfg, &ids, sig_a).unwrap();
     assert_eq!(map_a.len(), 2);
     assert_eq!(map_a.get("sum-1").cloned(), Some(vec![0.1, 0.2]));
-    assert!(map_a.get("sum-3").is_none());
+    assert!(!map_a.contains_key("sum-3"));
 
     let map_b = get_summary_embeddings_for_signature_batch(&cfg, &ids, sig_b).unwrap();
     assert_eq!(map_b.len(), 1);

@@ -141,6 +141,7 @@ impl Default for TreeConfig {
 /// that the four weights sum to `1.0` — the built-in profiles are chosen that
 /// way by convention so scores land in a familiar `[0.0, 1.0]`-ish range when
 /// every signal is itself in `[0.0, 1.0]`, but a custom profile with a
+///
 /// different total simply rescales the final score.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct WeightProfile {

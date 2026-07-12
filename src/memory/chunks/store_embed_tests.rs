@@ -65,7 +65,7 @@ fn sample_chunk(source_id: &str, seq: u32, ts_ms: i64) -> Chunk {
 fn clear_chunk_reembed_skipped_is_idempotent() {
     let (_tmp, cfg) = test_config();
     let c = sample_chunk("slack:#eng", 0, 1_700_000_000_000);
-    upsert_chunks(&cfg, &[c.clone()]).unwrap();
+    upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap();
     let sig = tree_active_signature(&cfg);
     mark_chunk_reembed_skipped(&cfg, &c.id, &sig, "test orphan").unwrap();
     clear_chunk_reembed_skipped(&cfg, &c.id, &sig).unwrap();
@@ -254,7 +254,7 @@ fn get_chunks_batch_empty_input_and_missing_ids() {
     assert!(empty.is_empty());
 
     let c = sample_chunk("slack:#eng", 0, 1_700_000_000_000);
-    upsert_chunks(&cfg, &[c.clone()]).unwrap();
+    upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap();
     let ids = vec![
         c.id.clone(),
         "ghost:no-such-1".into(),
@@ -263,8 +263,8 @@ fn get_chunks_batch_empty_input_and_missing_ids() {
     let map = get_chunks_batch(&cfg, &ids).unwrap();
     assert_eq!(map.len(), 1);
     assert_eq!(map.get(&c.id), Some(&c));
-    assert!(map.get("ghost:no-such-1").is_none());
-    assert!(map.get("ghost:no-such-2").is_none());
+    assert!(!map.contains_key("ghost:no-such-1"));
+    assert!(!map.contains_key("ghost:no-such-2"));
 }
 
 #[test]
@@ -286,7 +286,7 @@ fn batch_embedding_lookup_returns_only_signature_scoped_rows() {
     assert_eq!(map_a.len(), 2, "only c1 and c2 are under sig_a");
     assert_eq!(map_a.get(&c1.id).cloned(), Some(vec![0.1, 0.2]));
     assert_eq!(map_a.get(&c2.id).cloned(), Some(vec![0.3, 0.4]));
-    assert!(map_a.get(&c3.id).is_none(), "c3 has only sig_b");
+    assert!(!map_a.contains_key(&c3.id), "c3 has only sig_b");
 
     let map_b = get_chunk_embeddings_for_signature_batch(&cfg, &ids, sig_b).unwrap();
     assert_eq!(map_b.len(), 1);
@@ -304,7 +304,7 @@ fn batch_embedding_lookup_empty_input_returns_empty_map() {
 fn batch_embedding_lookup_unknown_ids_absent_from_map() {
     let (_tmp, cfg) = test_config();
     let c = sample_chunk("slack:#eng", 0, 1_700_000_000_000);
-    upsert_chunks(&cfg, &[c.clone()]).unwrap();
+    upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap();
     let sig = "openai/text-embedding-3-small@1536";
     set_chunk_embedding_for_signature(&cfg, &c.id, sig, &[0.1]).unwrap();
 

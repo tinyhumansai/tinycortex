@@ -109,6 +109,7 @@ pub fn set_summary_embedding(cfg: &MemoryConfig, summary_id: &str, vec: &[f32]) 
 }
 
 /// Index one entity occurrence against a node.
+#[allow(clippy::too_many_arguments)]
 pub fn index_entity_occurrence(
     cfg: &MemoryConfig,
     canonical_id: &str,

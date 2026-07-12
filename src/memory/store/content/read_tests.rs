@@ -181,7 +181,8 @@ fn high_level_chunk_reader_uses_custom_root_and_repairs_checksum() {
     config.content_root = Some(custom_root.clone());
     let chunk = sample_chunk();
     let staged =
-        crate::memory::store::content::stage_chunks(&custom_root, &[chunk.clone()]).unwrap();
+        crate::memory::store::content::stage_chunks(&custom_root, std::slice::from_ref(&chunk))
+            .unwrap();
     crate::memory::chunks::with_connection(&config, |conn| {
         let tx = conn.unchecked_transaction()?;
         crate::memory::chunks::upsert_staged_chunks_tx(&tx, &staged)?;
@@ -207,7 +208,7 @@ fn high_level_chunk_reader_joins_clamped_raw_references() {
     std::fs::create_dir_all(root.join("raw/source")).unwrap();
     std::fs::write(root.join("raw/source/item.md"), "alpha beta").unwrap();
     let chunk = sample_chunk();
-    crate::memory::chunks::upsert_chunks(&config, &[chunk.clone()]).unwrap();
+    crate::memory::chunks::upsert_chunks(&config, std::slice::from_ref(&chunk)).unwrap();
     crate::memory::chunks::set_chunk_raw_refs(
         &config,
         &chunk.id,

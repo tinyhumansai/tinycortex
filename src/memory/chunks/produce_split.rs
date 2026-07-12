@@ -128,12 +128,9 @@ fn split_on_sentences<'a>(text: &'a str, budget: u32, out: &mut Vec<&'a str>) ->
     let mut start = 0usize;
     for i in 0..bytes.len() {
         let c = bytes[i];
-        let boundary_end = if c == b'\n' {
-            Some(i + 1)
-        } else if (c == b'.' || c == b'!' || c == b'?')
-            && i + 1 < bytes.len()
-            && bytes[i + 1] == b' '
-        {
+        let sentence_end =
+            matches!(c, b'.' | b'!' | b'?') && i + 1 < bytes.len() && bytes[i + 1] == b' ';
+        let boundary_end = if c == b'\n' || sentence_end {
             Some(i + 1)
         } else {
             None

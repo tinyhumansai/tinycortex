@@ -66,7 +66,7 @@ fn fake_store(dims: usize) -> VectorStore {
 
 #[test]
 fn roundtrip_vec_bytes() {
-    let original = vec![1.0_f32, -2.5, 3.14, 0.0, f32::MAX, f32::MIN];
+    let original = vec![1.0_f32, -2.5, 3.125, 0.0, f32::MAX, f32::MIN];
     let bytes = vec_to_bytes(&original);
     assert_eq!(bytes.len(), original.len() * 4);
     assert_eq!(original, bytes_to_vec(&bytes));

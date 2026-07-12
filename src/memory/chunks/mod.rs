@@ -4,15 +4,14 @@
 //! OpenHuman's `memory_store/chunks`:
 //!
 //! - [`types`]    — [`Chunk`], [`Metadata`], [`SourceKind`], [`DataSource`],
-//!                  [`SourceRef`], [`StagedChunk`] and the deterministic
-//!                  [`chunk_id`] / token-estimate functions. The persisted
-//!                  shape.
+//!   [`SourceRef`], [`StagedChunk`] and the deterministic
+//!   [`chunk_id`] / token-estimate functions. The persisted shape.
 //! - [`produce`]  — source-kind-dispatch chunker (chat / email / document).
-//!                  Splits canonical Markdown into bounded chunks with stable
-//!                  per-source sequence numbers.
+//!   Splits canonical Markdown into bounded chunks with stable per-source
+//!   sequence numbers.
 //! - [`semantic`] — heading- and paragraph-aware chunker used to split large
-//!                  documents into LLM-context-sized pieces while preserving
-//!                  heading context. Exported as [`chunk_semantic`].
+//!   documents into LLM-context-sized pieces while preserving heading context.
+//!   Exported as [`chunk_semantic`].
 //! - `store` / `connection` / `migrations` / `raw_refs` / `embeddings` —
 //!   the SQLite-backed chunk store (the `mem_tree_chunks` table plus its
 //!   per-model embedding sidecars and source ingest gates).

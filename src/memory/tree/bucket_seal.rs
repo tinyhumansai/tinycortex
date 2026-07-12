@@ -264,10 +264,9 @@ pub async fn cascade_all_from_with_services(
     enqueue_follow_ups: bool,
 ) -> Result<Vec<String>> {
     let mut sealed_ids: Vec<String> = Vec::new();
-    let mut level: u32 = start_level;
     let mut first_iteration = true;
 
-    for _ in 0..MAX_CASCADE_DEPTH {
+    for level in (start_level..).take(MAX_CASCADE_DEPTH as usize) {
         let buf = store::get_buffer(config, &tree.id, level)?;
         let forced = first_iteration && force;
         first_iteration = false;
@@ -289,7 +288,6 @@ pub async fn cascade_all_from_with_services(
         )
         .await?;
         sealed_ids.push(summary_id);
-        level += 1;
     }
     Ok(sealed_ids)
 }
@@ -684,6 +682,7 @@ fn batch_by_count(ids: &[String], max: usize) -> Vec<Vec<String>> {
     ids.chunks(max.max(1)).map(<[String]>::to_vec).collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn seal_explicit_children(
     config: &MemoryConfig,
     tree: &Tree,

@@ -38,7 +38,7 @@ fn seed_chunk(cfg: &MemoryConfig, seq: u32, content: &str) -> Chunk {
         created_at: ts,
         partial_message: false,
     };
-    upsert_chunks(cfg, &[chunk.clone()]).unwrap();
+    upsert_chunks(cfg, std::slice::from_ref(&chunk)).unwrap();
     chunk
 }
 

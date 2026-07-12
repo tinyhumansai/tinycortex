@@ -33,6 +33,7 @@ pub mod kv;
 /// Secret / PII detection guard applied before KV writes are persisted.
 pub mod safety;
 /// Starter in-memory reference backend used by the smoke test.
+#[allow(clippy::module_inception)]
 pub mod store;
 /// Core memory contract types ([`MemoryError`], [`MemoryRecord`], etc.).
 pub mod types;
