@@ -20,7 +20,7 @@ use async_trait::async_trait;
 /// instantiated backend. Drift between the two would silently split one
 /// embedding space into two.
 pub fn format_embedding_signature(name: &str, model_id: &str, dims: usize) -> String {
-    format!("provider={name};model={model_id};dims={dims}")
+    tinyagents::harness::embeddings::format_embedding_signature(name, model_id, dims)
 }
 
 /// Interface for embedding backends that convert text into numerical vectors.
@@ -57,6 +57,38 @@ pub trait EmbeddingBackend: Send + Sync {
         results
             .pop()
             .ok_or_else(|| anyhow::anyhow!("empty embedding result"))
+    }
+}
+
+#[async_trait]
+impl<T> EmbeddingBackend for T
+where
+    T: tinyagents::harness::embeddings::EmbeddingModel + ?Sized,
+{
+    fn name(&self) -> &str {
+        tinyagents::harness::embeddings::EmbeddingModel::name(self)
+    }
+
+    fn model_id(&self) -> &str {
+        tinyagents::harness::embeddings::EmbeddingModel::model_id(self)
+    }
+
+    fn dimensions(&self) -> usize {
+        tinyagents::harness::embeddings::EmbeddingModel::dimensions(self)
+    }
+
+    fn signature(&self) -> String {
+        tinyagents::harness::embeddings::EmbeddingModel::signature(self)
+    }
+
+    async fn embed(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+        let owned = texts
+            .iter()
+            .map(|text| (*text).to_owned())
+            .collect::<Vec<_>>();
+        tinyagents::harness::embeddings::EmbeddingModel::embed(self, &owned)
+            .await
+            .map_err(|error| anyhow::anyhow!(error))
     }
 }
 

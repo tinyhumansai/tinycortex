@@ -3,6 +3,24 @@
 use super::*;
 
 #[test]
+fn sync_secrets_are_redacted_and_not_serialized() {
+    let secret = SecretString::new("super-secret");
+    assert_eq!(secret.to_string(), "[REDACTED]");
+    assert!(!format!("{secret:?}").contains("super-secret"));
+
+    let config = ComposioSyncConfig {
+        mode: ComposioMode::Direct,
+        base_url: "https://backend.composio.dev".into(),
+        api_key: Some(secret),
+        bearer_token: Some(SecretString::new("bearer-secret")),
+        entity_id: Some("entity".into()),
+    };
+    let json = serde_json::to_string(&config).unwrap();
+    assert!(!json.contains("super-secret"));
+    assert!(!json.contains("bearer-secret"));
+}
+
+#[test]
 fn default_config_uses_openhuman_constants() {
     let cfg = MemoryConfig::new("/tmp/ws");
     assert_eq!(cfg.embedding.dim, 768);

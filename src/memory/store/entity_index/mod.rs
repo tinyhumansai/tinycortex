@@ -25,5 +25,8 @@
 pub mod store;
 pub mod types;
 
-pub use store::{index_entities_tx, EntityIndex, NoSelfIdentity, SelfIdentity};
+pub use store::{
+    clear_entity_index_for_node_tx, index_entities_tx, index_entities_tx_with_identity,
+    index_summary_entity_ids_tx_with_identity, EntityIndex, NoSelfIdentity, SelfIdentity,
+};
 pub use types::{CanonicalEntity, EntityHit, EntityKind};

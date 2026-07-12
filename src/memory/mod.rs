@@ -75,6 +75,9 @@ pub mod queue;
 pub mod retrieval;
 pub mod score;
 pub mod sources;
+/// Live synchronization engine. Network code is opt-in through `sync`.
+#[cfg(feature = "sync")]
+pub mod sync;
 pub mod tool_memory;
 pub mod tree;
 

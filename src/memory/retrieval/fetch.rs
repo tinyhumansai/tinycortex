@@ -17,7 +17,7 @@ use crate::memory::chunks::get_chunks_batch;
 use crate::memory::config::MemoryConfig;
 use crate::memory::score::store::get_scores_batch;
 
-use super::types::{hit_from_chunk, RetrievalHit};
+use super::types::{hydrated_chunk_hit, RetrievalHit};
 
 /// Max batch size. Callers that pass more than this get truncated (no error so
 /// the caller still sees a partial result).
@@ -49,7 +49,7 @@ pub fn fetch_leaves(config: &MemoryConfig, chunk_ids: &[String]) -> Result<Vec<R
         // Leaves are not attached to a materialised tree; `tree_scope` falls
         // back to the chunk's own source id so consumers still see provenance.
         let scope = chunk.metadata.source_id.clone();
-        out.push(hit_from_chunk(chunk, "", &scope, score));
+        out.push(hydrated_chunk_hit(config, chunk, "", &scope, score));
     }
     Ok(out)
 }

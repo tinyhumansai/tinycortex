@@ -1,16 +1,17 @@
 //! Read and verify chunk and summary `.md` files from the content store.
 //!
-//! This port covers the self-contained read + integrity surface: front-matter
-//! splitting, body SHA-256 verification, and untrusted-path resolution. The
-//! Config/SQLite-aware high-level body readers (`read_chunk_body` /
-//! `read_summary_body`, which resolve a chunk id → on-disk path through the
-//! chunk store) are **deferred** along with the rest of the SQLite chunk-store
-//! integration.
+//! Includes high-level id-based readers that resolve SQLite pointers, hydrate
+//! raw-backed chunks, and repair stale checksum tokens after external edits.
 
 use std::path::{Component, Path, PathBuf};
 
 use super::atomic::sha256_hex;
 use super::compose::split_front_matter;
+use crate::memory::chunks::{
+    content_root, get_chunk_content_pointers, get_chunk_raw_refs, get_summary_content_pointers,
+    update_chunk_content_sha256, update_summary_content_sha256, RawRef,
+};
+use crate::memory::config::MemoryConfig;
 
 /// Resolve a DB-stored relative forward-slash path against `content_root`,
 /// rejecting any traversal (`..`), absolute, or non-normal component.
@@ -123,6 +124,85 @@ pub fn verify_summary_file(abs_path: &Path, expected_sha256: &str) -> anyhow::Re
             actual: contents.sha256,
         })
     }
+}
+
+/// Read a full chunk body by id. Raw archive references take precedence over
+/// staged Markdown pointers. A drifted staged-file checksum is repaired
+/// best-effort while the authoritative on-disk body is still returned.
+pub fn read_chunk_body(config: &MemoryConfig, chunk_id: &str) -> anyhow::Result<String> {
+    if let Some(refs) = get_chunk_raw_refs(config, chunk_id)? {
+        if !refs.is_empty() {
+            return read_chunk_body_from_raw(config, &refs);
+        }
+    }
+
+    let (rel_path, expected_sha256) = get_chunk_content_pointers(config, chunk_id)?
+        .ok_or_else(|| anyhow::anyhow!("no content pointer or raw refs for chunk {chunk_id}"))?;
+    if rel_path.is_empty() {
+        anyhow::bail!("empty content pointer and no raw refs for chunk {chunk_id}");
+    }
+    let abs_path = resolve_within_content_root(&content_root(config), &rel_path)?;
+    let result = read_chunk_file(&abs_path)?;
+    if result.sha256 != expected_sha256 {
+        log::warn!("[memory:content] repairing stale chunk checksum token chunk_id={chunk_id}");
+        if let Err(error) = update_chunk_content_sha256(config, chunk_id, &result.sha256) {
+            log::warn!(
+                "[memory:content] chunk checksum repair failed chunk_id={chunk_id}: {error}"
+            );
+        }
+    }
+    Ok(result.body)
+}
+
+fn read_chunk_body_from_raw(config: &MemoryConfig, refs: &[RawRef]) -> anyhow::Result<String> {
+    let root = content_root(config);
+    let mut parts = Vec::with_capacity(refs.len());
+    for reference in refs {
+        let path = match resolve_within_content_root(&root, &reference.path) {
+            Ok(path) => path,
+            Err(error) => {
+                log::warn!("[memory:content] rejected unsafe raw reference: {error}");
+                continue;
+            }
+        };
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                log::warn!("[memory:content] raw reference read failed: {error}");
+                continue;
+            }
+        };
+        let start = reference.start.min(bytes.len());
+        let end = reference.end.unwrap_or(bytes.len()).min(bytes.len());
+        if end <= start {
+            continue;
+        }
+        match std::str::from_utf8(&bytes[start..end]) {
+            Ok(value) => parts.push(value.to_owned()),
+            Err(error) => log::warn!("[memory:content] raw reference is not UTF-8: {error}"),
+        }
+    }
+    Ok(parts.join("\n\n"))
+}
+
+/// Read a full summary body by id and repair a stale checksum token
+/// best-effort when an external editor changed the staged file.
+pub fn read_summary_body(config: &MemoryConfig, summary_id: &str) -> anyhow::Result<String> {
+    let (rel_path, expected_sha256) = get_summary_content_pointers(config, summary_id)?
+        .ok_or_else(|| anyhow::anyhow!("no content pointer for summary {summary_id}"))?;
+    let abs_path = resolve_within_content_root(&content_root(config), &rel_path)?;
+    let result = read_summary_file(&abs_path)?;
+    if result.sha256 != expected_sha256 {
+        log::warn!(
+            "[memory:content] repairing stale summary checksum token summary_id={summary_id}"
+        );
+        if let Err(error) = update_summary_content_sha256(config, summary_id, &result.sha256) {
+            log::warn!(
+                "[memory:content] summary checksum repair failed summary_id={summary_id}: {error}"
+            );
+        }
+    }
+    Ok(result.body)
 }
 
 #[cfg(test)]

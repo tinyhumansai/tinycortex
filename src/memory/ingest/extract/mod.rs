@@ -42,6 +42,33 @@ pub use types::{
     MemoryIngestionRequest, MemoryIngestionResult, DEFAULT_MEMORY_EXTRACTION_MODEL,
 };
 
+use crate::memory::types::NamespaceDocumentInput;
+
+/// Extract structured knowledge and merge deterministic ingestion metadata
+/// into a document ready for a host-owned namespace store.
+pub fn extract_enriched_document(
+    input: &NamespaceDocumentInput,
+    config: &MemoryIngestionConfig,
+) -> (NamespaceDocumentInput, MemoryIngestionResult) {
+    let parsed = parse::parse_document(&input.content, &input.title, config);
+    let (enriched, tags) = header::enrich_document_metadata(input, &parsed, config);
+    let result = MemoryIngestionResult {
+        document_id: String::new(),
+        namespace: String::new(),
+        model_name: config.model_name.clone(),
+        extraction_mode: config.extraction_mode.as_str().to_string(),
+        chunk_count: parsed.chunk_count,
+        entity_count: parsed.entities.len(),
+        relation_count: parsed.relations.len(),
+        preference_count: parsed.preference_count,
+        decision_count: parsed.decision_count,
+        tags,
+        entities: parsed.entities,
+        relations: parsed.relations,
+    };
+    (enriched, result)
+}
+
 #[cfg(test)]
 #[path = "extract_tests.rs"]
 mod extract_tests;

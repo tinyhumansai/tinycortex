@@ -131,6 +131,8 @@ static NIE_RE: LazyLock<Regex> =
 // South Korea RRN: NNNNNN-CXXXXXX where C is gender/century digit (1-4).
 static RRN_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b\d{6}-[1-4]\d{6}\b").expect("rrn"));
+static EMAIL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b").expect("email"));
 
 // Cheap whole-text pre-filter so we skip the per-pattern scans entirely on
 // PII-free text. Each entry roughly corresponds to one of the patterns above.
@@ -209,6 +211,13 @@ pub fn redact_pii(text: &str) -> Sanitized<String> {
 pub fn has_likely_pii(value: &str) -> bool {
     let nview = NormalizedView::build(value);
     SCREEN.is_match(&nview.normalized) && !collect_strict_redactions(&nview.normalized).is_empty()
+}
+
+/// True when `value` contains an ordinary email address. Kept separate from
+/// [`has_likely_pii`] because scanner-built identifiers may legitimately
+/// contain email-like `@` segments.
+pub fn has_likely_email(value: &str) -> bool {
+    EMAIL_RE.is_match(value)
 }
 
 // ---------- Match collection ----------
@@ -963,6 +972,12 @@ Phone +15551234567.";
     #[test]
     fn has_likely_pii_detects_cpf() {
         assert!(has_likely_pii("user/111.444.777-35"));
+    }
+
+    #[test]
+    fn has_likely_email_detects_email_without_changing_boundary_pii() {
+        assert!(has_likely_email("user/alice@example.com"));
+        assert!(!has_likely_pii("user/alice@example.com"));
     }
     #[test]
     fn has_likely_pii_quiet_on_normal_text() {

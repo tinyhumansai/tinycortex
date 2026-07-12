@@ -84,6 +84,85 @@ async fn append_below_budget_does_not_seal() {
 }
 
 #[tokio::test]
+async fn service_seal_stages_body_and_enqueues_parent_atomically() {
+    let (_tmp, mut cfg) = test_config();
+    cfg.tree.summary_fanout = 1;
+    let tree = get_or_create_tree(&cfg, TreeKind::Source, "slack:#eng").unwrap();
+    let chunk = seed_chunk(&cfg, 0, "full staged body", 10, Vec::new());
+    append_to_buffer(
+        &cfg,
+        &tree.id,
+        0,
+        &chunk.id,
+        chunk.token_count as i64,
+        chunk.metadata.timestamp,
+    )
+    .unwrap();
+    let buffer = store::get_buffer(&cfg, &tree.id, 0).unwrap();
+    let summariser = ConcatSummariser::new();
+
+    let summary_id = seal_one_level_with_services(
+        &cfg,
+        &tree,
+        &buffer,
+        &SealServices {
+            summariser: &summariser,
+            embedder: None,
+            observer: &NoopSealObserver,
+        },
+        &LabelStrategy::Empty,
+        true,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        crate::memory::store::content::read_summary_body(&cfg, &summary_id)
+            .unwrap()
+            .contains("full staged body")
+    );
+    assert_eq!(crate::memory::queue::count_total(&cfg).unwrap(), 1);
+}
+
+#[tokio::test]
+async fn document_subtree_stages_versioned_passthrough_root() {
+    let (_tmp, cfg) = test_config();
+    let tree = get_or_create_tree(&cfg, TreeKind::Source, "notion:connection").unwrap();
+    let chunk = seed_chunk(&cfg, 0, "document body", 10, Vec::new());
+    let summariser = ConcatSummariser::new();
+    let root_id = seal_document_subtree_with_services(
+        &cfg,
+        &tree,
+        "notion:connection:page",
+        Some(42),
+        &[chunk.id],
+        &SealServices {
+            summariser: &summariser,
+            embedder: None,
+            observer: &NoopSealObserver,
+        },
+        &LabelStrategy::Empty,
+    )
+    .await
+    .unwrap();
+
+    let root = store::get_summary(&cfg, &root_id).unwrap().unwrap();
+    assert_eq!(root.content, "document body");
+    assert_eq!(root.doc_id.as_deref(), Some("notion:connection:page"));
+    assert_eq!(root.version_ms, Some(42));
+    assert_eq!(
+        crate::memory::store::content::read_summary_body(&cfg, &root_id).unwrap(),
+        "document body"
+    );
+    assert_eq!(
+        store::get_buffer(&cfg, &tree.id, MERGE_LEVEL_BASE)
+            .unwrap()
+            .item_ids,
+        vec![root_id]
+    );
+}
+
+#[tokio::test]
 async fn crossing_budget_triggers_seal() {
     let (_tmp, cfg) = test_config();
     let tree = get_or_create_tree(&cfg, TreeKind::Source, "slack:#eng").unwrap();

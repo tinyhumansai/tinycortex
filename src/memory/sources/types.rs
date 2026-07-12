@@ -14,6 +14,7 @@
 //! Wire strings are snake_case and are part of the persisted contract — do not
 //! rename them when porting from OpenHuman.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub(crate) fn default_true() -> bool {
@@ -24,7 +25,7 @@ pub(crate) fn default_true() -> bool {
 ///
 /// The wire representation is snake_case (`github_repo`, `rss_feed`, …) and is
 /// persisted in `config.toml`; it must stay stable across versions.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceKind {
     /// A Composio OAuth connector (Gmail, Slack, Notion, …). Network-backed;
@@ -65,7 +66,7 @@ impl SourceKind {
 /// [`kind`](MemorySourceEntry::kind) discriminator determines which fields are
 /// required; validation is enforced at add/update time via
 /// [`MemorySourceEntry::validate`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MemorySourceEntry {
     /// Stable unique id (e.g. `src_<uuid>`).
     pub id: String,
@@ -159,7 +160,7 @@ impl MemorySourceEntry {
 ///
 /// `id` is reader-scoped (e.g. a folder-relative path or a thread id) and is
 /// stable enough to pass back into [`crate::memory::sources::readers::SourceReader::read_item`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SourceItem {
     /// Reader-scoped item id.
     pub id: String,
@@ -171,7 +172,7 @@ pub struct SourceItem {
 }
 
 /// The rendered content type of a [`SourceContent`] body.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ContentType {
     /// Markdown body.
@@ -183,7 +184,7 @@ pub enum ContentType {
 }
 
 /// Content read from a single source item.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SourceContent {
     /// Reader-scoped item id (matches the [`SourceItem::id`] it was read from).
     pub id: String,

@@ -39,6 +39,10 @@ git-diff = ["dep:git2"]
 # gates the dependency.
 providers-http = ["dep:reqwest", "tokio"]
 
+# Live source synchronization (Composio HTTP pipelines and workspace scans).
+# Host schedulers, credentials, RPC, and event buses remain outside the crate.
+sync = ["dep:reqwest", "dep:tracing", "tokio"]
+
 # serde schema / envelope surface for the RPC boundary (`memory::rpc`). Reserved
 # for goal C5; gates the wire-facing surface without adding heavy dependencies
 # (serde is already a core dependency).
@@ -46,6 +50,8 @@ rpc = []
 
 [dependencies]
 anyhow = "1"
+log = "0.4"
+futures = "0.3"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 parking_lot = "0.12"
@@ -54,8 +60,10 @@ regex = "1"
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+schemars = "1"
 sha2 = "0.10"
 thiserror = "2"
+tinyagents = { git = "https://github.com/senamakel/tinyagents", rev = "ca47b5b" }
 toml = "0.8"
 uuid = { version = "1", features = ["serde", "v4"] }
 walkdir = "2"
@@ -73,6 +81,7 @@ reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "rustls-tls",
 ], optional = true }
+tracing = { version = "0.1", optional = true }
 # tokio powers the optional background worker loops (`tokio` feature). It is
 # also listed under dev-dependencies so the async test suite always compiles.
 tokio = { version = "1", features = [
@@ -86,3 +95,12 @@ tokio = { version = "1", features = [
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+wiremock = "0.6"
+
+[[test]]
+name = "composio_sync_mock"
+required-features = ["sync"]
+
+[[test]]
+name = "composio_sync_live"
+required-features = ["sync"]

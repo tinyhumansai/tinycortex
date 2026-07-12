@@ -80,29 +80,39 @@ pub use types::{
     Chunk, DataSource, Metadata, SourceKind, SourceRef, StagedChunk,
 };
 
-pub use connection::with_connection;
+pub use connection::{shared_connection, with_connection};
 pub use embeddings::{
-    clear_chunk_reembed_skipped, clear_reembed_skipped_for_signature, get_chunk_embedding,
+    clear_chunk_reembed_skipped, clear_reembed_skipped_for_signature,
+    clear_summary_reembed_skipped, embedding_to_blob, get_chunk_embedding,
     get_chunk_embedding_for_signature, get_chunk_embeddings_batch,
-    get_chunk_embeddings_for_signature_batch, mark_chunk_reembed_skipped, set_chunk_embedding,
-    set_chunk_embedding_for_signature, tree_active_signature,
+    get_chunk_embeddings_for_signature_batch, has_uncovered_reembed_work,
+    mark_chunk_reembed_skipped, mark_summary_reembed_skipped, set_chunk_embedding,
+    set_chunk_embedding_for_signature, set_chunk_embedding_for_signature_tx,
+    set_summary_embedding_for_signature_tx, tree_active_signature, REEMBED_SKIP_KEY_MAX_LEN,
 };
 pub use raw_refs::{
     get_chunk_content_path, get_chunk_content_pointers, get_chunk_raw_refs,
     get_summary_content_pointers, list_chunk_raw_ref_paths_with_prefix,
     list_summaries_with_content_path, set_chunk_raw_refs, set_chunk_raw_refs_tx, RawRef,
 };
+pub use recovery::{
+    is_io_open_error, is_transient_cold_start, recover_corrupt_db, try_cleanup_stale_files,
+};
 pub use store::{
     claim_source_ingest_tx, count_chunks, count_chunks_by_lifecycle_status,
     count_raw_paths_ingested_with_prefix, delete_source_ingest, extraction_coverage,
     filter_raw_paths_not_ingested, get_chunk, get_chunk_lifecycle_status, get_chunks_batch,
-    is_source_ingested, list_chunks, mark_raw_paths_ingested, set_chunk_lifecycle_status,
-    upsert_chunks, ListChunksQuery, CHUNK_STATUS_ADMITTED, CHUNK_STATUS_BUFFERED,
-    CHUNK_STATUS_DROPPED, CHUNK_STATUS_PENDING_EXTRACTION, CHUNK_STATUS_SEALED, RAW_FILE_GATE_KIND,
+    is_source_ingested, list_chunks, list_source_ids_with_prefix, mark_raw_paths_ingested,
+    set_chunk_lifecycle_status, update_chunk_content_sha256, update_summary_content_sha256,
+    upsert_chunks, upsert_chunks_tx, upsert_staged_chunks_tx, ListChunksQuery,
+    CHUNK_STATUS_ADMITTED, CHUNK_STATUS_BUFFERED, CHUNK_STATUS_DROPPED,
+    CHUNK_STATUS_PENDING_EXTRACTION, CHUNK_STATUS_SEALED, RAW_FILE_GATE_KIND,
 };
 pub use store_delete::{
     delete_chunks_by_owner, delete_chunks_by_source, delete_chunks_by_source_prefix,
+    delete_orphaned_source_tree,
 };
+pub use store_sources::{get_chunk_lifecycle_status_tx, set_chunk_lifecycle_status_tx};
 
 // ── Shared internal constants / helpers ─────────────────────────────────────
 
@@ -128,7 +138,10 @@ pub(crate) fn db_path_for(config: &MemoryConfig) -> PathBuf {
 /// Root directory for on-disk chunk/summary content files associated with the
 /// chunk DB. Bodies that are too large for the SQLite preview column live here.
 pub(crate) fn content_root(config: &MemoryConfig) -> PathBuf {
-    config.workspace.join(DB_DIR).join("content")
+    config
+        .content_root
+        .clone()
+        .unwrap_or_else(|| config.workspace.join(DB_DIR).join("content"))
 }
 
 /// Redact a PII-bearing string for log output by hashing it to 8 hex chars.

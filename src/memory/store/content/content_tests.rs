@@ -60,6 +60,29 @@ fn stage_chunks_is_idempotent() {
 }
 
 #[test]
+fn stage_chunks_replaces_stale_on_disk_body() {
+    let dir = TempDir::new().unwrap();
+    let chunk = sample_chunk(0);
+    let abs = paths::chunk_abs_path(
+        dir.path(),
+        chunk.metadata.source_kind.as_str(),
+        &chunk.metadata.source_id,
+        &chunk.id,
+    );
+    std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+    std::fs::write(&abs, b"---\nstale: true\n---\nSTALE BODY").unwrap();
+
+    let staged = stage_chunks(dir.path(), std::slice::from_ref(&chunk)).unwrap();
+    let on_disk = std::fs::read_to_string(&abs).unwrap();
+    assert!(on_disk.ends_with(&chunk.content));
+    let (_, body) = compose::split_front_matter(&on_disk).unwrap();
+    assert_eq!(
+        staged[0].content_sha256,
+        atomic::sha256_hex(body.as_bytes())
+    );
+}
+
+#[test]
 fn stage_chunks_email_skips_disk_write() {
     let dir = TempDir::new().unwrap();
     let ts = chrono::Utc.timestamp_millis_opt(1_700_000_000_000).unwrap();

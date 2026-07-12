@@ -14,7 +14,7 @@ pub fn get_buffer(config: &MemoryConfig, tree_id: &str, level: u32) -> Result<Bu
     with_connection(config, |conn| get_buffer_conn(conn, tree_id, level))
 }
 
-pub(crate) fn get_buffer_conn(conn: &Connection, tree_id: &str, level: u32) -> Result<Buffer> {
+pub fn get_buffer_conn(conn: &Connection, tree_id: &str, level: u32) -> Result<Buffer> {
     let mut stmt = conn.prepare(
         "SELECT tree_id, level, item_ids_json, token_sum, oldest_at_ms
            FROM mem_tree_buffers WHERE tree_id = ?1 AND level = ?2",
@@ -27,7 +27,7 @@ pub(crate) fn get_buffer_conn(conn: &Connection, tree_id: &str, level: u32) -> R
 }
 
 /// Upsert a buffer row.
-pub(crate) fn upsert_buffer_tx(tx: &Transaction<'_>, buf: &Buffer) -> Result<()> {
+pub fn upsert_buffer_tx(tx: &Transaction<'_>, buf: &Buffer) -> Result<()> {
     let now_ms = Utc::now().timestamp_millis();
     tx.execute(
         "INSERT INTO mem_tree_buffers (
@@ -69,7 +69,7 @@ pub(crate) fn upsert_buffer_tx(tx: &Transaction<'_>, buf: &Buffer) -> Result<()>
 /// snapshot should re-read the buffer here and remove the snapshotted ids by
 /// set-difference instead of clearing unconditionally (tracked as `TR-1` in
 /// `docs/spec/audit/03-tree-archivist-conversations.md`).
-pub(crate) fn clear_buffer_tx(tx: &Transaction<'_>, tree_id: &str, level: u32) -> Result<()> {
+pub fn clear_buffer_tx(tx: &Transaction<'_>, tree_id: &str, level: u32) -> Result<()> {
     upsert_buffer_tx(tx, &Buffer::empty(tree_id, level))
 }
 

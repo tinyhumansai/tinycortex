@@ -37,7 +37,7 @@ pub fn set_chunk_lifecycle_status(
 /// # Errors
 /// See [`set_chunk_lifecycle_status`].
 #[allow(dead_code)]
-pub(crate) fn set_chunk_lifecycle_status_tx(
+pub fn set_chunk_lifecycle_status_tx(
     tx: &Transaction<'_>,
     chunk_id: &str,
     status: &str,
@@ -86,6 +86,19 @@ pub fn get_chunk_lifecycle_status(config: &MemoryConfig, chunk_id: &str) -> Resu
             .optional()?;
         Ok(row)
     })
+}
+
+pub fn get_chunk_lifecycle_status_tx(
+    tx: &Transaction<'_>,
+    chunk_id: &str,
+) -> Result<Option<String>> {
+    Ok(tx
+        .query_row(
+            "SELECT lifecycle_status FROM mem_tree_chunks WHERE id = ?1",
+            params![chunk_id],
+            |row| row.get(0),
+        )
+        .optional()?)
 }
 
 /// Count chunks currently sitting at a given lifecycle status. Matches

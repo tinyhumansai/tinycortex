@@ -1,5 +1,6 @@
 use super::*;
 use crate::memory::store::entity_index::types::{CanonicalEntity, EntityKind};
+use std::sync::Arc;
 use tempfile::TempDir;
 
 fn index() -> EntityIndex {
@@ -15,6 +16,75 @@ fn sample_entity(id: &str) -> CanonicalEntity {
         span_end: (id.len() + 12) as u32,
         score: 1.0,
     }
+}
+
+#[test]
+fn shared_connection_preserves_owner_pragmas_and_visibility() {
+    let conn = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+    conn.lock()
+        .execute_batch("PRAGMA synchronous = OFF;")
+        .unwrap();
+
+    let index =
+        EntityIndex::from_shared_connection(Arc::clone(&conn), Arc::new(NoSelfIdentity)).unwrap();
+    index
+        .index_entity(&sample_entity("alice"), "chunk-1", "leaf", 1000, None)
+        .unwrap();
+
+    let synchronous: i64 = conn
+        .lock()
+        .query_row("PRAGMA synchronous", [], |row| row.get(0))
+        .unwrap();
+    let count: i64 = conn
+        .lock()
+        .query_row("SELECT COUNT(*) FROM mem_tree_entity_index", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(synchronous, 0);
+    assert_eq!(count, 1);
+}
+
+#[derive(Debug)]
+struct EmailSelf;
+
+impl SelfIdentity for EmailSelf {
+    fn is_self(&self, kind: EntityKind, surface: &str) -> bool {
+        kind == EntityKind::Email && surface == "alice@example.com"
+    }
+}
+
+#[test]
+fn identity_aware_transaction_helpers_preserve_atomic_indexing() {
+    let idx = EntityIndex::open_in_memory().unwrap();
+    let entity = sample_entity("alice");
+    idx.with_transaction(|tx| {
+        index_entities_tx_with_identity(
+            tx,
+            std::slice::from_ref(&entity),
+            "chunk-1",
+            "leaf",
+            1000,
+            None,
+            &EmailSelf,
+        )?;
+        index_summary_entity_ids_tx_with_identity(
+            tx,
+            &["email:alice@example.com".into()],
+            "summary-1",
+            1.0,
+            2000,
+            None,
+            &EmailSelf,
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    let hits = idx.lookup_entity("email:alice", None).unwrap();
+    assert!(hits[0].is_user);
+    let summary_hits = idx.lookup_entity("email:alice@example.com", None).unwrap();
+    assert!(summary_hits[0].is_user);
 }
 
 #[test]

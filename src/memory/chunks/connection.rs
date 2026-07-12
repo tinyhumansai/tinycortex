@@ -13,16 +13,16 @@ use parking_lot::Mutex as PMutex;
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 #[cfg(test)]
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::migrations::{migrate_legacy_embeddings_to_sidecar, purge_global_topic_trees};
 use super::recovery::{is_io_open_error, try_cleanup_stale_files};
 use super::schema::SCHEMA;
-use super::{db_path_for, SQLITE_BUSY_TIMEOUT};
+use super::{SQLITE_BUSY_TIMEOUT, db_path_for};
 use crate::memory::config::MemoryConfig;
 
 // ── Schema-apply instrumentation (test-only) ─────────────────────────────────
@@ -445,13 +445,14 @@ pub(super) fn drop_cached_connection(config: &MemoryConfig) {
     conn_cache().breakers.lock().remove(&db_path);
 }
 
-/// Clear the entire connection cache (all workspace paths' connections,
-/// breakers, and init locks). For test isolation only — production code must
-/// never need to reset every path at once.
+/// Clear cached connections and init locks for test isolation.
+///
+/// Breakers are deliberately retained: tests use unique temporary workspace
+/// paths, and clearing the process-wide breaker map races with parallel tests
+/// that are proving threshold behavior for another path.
 #[cfg(test)]
 pub(crate) fn clear_connection_cache() {
     conn_cache().connections.lock().clear();
-    conn_cache().breakers.lock().clear();
     conn_cache().init_locks.lock().clear();
 }
 
@@ -480,6 +481,16 @@ pub fn with_connection<T>(
     let conn_arc = get_or_init_connection(config)?;
     let guard = conn_arc.lock();
     f(&guard)
+}
+
+/// Return the initialized connection shared by chunk, tree, and auxiliary
+/// stores for this workspace.
+///
+/// Embedding applications may pass this handle to shared-connection stores
+/// such as `KvStore` and `EntityIndex`. Callers must not change connection
+/// pragmas or hold the mutex across an await point.
+pub fn shared_connection(config: &MemoryConfig) -> Result<Arc<PMutex<Connection>>> {
+    get_or_init_connection(config)
 }
 
 #[cfg(test)]

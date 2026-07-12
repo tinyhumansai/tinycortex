@@ -17,14 +17,17 @@ use super::recovery::{is_transient_cold_start, try_cleanup_stale_files};
 use super::types::{chunk_id, Chunk, Metadata, SourceKind, SourceRef};
 use super::{
     claim_source_ingest_tx, clear_chunk_reembed_skipped, clear_reembed_skipped_for_signature,
-    content_root, count_chunks, db_path_for, delete_chunks_by_owner, delete_chunks_by_source,
-    extraction_coverage, get_chunk, get_chunk_embedding, get_chunk_embedding_for_signature,
-    get_chunk_embeddings_for_signature_batch, get_chunks_batch, is_source_ingested, list_chunks,
-    mark_chunk_reembed_skipped, set_chunk_embedding, set_chunk_embedding_for_signature,
-    tree_active_signature, upsert_chunks, ListChunksQuery, DB_DIR,
-    GLOBAL_TOPIC_PURGE_MIGRATION_VERSION,
+    clear_summary_reembed_skipped, content_root, count_chunks, db_path_for, delete_chunks_by_owner,
+    delete_chunks_by_source, extraction_coverage, get_chunk, get_chunk_embedding,
+    get_chunk_embedding_for_signature, get_chunk_embeddings_for_signature_batch, get_chunks_batch,
+    is_source_ingested, list_chunks, mark_chunk_reembed_skipped, mark_summary_reembed_skipped,
+    set_chunk_embedding, set_chunk_embedding_for_signature, tree_active_signature, upsert_chunks,
+    ListChunksQuery, DB_DIR, GLOBAL_TOPIC_PURGE_MIGRATION_VERSION,
 };
 use crate::memory::config::MemoryConfig;
+use crate::memory::tree::store::{
+    insert_summary_tx, insert_tree, SummaryNode, Tree, TreeKind, TreeStatus,
+};
 use chrono::{TimeZone, Utc};
 use rusqlite::params;
 use std::sync::Arc;
@@ -77,6 +80,70 @@ fn clear_chunk_reembed_skipped_is_idempotent() {
     })
     .unwrap();
     assert_eq!(count, 0);
+}
+
+#[test]
+fn summary_reembed_tombstone_roundtrips_and_clears() {
+    let (_tmp, cfg) = test_config();
+    let now = Utc::now();
+    insert_tree(
+        &cfg,
+        &Tree {
+            id: "tree-1".into(),
+            kind: TreeKind::Source,
+            scope: "source-1".into(),
+            root_id: None,
+            max_level: 0,
+            status: TreeStatus::Active,
+            created_at: now,
+            last_sealed_at: None,
+        },
+    )
+    .unwrap();
+    with_connection(&cfg, |conn| {
+        let tx = conn.unchecked_transaction()?;
+        insert_summary_tx(
+            &tx,
+            &SummaryNode {
+                id: "summary-1".into(),
+                tree_id: "tree-1".into(),
+                tree_kind: TreeKind::Source,
+                level: 1,
+                parent_id: None,
+                child_ids: vec![],
+                content: "summary".into(),
+                token_count: 2,
+                entities: vec![],
+                topics: vec![],
+                time_range_start: now,
+                time_range_end: now,
+                score: 1.0,
+                sealed_at: now,
+                deleted: false,
+                embedding: None,
+                doc_id: None,
+                version_ms: None,
+            },
+            "model@3",
+        )?;
+        tx.commit()?;
+        Ok(())
+    })
+    .unwrap();
+    mark_summary_reembed_skipped(&cfg, "summary-1", "model@3", "oversize").unwrap();
+    with_connection(&cfg, |conn| {
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM mem_tree_summary_reembed_skipped
+             WHERE summary_id='summary-1' AND model_signature='model@3'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 1);
+        Ok(())
+    })
+    .unwrap();
+    clear_summary_reembed_skipped(&cfg, "summary-1", "model@3").unwrap();
+    clear_summary_reembed_skipped(&cfg, "summary-1", "model@3").unwrap();
 }
 
 #[test]

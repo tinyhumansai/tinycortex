@@ -104,7 +104,7 @@ impl EntityKind {
 ///
 /// Same surface form (after normalisation) → same `canonical_id` regardless
 /// of how many times it appears. One row per occurrence preserves source spans.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CanonicalEntity {
     /// Stable id following the `"<kind>:<value>"` convention.
     pub canonical_id: String,

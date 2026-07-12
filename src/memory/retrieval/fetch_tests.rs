@@ -96,3 +96,26 @@ fn fetch_leaves_preserves_input_order_and_propagates_scores() {
     );
     assert!((out[2].score - 0.1).abs() < 1e-6, "c1 score");
 }
+
+#[test]
+fn fetch_leaves_hydrates_full_staged_body_instead_of_sql_preview() {
+    let (_tmp, cfg) = test_config();
+    let full_body = "full-body ".repeat(120);
+    let chunk = sample_chunk("slack:#eng", 0, &full_body);
+    let staged = crate::memory::store::content::stage_chunks(
+        &crate::memory::chunks::content_root(&cfg),
+        &[chunk.clone()],
+    )
+    .unwrap();
+    crate::memory::chunks::with_connection(&cfg, |conn| {
+        let tx = conn.unchecked_transaction()?;
+        crate::memory::chunks::upsert_staged_chunks_tx(&tx, &staged)?;
+        tx.commit()?;
+        Ok(())
+    })
+    .unwrap();
+
+    let out = fetch_leaves(&cfg, &[chunk.id]).unwrap();
+    assert_eq!(out[0].content, full_body);
+    assert!(out[0].content.len() > 500);
+}

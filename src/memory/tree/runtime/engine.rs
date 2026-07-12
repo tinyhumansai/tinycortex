@@ -31,6 +31,25 @@ pub trait Summariser: Send + Sync {
     async fn summarise(&self, system: Option<&str>, content: &str) -> Result<String>;
 }
 
+/// Product hook for runtime progress notifications. Implementations must not
+/// retain PII-bearing summary content; only structural identifiers and counts
+/// are exposed here.
+pub trait RuntimeObserver: Send + Sync {
+    fn hour_completed(&self, _namespace: &str, _node_id: &str, _token_count: u32) {}
+    fn node_propagated(
+        &self,
+        _namespace: &str,
+        _node_id: &str,
+        _level: NodeLevel,
+        _token_count: u32,
+    ) {
+    }
+    fn rebuild_completed(&self, _namespace: &str, _total_nodes: u64) {}
+}
+
+struct NoopObserver;
+impl RuntimeObserver for NoopObserver {}
+
 /// Run the summarisation job for a namespace: drain the buffer, group entries
 /// by hour, summarise each hour into its leaf, then propagate upward. Returns
 /// the last hour leaf created, or `None` if the buffer was empty.
@@ -54,6 +73,16 @@ pub async fn run_summarization(
     summariser: &dyn Summariser,
     namespace: &str,
     _ts: DateTime<Utc>,
+) -> Result<Option<TreeNode>> {
+    run_summarization_observed(config, summariser, namespace, _ts, &NoopObserver).await
+}
+
+pub async fn run_summarization_observed(
+    config: &MemoryConfig,
+    summariser: &dyn Summariser,
+    namespace: &str,
+    _ts: DateTime<Utc>,
+    observer: &dyn RuntimeObserver,
 ) -> Result<Option<TreeNode>> {
     let buffered = store::buffer_read(config, namespace)?;
     if buffered.is_empty() {
@@ -100,6 +129,7 @@ pub async fn run_summarization(
             metadata: None,
         };
         store::write_node(config, &hour_node)?;
+        observer.hour_completed(namespace, hour_id, hour_node.token_count);
 
         let (_, day_id, month_id, year_id, root_id) = derive_node_ids_from_hour_id(hour_id);
         all_propagation_ids.push((day_id, NodeLevel::Day));
@@ -120,7 +150,9 @@ pub async fn run_summarization(
     ] {
         for (node_id, node_level) in &all_propagation_ids {
             if *node_level == level && seen.insert(node_id.clone()) {
-                if let Err(_e) = propagate_node(config, summariser, namespace, node_id, level).await
+                if let Err(_e) =
+                    propagate_node_observed(config, summariser, namespace, node_id, level, observer)
+                        .await
                 {
                     failed.push(node_id.clone());
                 }
@@ -159,6 +191,15 @@ pub async fn rebuild_tree(
     config: &MemoryConfig,
     summariser: &dyn Summariser,
     namespace: &str,
+) -> Result<TreeStatus> {
+    rebuild_tree_observed(config, summariser, namespace, &NoopObserver).await
+}
+
+pub async fn rebuild_tree_observed(
+    config: &MemoryConfig,
+    summariser: &dyn Summariser,
+    namespace: &str,
+    observer: &dyn RuntimeObserver,
 ) -> Result<TreeStatus> {
     let status = store::get_tree_status(config, namespace)?;
     if status.total_nodes == 0 {
@@ -217,26 +258,72 @@ pub async fn rebuild_tree(
     // Partial-success propagation: a single node's failure does not abort the
     // rebuild (the hour leaves are already re-written above).
     for day_id in &day_ids {
-        let _ = propagate_node(config, summariser, namespace, day_id, NodeLevel::Day).await;
+        let _ = propagate_node_observed(
+            config,
+            summariser,
+            namespace,
+            day_id,
+            NodeLevel::Day,
+            observer,
+        )
+        .await;
     }
     for month_id in &month_ids {
-        let _ = propagate_node(config, summariser, namespace, month_id, NodeLevel::Month).await;
+        let _ = propagate_node_observed(
+            config,
+            summariser,
+            namespace,
+            month_id,
+            NodeLevel::Month,
+            observer,
+        )
+        .await;
     }
     for year_id in &year_ids {
-        let _ = propagate_node(config, summariser, namespace, year_id, NodeLevel::Year).await;
+        let _ = propagate_node_observed(
+            config,
+            summariser,
+            namespace,
+            year_id,
+            NodeLevel::Year,
+            observer,
+        )
+        .await;
     }
-    let _ = propagate_node(config, summariser, namespace, "root", NodeLevel::Root).await;
+    let _ = propagate_node_observed(
+        config,
+        summariser,
+        namespace,
+        "root",
+        NodeLevel::Root,
+        observer,
+    )
+    .await;
 
-    store::get_tree_status(config, namespace)
+    let status = store::get_tree_status(config, namespace)?;
+    observer.rebuild_completed(namespace, status.total_nodes);
+    Ok(status)
 }
 
 /// Re-summarise a single non-leaf node from its children.
+#[cfg(test)]
 pub(crate) async fn propagate_node(
     config: &MemoryConfig,
     summariser: &dyn Summariser,
     namespace: &str,
     node_id: &str,
     level: NodeLevel,
+) -> Result<()> {
+    propagate_node_observed(config, summariser, namespace, node_id, level, &NoopObserver).await
+}
+
+async fn propagate_node_observed(
+    config: &MemoryConfig,
+    summariser: &dyn Summariser,
+    namespace: &str,
+    node_id: &str,
+    level: NodeLevel,
+    observer: &dyn RuntimeObserver,
 ) -> Result<()> {
     let children = store::read_children(config, namespace, node_id)?;
     if children.is_empty() {
@@ -274,6 +361,7 @@ pub(crate) async fn propagate_node(
         metadata: None,
     };
     store::write_node(config, &node)?;
+    observer.node_propagated(namespace, node_id, level, node.token_count);
     Ok(())
 }
 

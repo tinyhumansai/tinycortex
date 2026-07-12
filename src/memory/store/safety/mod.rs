@@ -19,7 +19,7 @@ use serde_json::Value;
 /// check is re-exported as [`has_likely_pii`].
 pub mod pii;
 
-pub use pii::has_likely_pii;
+pub use pii::{has_likely_email, has_likely_pii};
 
 const REDACTED_SECRET: &str = "[REDACTED_SECRET]";
 const REDACTED_PRIVATE_KEY: &str = "[REDACTED_PRIVATE_KEY]";

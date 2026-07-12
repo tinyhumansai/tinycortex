@@ -144,3 +144,29 @@ fn cover_window_emits_raw_chunks_when_no_tree() {
         .iter()
         .all(|h| h.node_kind == crate::memory::retrieval::NodeKind::Leaf));
 }
+
+#[test]
+fn scoped_cover_filters_memory_sources_before_result_limit() {
+    let (_tmp, cfg) = test_config();
+    let ts = Utc.timestamp_millis_opt(1_700_000_000_000).unwrap();
+    let mut denied = sample_chunk_at("slack:#denied", 0, "denied", ts);
+    denied.metadata.tags.push("memory_sources".to_string());
+    let mut allowed = sample_chunk_at("slack:#allowed", 0, "allowed", ts);
+    allowed.metadata.tags.push("memory_sources".to_string());
+    insert_chunks(&cfg, &[denied, allowed]);
+
+    let scope = Some(["slack:#allowed".to_string()].into_iter().collect());
+    let response = cover_window_scoped(
+        &cfg,
+        ts.timestamp_millis() - 1,
+        ts.timestamp_millis() + 1,
+        None,
+        None,
+        scope,
+        1,
+    )
+    .unwrap();
+
+    assert_eq!(response.hits.len(), 1);
+    assert_eq!(response.hits[0].tree_scope, "slack:#allowed");
+}

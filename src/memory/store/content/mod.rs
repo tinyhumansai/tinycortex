@@ -43,12 +43,13 @@ pub use paths::{
     SummaryDiskLayout, SummaryTreeKind,
 };
 pub use raw::{
-    raw_kind_dir, raw_rel_path, raw_source_dir, slug_account_email, write_raw_items, RawItem,
-    RawKind,
+    raw_kind_dir, raw_rel_path, raw_source_dir, sanitize_uid, slug_account_email, write_raw_items,
+    RawItem, RawKind,
 };
 pub use read::{
-    read_chunk_file, read_summary_file, resolve_within_content_root, verify_chunk_file,
-    verify_summary_file, ChunkFileContents, VerifyResult,
+    read_chunk_body, read_chunk_file, read_summary_body, read_summary_file,
+    resolve_within_content_root, verify_chunk_file, verify_summary_file, ChunkFileContents,
+    VerifyResult,
 };
 pub use tags::{entity_tag, slugify_tag_kind, slugify_tag_value, update_chunk_tags};
 
@@ -88,7 +89,7 @@ pub fn stage_chunks(content_root: &Path, chunks: &[Chunk]) -> anyhow::Result<Vec
         let (full_bytes, body_bytes) = compose::compose_chunk_file(chunk);
         let sha256 = atomic::sha256_hex(&body_bytes);
 
-        atomic::write_if_new(&abs_path, &full_bytes)?;
+        atomic::write_or_replace_body(&abs_path, &full_bytes, &sha256)?;
 
         staged.push(StagedChunk {
             chunk: chunk.clone(),

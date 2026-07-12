@@ -16,6 +16,7 @@ use super::types::{SummaryNode, TreeKind};
 use crate::memory::chunks::{tree_active_signature, with_connection};
 use crate::memory::config::MemoryConfig;
 use crate::memory::score::embed::decode_optional_blob;
+use crate::memory::store::content::StagedSummary;
 
 /// Insert a sealed summary. Immutable; the caller mints a fresh id per seal.
 /// Idempotent on the primary key (`INSERT OR IGNORE`).
@@ -28,7 +29,27 @@ pub fn insert_summary_tx(
     node: &SummaryNode,
     model_signature: &str,
 ) -> Result<()> {
+    insert_staged_summary_tx(tx, node, None, model_signature)
+}
+
+/// Insert a summary and optional staged Markdown pointer in one transaction.
+pub fn insert_staged_summary_tx(
+    tx: &Transaction<'_>,
+    node: &SummaryNode,
+    staged: Option<&StagedSummary>,
+    model_signature: &str,
+) -> Result<()> {
     let embedding_blob: Option<Vec<u8>> = None;
+    let (content, content_path, content_sha256) = staged.map_or_else(
+        || (node.content.clone(), None, None),
+        |staged| {
+            (
+                node.content.chars().take(500).collect(),
+                Some(staged.content_path.clone()),
+                Some(staged.content_sha256.clone()),
+            )
+        },
+    );
     tx.execute(
         "INSERT OR IGNORE INTO mem_tree_summaries (
             id, tree_id, tree_kind, level, parent_id,
@@ -36,8 +57,8 @@ pub fn insert_summary_tx(
             entities_json, topics_json,
             time_range_start_ms, time_range_end_ms,
             score, sealed_at_ms, deleted, embedding,
-            doc_id, version_ms
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            doc_id, version_ms, content_path, content_sha256
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
         params![
             node.id,
             node.tree_id,
@@ -45,7 +66,7 @@ pub fn insert_summary_tx(
             node.level,
             node.parent_id,
             serde_json::to_string(&node.child_ids)?,
-            node.content,
+            content,
             node.token_count,
             serde_json::to_string(&node.entities)?,
             serde_json::to_string(&node.topics)?,
@@ -57,6 +78,8 @@ pub fn insert_summary_tx(
             embedding_blob,
             node.doc_id,
             node.version_ms,
+            content_path,
+            content_sha256,
         ],
     )
     .with_context(|| format!("Failed to insert summary id={}", node.id))?;

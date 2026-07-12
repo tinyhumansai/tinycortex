@@ -124,7 +124,8 @@ fn build_filename(created_at_ms: i64, uid: &str) -> String {
 
 /// Replace path-illegal characters in the upstream uid before splicing it into
 /// a filename.
-pub(crate) fn sanitize_uid(uid: &str) -> String {
+/// Sanitize an upstream item identifier for use as a raw-archive filename.
+pub fn sanitize_uid(uid: &str) -> String {
     let cleaned: String = uid
         .chars()
         .map(|c| match c {

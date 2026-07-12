@@ -54,6 +54,7 @@
 
 pub mod cover;
 pub mod drill_down;
+pub mod fast;
 pub mod fetch;
 pub mod global;
 pub mod graph_adapter;
@@ -72,8 +73,9 @@ pub(crate) mod test_support;
 
 // ── Public re-exports ───────────────────────────────────────────────────────
 
-pub use cover::cover_window;
+pub use cover::{cover_window, cover_window_scoped};
 pub use drill_down::drill_down;
+pub use fast::{fast_retrieve, FastRetrieveOptions};
 pub use fetch::{fetch_leaves, MAX_BATCH};
 pub use global::{query_global, query_topic};
 pub use graph_adapter::ConfigEntityIndex;
