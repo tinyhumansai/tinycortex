@@ -82,7 +82,7 @@ fn seed_chunk(
         created_at: ts,
         partial_message: false,
     };
-    upsert_chunks(cfg, &[c.clone()]).unwrap();
+    upsert_chunks(cfg, std::slice::from_ref(&c)).unwrap();
     c
 }
 
@@ -101,6 +101,88 @@ async fn append_below_budget_does_not_seal() {
     assert_eq!(buf.item_ids, vec!["leaf-1".to_string()]);
     assert_eq!(buf.token_sum, 100);
     assert_eq!(store::count_summaries(&cfg, &tree.id).unwrap(), 0);
+}
+
+#[tokio::test]
+async fn service_seal_stages_body_and_enqueues_parent_atomically() {
+    let (_tmp, mut cfg) = test_config();
+    cfg.tree.summary_fanout = 1;
+    let tree = get_or_create_tree(&cfg, TreeKind::Source, "slack:#eng").unwrap();
+    let chunk = seed_chunk(&cfg, 0, "full staged body", 10, Vec::new());
+    append_to_buffer(
+        &cfg,
+        &tree.id,
+        0,
+        &chunk.id,
+        chunk.token_count as i64,
+        chunk.metadata.timestamp,
+    )
+    .unwrap();
+    let buffer = store::get_buffer(&cfg, &tree.id, 0).unwrap();
+    let summariser = ConcatSummariser::new();
+
+    let summary_id = seal_one_level_with_services(
+        &cfg,
+        &tree,
+        &buffer,
+        &SealServices {
+            summariser: &summariser,
+            embedder: None,
+            observer: &NoopSealObserver,
+        },
+        &LabelStrategy::Empty,
+        true,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        crate::memory::store::content::read_summary_body(&cfg, &summary_id)
+            .unwrap()
+            .contains("full staged body")
+    );
+    assert_eq!(crate::memory::queue::count_total(&cfg).unwrap(), 1);
+}
+
+#[tokio::test]
+async fn document_subtree_stages_versioned_passthrough_root() {
+    let (_tmp, cfg) = test_config();
+    let tree = get_or_create_tree(&cfg, TreeKind::Source, "notion:connection").unwrap();
+    let chunk = seed_chunk(&cfg, 0, "document body", 10, Vec::new());
+    let summariser = ConcatSummariser::new();
+    let root_id = seal_document_subtree_with_services(
+        &cfg,
+        &tree,
+        "notion:connection:page",
+        Some(42),
+        &[chunk.id],
+        &SealServices {
+            summariser: &summariser,
+            embedder: None,
+            observer: &NoopSealObserver,
+        },
+        &LabelStrategy::Empty,
+    )
+    .await
+    .unwrap();
+
+    let root = store::get_summary(&cfg, &root_id).unwrap().unwrap();
+    assert_eq!(root.content, "document body");
+    assert_eq!(root.doc_id.as_deref(), Some("notion:connection:page"));
+    assert_eq!(root.version_ms, Some(42));
+    assert_eq!(
+        crate::memory::store::content::read_summary_body(&cfg, &root_id).unwrap(),
+        "document body"
+    );
+    assert_eq!(
+        store::get_buffer(&cfg, &tree.id, MERGE_LEVEL_BASE)
+            .unwrap()
+            .item_ids,
+        vec![root_id]
+    );
+    let published = store::get_tree(&cfg, &tree.id).unwrap().unwrap();
+    assert_eq!(published.root_id.as_deref(), Some(root.id.as_str()));
+    assert_eq!(published.max_level, root.level);
 }
 
 #[tokio::test]
@@ -186,7 +268,20 @@ async fn seal_preserves_items_appended_while_summariser_is_running() {
         started: started.clone(),
         release: release.clone(),
     };
-    let seal = seal_one_level(&cfg, &tree, &snapshot, &summariser, &LabelStrategy::Empty);
+    let observer = NoopSealObserver;
+    let services = SealServices {
+        summariser: &summariser,
+        embedder: None,
+        observer: &observer,
+    };
+    let seal = seal_one_level_with_services(
+        &cfg,
+        &tree,
+        &snapshot,
+        &services,
+        &LabelStrategy::Empty,
+        false,
+    );
     let append = async {
         started.notified().await;
         append_to_buffer(&cfg, &tree.id, 0, &c2.id, 10, ts).unwrap();

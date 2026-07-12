@@ -40,8 +40,9 @@ pub use canonicalize::email::{EmailMessage, EmailThread};
 pub use canonicalize::{CanonicaliseRequest, CanonicalisedSource};
 
 pub use extract::{
-    extract_document, ExtractedEntity, ExtractedRelation, ExtractionMode, MemoryIngestionConfig,
-    MemoryIngestionRequest, MemoryIngestionResult, DEFAULT_MEMORY_EXTRACTION_MODEL,
+    extract_document, extract_enriched_document, ExtractedEntity, ExtractedRelation,
+    ExtractionMode, MemoryIngestionConfig, MemoryIngestionRequest, MemoryIngestionResult,
+    DEFAULT_MEMORY_EXTRACTION_MODEL,
 };
 
 pub use pipeline::{

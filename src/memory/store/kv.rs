@@ -18,10 +18,7 @@ use std::sync::Arc;
 use crate::memory::store::safety;
 use crate::memory::types::MemoryKvRecord;
 
-const INIT_SQL: &str = "
-    PRAGMA journal_mode = WAL;
-    PRAGMA synchronous = NORMAL;
-
+const SCHEMA_SQL: &str = "
     CREATE TABLE IF NOT EXISTS kv_global (
         key        TEXT    PRIMARY KEY,
         value_json TEXT    NOT NULL,
@@ -38,6 +35,11 @@ const INIT_SQL: &str = "
     CREATE INDEX IF NOT EXISTS idx_kv_ns ON kv_namespace(namespace);
 ";
 
+const OWNED_CONNECTION_PRAGMAS: &str = "
+    PRAGMA journal_mode = WAL;
+    PRAGMA synchronous = NORMAL;
+";
+
 /// SQLite-backed global + namespace JSON key-value store.
 ///
 /// Thread-safe: the connection is behind a `parking_lot::Mutex`.
@@ -52,7 +54,7 @@ impl KvStore {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(db_path)?;
-        conn.execute_batch(INIT_SQL)?;
+        Self::init_owned_connection(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -61,10 +63,25 @@ impl KvStore {
     /// Open an in-memory KV store (useful for tests).
     pub fn open_in_memory() -> anyhow::Result<Self> {
         let conn = Connection::open_in_memory()?;
-        conn.execute_batch(INIT_SQL)?;
+        Self::init_owned_connection(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    /// Use a connection owned and configured by the embedding application.
+    ///
+    /// Only the KV schema is installed. Journal mode, synchronous mode, busy
+    /// timeout, and transaction policy remain owned by the caller.
+    pub fn from_shared_connection(conn: Arc<Mutex<Connection>>) -> anyhow::Result<Self> {
+        conn.lock().execute_batch(SCHEMA_SQL)?;
+        Ok(Self { conn })
+    }
+
+    fn init_owned_connection(conn: &Connection) -> anyhow::Result<()> {
+        conn.execute_batch(OWNED_CONNECTION_PRAGMAS)?;
+        conn.execute_batch(SCHEMA_SQL)?;
+        Ok(())
     }
 
     /// Seconds since the Unix epoch, as a float (matches OpenHuman's `updated_at`).
@@ -98,7 +115,7 @@ impl KvStore {
         if safety::has_likely_secret(key) {
             return Err("kv key cannot contain secrets".to_string());
         }
-        if safety::has_likely_pii(key) {
+        if safety::has_likely_email(key) || safety::has_likely_pii(key) {
             return Err("kv key cannot contain personal identifiers".to_string());
         }
 
@@ -138,7 +155,11 @@ impl KvStore {
         if safety::has_likely_secret(namespace) || safety::has_likely_secret(key) {
             return Err("kv namespace/key cannot contain secrets".to_string());
         }
-        if safety::has_likely_pii(namespace) || safety::has_likely_pii(key) {
+        if safety::has_likely_email(namespace)
+            || safety::has_likely_email(key)
+            || safety::has_likely_pii(namespace)
+            || safety::has_likely_pii(key)
+        {
             return Err("kv namespace/key cannot contain personal identifiers".to_string());
         }
 

@@ -124,7 +124,8 @@ fn build_filename(created_at_ms: i64, uid: &str) -> String {
 
 /// Replace path-illegal characters in the upstream uid before splicing it into
 /// a filename.
-pub(crate) fn sanitize_uid(uid: &str) -> String {
+/// Sanitize an upstream item identifier for use as a raw-archive filename.
+pub fn sanitize_uid(uid: &str) -> String {
     let cleaned: String = uid
         .chars()
         .map(|c| match c {
@@ -183,8 +184,8 @@ pub fn slug_account_email(email: &str) -> String {
     let lower = email.trim().to_lowercase();
     let mut out = String::with_capacity(lower.len() + 8);
     let mut last_dash = true;
-    let mut chars = lower.chars().peekable();
-    while let Some(ch) = chars.next() {
+    let chars = lower.chars().peekable();
+    for ch in chars {
         match ch {
             '@' => {
                 if !last_dash {

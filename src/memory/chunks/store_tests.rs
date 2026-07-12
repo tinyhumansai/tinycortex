@@ -61,7 +61,7 @@ fn sample_chunk(source_id: &str, seq: u32, ts_ms: i64) -> Chunk {
 fn upsert_then_get() {
     let (_tmp, cfg) = test_config();
     let c = sample_chunk("slack:#eng", 0, 1_700_000_000_000);
-    assert_eq!(upsert_chunks(&cfg, &[c.clone()]).unwrap(), 1);
+    assert_eq!(upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap(), 1);
     let got = get_chunk(&cfg, &c.id).unwrap().expect("chunk stored");
     assert_eq!(got, c);
 }
@@ -73,7 +73,7 @@ fn upsert_persists_path_scope() {
     c.metadata.source_kind = SourceKind::Document;
     c.metadata.path_scope = Some("notion:conn-1".to_string());
 
-    assert_eq!(upsert_chunks(&cfg, &[c.clone()]).unwrap(), 1);
+    assert_eq!(upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap(), 1);
 
     let got = get_chunk(&cfg, &c.id).unwrap().expect("chunk stored");
     assert_eq!(got.metadata.source_id, "notion:conn-1:page-abc");
@@ -119,8 +119,8 @@ fn list_chunks_source_scope_filters_before_limit() {
 fn upsert_is_idempotent() {
     let (_tmp, cfg) = test_config();
     let c = sample_chunk("slack:#eng", 0, 1_700_000_000_000);
-    upsert_chunks(&cfg, &[c.clone()]).unwrap();
-    upsert_chunks(&cfg, &[c.clone()]).unwrap();
+    upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap();
+    upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap();
     assert_eq!(count_chunks(&cfg).unwrap(), 1);
 }
 
@@ -128,12 +128,12 @@ fn upsert_is_idempotent() {
 fn reingest_preserves_existing_embedding() {
     let (_tmp, cfg) = test_config();
     let mut c = sample_chunk("slack:#eng", 0, 1_700_000_000_000);
-    upsert_chunks(&cfg, &[c.clone()]).unwrap();
+    upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap();
     set_chunk_embedding(&cfg, &c.id, &[0.1, 0.2, 0.3]).unwrap();
 
     c.content = "updated content".into();
     c.token_count = 99;
-    upsert_chunks(&cfg, &[c.clone()]).unwrap();
+    upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap();
 
     let embedding = get_chunk_embedding(&cfg, &c.id).unwrap().unwrap();
     assert_eq!(embedding, vec![0.1, 0.2, 0.3]);
@@ -146,7 +146,7 @@ fn reingest_preserves_existing_embedding() {
 fn chunk_embeddings_are_scoped_by_model_signature() {
     let (_tmp, cfg) = test_config();
     let c = sample_chunk("slack:#eng", 0, 1_700_000_000_000);
-    upsert_chunks(&cfg, &[c.clone()]).unwrap();
+    upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap();
 
     set_chunk_embedding_for_signature(
         &cfg,
@@ -354,6 +354,33 @@ fn delete_chunks_by_source_removes_chunks_side_rows_and_ingest_gate() {
 }
 
 #[test]
+fn delete_chunks_by_source_cascades_path_scoped_tree() {
+    let (_tmp, cfg) = test_config();
+    let mut chunk = sample_chunk("notion:item", 0, 1_700_000_000_000);
+    chunk.metadata.source_kind = SourceKind::Document;
+    chunk.metadata.path_scope = Some("notion:workspace".into());
+    upsert_chunks(&cfg, std::slice::from_ref(&chunk)).unwrap();
+    crate::memory::tree::registry::get_or_create_tree(
+        &cfg,
+        crate::memory::tree::store::TreeKind::Source,
+        "notion:workspace",
+    )
+    .unwrap();
+
+    assert_eq!(
+        delete_chunks_by_source(&cfg, SourceKind::Document, "notion:item").unwrap(),
+        1
+    );
+    assert!(crate::memory::tree::store::get_tree_by_scope(
+        &cfg,
+        crate::memory::tree::store::TreeKind::Source,
+        "notion:workspace",
+    )
+    .unwrap()
+    .is_none());
+}
+
+#[test]
 fn delete_chunks_by_owner_preserves_other_owners_for_same_source() {
     let (_tmp, cfg) = test_config();
     let mut target = sample_chunk("slack:shared", 0, 1_700_000_000_000);
@@ -495,7 +522,7 @@ fn raw_refs_round_trip_and_prefix_listing_tolerates_corrupt_rows() {
 fn content_pointer_accessors_return_only_complete_non_deleted_rows() {
     let (_tmp, cfg) = test_config();
     let chunk = sample_chunk("notion:page-1", 0, 1_700_000_000_000);
-    upsert_chunks(&cfg, &[chunk.clone()]).unwrap();
+    upsert_chunks(&cfg, std::slice::from_ref(&chunk)).unwrap();
     with_connection(&cfg, |conn| {
         conn.execute(
             "UPDATE mem_tree_chunks SET content_path = ?1, content_sha256 = ?2 WHERE id = ?3",

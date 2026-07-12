@@ -58,7 +58,7 @@ const SQLITE_IOERR_IN_PAGE: i32 = 8714;
 /// it is currently only reachable from this crate's test modules, not from
 /// any production call site.
 #[allow(dead_code)]
-pub(crate) fn is_transient_cold_start(err: &anyhow::Error) -> bool {
+pub fn is_transient_cold_start(err: &anyhow::Error) -> bool {
     fn is_transient_sqlite(e: &(dyn std::error::Error + 'static)) -> bool {
         if let Some(rusqlite::Error::SqliteFailure(ffi, _)) = e.downcast_ref::<rusqlite::Error>() {
             return matches!(
@@ -95,7 +95,7 @@ pub(crate) fn is_transient_cold_start(err: &anyhow::Error) -> bool {
 /// error (`{err:#}`) for error shapes that don't downcast cleanly — this
 /// catches messages surfaced through `anyhow::Context` wrapping that loses
 /// the original `rusqlite::Error` type.
-pub(crate) fn is_io_open_error(err: &anyhow::Error) -> bool {
+pub fn is_io_open_error(err: &anyhow::Error) -> bool {
     if let Some(rusqlite::Error::SqliteFailure(f, _)) = err.downcast_ref::<rusqlite::Error>() {
         return matches!(
             f.extended_code,
@@ -134,7 +134,7 @@ pub(crate) fn is_io_open_error(err: &anyhow::Error) -> bool {
 ///    drives the cold-start `IOERR_SHM*` failures (SQLite rebuilds it on open).
 ///
 /// Returns `true` if anything was checkpointed, quarantined, or removed.
-pub(crate) fn try_cleanup_stale_files(db_path: &Path) -> bool {
+pub fn try_cleanup_stale_files(db_path: &Path) -> bool {
     let mut cleaned = false;
     let wal = with_name_suffix(db_path, "-wal");
     let shm = with_name_suffix(db_path, "-shm");
@@ -258,7 +258,7 @@ fn quick_check_ok(db_path: &Path) -> Result<bool> {
 /// succeeding on platforms with mandatory file locking), or if rebuilding the
 /// schema via [`get_or_init_connection`] fails.
 #[allow(dead_code)]
-pub(crate) fn recover_corrupt_db(config: &MemoryConfig) -> Result<bool> {
+pub fn recover_corrupt_db(config: &MemoryConfig) -> Result<bool> {
     let db_path = db_path_for(config);
 
     // 1. Drop any cached (corrupt) connection + breaker so the OS file handle

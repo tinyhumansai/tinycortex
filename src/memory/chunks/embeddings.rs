@@ -120,7 +120,7 @@ pub fn set_chunk_embedding_for_signature(
 ///
 /// # Errors
 /// See [`upsert_chunk_embedding_conn`].
-pub(crate) fn set_chunk_embedding_for_signature_tx(
+pub fn set_chunk_embedding_for_signature_tx(
     tx: &rusqlite::Transaction<'_>,
     chunk_id: &str,
     model_signature: &str,
@@ -133,7 +133,7 @@ pub(crate) fn set_chunk_embedding_for_signature_tx(
 ///
 /// # Errors
 /// See [`upsert_summary_embedding_conn`].
-pub(crate) fn set_summary_embedding_for_signature_tx(
+pub fn set_summary_embedding_for_signature_tx(
     tx: &rusqlite::Transaction<'_>,
     summary_id: &str,
     model_signature: &str,
@@ -199,6 +199,49 @@ pub fn clear_chunk_reembed_skipped(
     })
 }
 
+pub fn mark_summary_reembed_skipped(
+    config: &MemoryConfig,
+    summary_id: &str,
+    model_signature: &str,
+    reason: &str,
+) -> Result<()> {
+    let summary_id = validate_reembed_skip_key("summary_id", summary_id)?;
+    let model_signature = validate_reembed_skip_key("model_signature", model_signature)?;
+    with_connection(config, |conn| {
+        conn.execute(
+            "INSERT INTO mem_tree_summary_reembed_skipped
+             (summary_id, model_signature, reason, skipped_at_ms)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(summary_id, model_signature) DO UPDATE SET
+                reason = excluded.reason, skipped_at_ms = excluded.skipped_at_ms",
+            rusqlite::params![
+                summary_id,
+                model_signature,
+                reason,
+                Utc::now().timestamp_millis()
+            ],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn clear_summary_reembed_skipped(
+    config: &MemoryConfig,
+    summary_id: &str,
+    model_signature: &str,
+) -> Result<()> {
+    let summary_id = validate_reembed_skip_key("summary_id", summary_id)?;
+    let model_signature = validate_reembed_skip_key("model_signature", model_signature)?;
+    with_connection(config, |conn| {
+        conn.execute(
+            "DELETE FROM mem_tree_summary_reembed_skipped
+             WHERE summary_id = ?1 AND model_signature = ?2",
+            rusqlite::params![summary_id, model_signature],
+        )?;
+        Ok(())
+    })
+}
+
 /// Clear all chunk and summary tombstones for a model signature. Returns the
 /// total number of rows removed across both tombstone tables. Idempotent —
 /// calling again with nothing left to clear returns `Ok(0)`.
@@ -226,7 +269,7 @@ pub fn clear_reembed_skipped_for_signature(
 
 /// Bounds attacker-controlled ids/signatures passed to reembed-skipped admin
 /// helpers. Rejects NUL bytes so SQLite bindings cannot be truncated.
-pub(crate) const REEMBED_SKIP_KEY_MAX_LEN: usize = 2048;
+pub const REEMBED_SKIP_KEY_MAX_LEN: usize = 2048;
 
 /// Validate and trim a `chunk_id` / `model_signature` value before it reaches
 /// a reembed-skipped table query. `label` is only used to make the error
@@ -290,7 +333,7 @@ pub fn get_chunk_embedding(config: &MemoryConfig, chunk_id: &str) -> Result<Opti
 }
 
 /// Little-endian `f32` vector → `BLOB`. The inverse of `embedding_from_blob`.
-pub(crate) fn embedding_to_blob(embedding: &[f32]) -> Vec<u8> {
+pub fn embedding_to_blob(embedding: &[f32]) -> Vec<u8> {
     embedding.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
 
@@ -329,6 +372,30 @@ fn embedding_from_blob(bytes: &[u8], dim: i64, label: &str) -> Result<Option<Vec
         );
     }
     Ok(Some(floats))
+}
+
+/// Whether any live chunk or summary lacks both an embedding and terminal tombstone.
+pub fn has_uncovered_reembed_work(
+    conn: &Connection,
+    model_signature: &str,
+) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM mem_tree_chunks c
+              WHERE NOT EXISTS (SELECT 1 FROM mem_tree_chunk_embeddings e
+                                 WHERE e.chunk_id = c.id AND e.model_signature = ?1)
+                AND NOT EXISTS (SELECT 1 FROM mem_tree_chunk_reembed_skipped sk
+                                 WHERE sk.chunk_id = c.id AND sk.model_signature = ?1))
+           OR EXISTS(
+             SELECT 1 FROM mem_tree_summaries s
+              WHERE s.deleted = 0
+                AND NOT EXISTS (SELECT 1 FROM mem_tree_summary_embeddings e
+                                 WHERE e.summary_id = s.id AND e.model_signature = ?1)
+                AND NOT EXISTS (SELECT 1 FROM mem_tree_summary_reembed_skipped sk
+                                 WHERE sk.summary_id = s.id AND sk.model_signature = ?1))",
+        rusqlite::params![model_signature],
+        |row| row.get(0),
+    )
 }
 
 /// Defensive cap for batched `IN (?,?,…)` reads, well below SQLite's

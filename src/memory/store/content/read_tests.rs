@@ -172,3 +172,63 @@ fn resolve_within_content_root_rejects_traversal_and_absolute() {
     let ok = resolve_within_content_root(root, "sub/dir/file.md").unwrap();
     assert_eq!(ok, root.join("sub").join("dir").join("file.md"));
 }
+
+#[test]
+fn high_level_chunk_reader_uses_custom_root_and_repairs_checksum() {
+    let dir = TempDir::new().unwrap();
+    let custom_root = dir.path().join("custom-content");
+    let mut config = crate::memory::MemoryConfig::new(dir.path());
+    config.content_root = Some(custom_root.clone());
+    let chunk = sample_chunk();
+    let staged =
+        crate::memory::store::content::stage_chunks(&custom_root, std::slice::from_ref(&chunk))
+            .unwrap();
+    crate::memory::chunks::with_connection(&config, |conn| {
+        let tx = conn.unchecked_transaction()?;
+        crate::memory::chunks::upsert_staged_chunks_tx(&tx, &staged)?;
+        tx.commit()?;
+        Ok(())
+    })
+    .unwrap();
+    crate::memory::chunks::update_chunk_content_sha256(&config, &chunk.id, "stale").unwrap();
+
+    assert_eq!(read_chunk_body(&config, &chunk.id).unwrap(), chunk.content);
+    let (_, repaired) = crate::memory::chunks::get_chunk_content_pointers(&config, &chunk.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(repaired, staged[0].content_sha256);
+}
+
+#[test]
+fn high_level_chunk_reader_joins_clamped_raw_references() {
+    let dir = TempDir::new().unwrap();
+    let mut config = crate::memory::MemoryConfig::new(dir.path());
+    let root = dir.path().join("raw-root");
+    config.content_root = Some(root.clone());
+    std::fs::create_dir_all(root.join("raw/source")).unwrap();
+    std::fs::write(root.join("raw/source/item.md"), "alpha beta").unwrap();
+    let chunk = sample_chunk();
+    crate::memory::chunks::upsert_chunks(&config, std::slice::from_ref(&chunk)).unwrap();
+    crate::memory::chunks::set_chunk_raw_refs(
+        &config,
+        &chunk.id,
+        &[
+            crate::memory::chunks::RawRef {
+                path: "raw/source/item.md".into(),
+                start: 0,
+                end: Some(5),
+            },
+            crate::memory::chunks::RawRef {
+                path: "raw/source/item.md".into(),
+                start: 6,
+                end: Some(100),
+            },
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        read_chunk_body(&config, &chunk.id).unwrap(),
+        "alpha\n\nbeta"
+    );
+}

@@ -45,8 +45,8 @@ fn budgets_match_config_defaults() {
     assert_eq!(INPUT_TOKEN_BUDGET, 50_000);
     assert_eq!(OUTPUT_TOKEN_BUDGET, 5_000);
     assert_eq!(SUMMARY_FANOUT, 10);
-    assert!(TOPIC_CREATION_THRESHOLD > TOPIC_ARCHIVE_THRESHOLD);
-    assert!(TOPIC_RECHECK_EVERY > 0);
+    const { assert!(TOPIC_CREATION_THRESHOLD > TOPIC_ARCHIVE_THRESHOLD) };
+    const { assert!(TOPIC_RECHECK_EVERY > 0) };
 }
 
 #[test]

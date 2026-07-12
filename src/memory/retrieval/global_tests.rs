@@ -125,7 +125,7 @@ async fn query_topic_resolves_indexed_leaf() {
     let (_tmp, cfg) = test_config();
     let ts = fixed_ts();
     let chunk = sample_chunk("slack:#eng", 0, "phoenix launch notes");
-    insert_chunks(&cfg, &[chunk.clone()]);
+    insert_chunks(&cfg, std::slice::from_ref(&chunk));
     index_entity_occurrence(
         &cfg,
         "topic:phoenix",

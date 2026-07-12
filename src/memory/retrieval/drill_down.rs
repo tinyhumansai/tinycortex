@@ -35,7 +35,7 @@ use crate::memory::score::embed::Embedder;
 use crate::memory::tree::store::{get_summaries_batch, get_summary, get_tree, get_trees_batch};
 
 use super::rerank::rerank_by_semantic_similarity;
-use super::types::{hit_from_chunk, hit_from_summary, RetrievalHit};
+use super::types::{hydrated_chunk_hit, hydrated_summary_hit, RetrievalHit};
 
 /// Pre-size hint for the next-level BFS frontier.
 const EXPECTED_CHILD_FANOUT: usize = 10;
@@ -195,7 +195,7 @@ fn walk_with_embeddings(
                     .unwrap_or_else(|| root_tree_scope.clone());
                 embeddings.push(summary.embedding.clone());
                 let child_ids = summary.child_ids.clone();
-                out.push(hit_from_summary(&summary, &scope));
+                out.push(hydrated_summary_hit(config, &summary, &scope));
                 if depth < max_depth {
                     next_level.extend(child_ids);
                 }
@@ -204,7 +204,13 @@ fn walk_with_embeddings(
             if let Some(chunk) = chunk_by_id.remove(id) {
                 let emb = emb_by_id.get(id).cloned();
                 embeddings.push(emb);
-                out.push(hit_from_chunk(&chunk, "", &chunk.metadata.source_id, 0.0));
+                out.push(hydrated_chunk_hit(
+                    config,
+                    &chunk,
+                    "",
+                    &chunk.metadata.source_id,
+                    0.0,
+                ));
                 continue;
             }
             // Child points at nothing (missing row) — skip it.

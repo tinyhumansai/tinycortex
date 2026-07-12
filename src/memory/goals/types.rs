@@ -14,7 +14,13 @@
 use serde::{Deserialize, Serialize};
 
 use crate::memory::error::MemoryError;
-use crate::memory::store::safety::{has_likely_pii, has_likely_secret};
+use crate::memory::store::safety::{
+    has_likely_email, has_likely_pii, has_likely_secret, sanitize_text,
+};
+
+fn has_goal_pii(text: &str) -> bool {
+    has_likely_email(text) || has_likely_pii(text) || sanitize_text(text).report.pii_redactions > 0
+}
 
 /// Markdown header rendered at the top of `MEMORY_GOALS.md`.
 pub(crate) const HEADER: &str = "# Long-term Goals";
@@ -140,7 +146,7 @@ impl GoalsDoc {
                 "goal text must be a single line".to_string(),
             ));
         }
-        if has_likely_secret(text) || has_likely_pii(text) {
+        if has_likely_secret(text) || has_goal_pii(text) {
             return Err(MemoryError::Invalid(
                 "goal text must not contain secrets or PII".to_string(),
             ));

@@ -17,14 +17,17 @@ use super::recovery::{is_transient_cold_start, try_cleanup_stale_files};
 use super::types::{chunk_id, Chunk, Metadata, SourceKind, SourceRef};
 use super::{
     claim_source_ingest_tx, clear_chunk_reembed_skipped, clear_reembed_skipped_for_signature,
-    content_root, count_chunks, db_path_for, delete_chunks_by_owner, delete_chunks_by_source,
-    extraction_coverage, get_chunk, get_chunk_embedding, get_chunk_embedding_for_signature,
-    get_chunk_embeddings_for_signature_batch, get_chunks_batch, is_source_ingested, list_chunks,
-    mark_chunk_reembed_skipped, set_chunk_embedding, set_chunk_embedding_for_signature,
-    tree_active_signature, upsert_chunks, ListChunksQuery, DB_DIR,
-    GLOBAL_TOPIC_PURGE_MIGRATION_VERSION,
+    clear_summary_reembed_skipped, content_root, count_chunks, db_path_for, delete_chunks_by_owner,
+    delete_chunks_by_source, extraction_coverage, get_chunk, get_chunk_embedding,
+    get_chunk_embedding_for_signature, get_chunk_embeddings_for_signature_batch, get_chunks_batch,
+    is_source_ingested, list_chunks, mark_chunk_reembed_skipped, mark_summary_reembed_skipped,
+    set_chunk_embedding, set_chunk_embedding_for_signature, tree_active_signature, upsert_chunks,
+    ListChunksQuery, DB_DIR, GLOBAL_TOPIC_PURGE_MIGRATION_VERSION,
 };
 use crate::memory::config::MemoryConfig;
+use crate::memory::tree::store::{
+    insert_summary_tx, insert_tree, SummaryNode, Tree, TreeKind, TreeStatus,
+};
 use chrono::{TimeZone, Utc};
 use rusqlite::params;
 use std::sync::Arc;
@@ -62,7 +65,7 @@ fn sample_chunk(source_id: &str, seq: u32, ts_ms: i64) -> Chunk {
 fn clear_chunk_reembed_skipped_is_idempotent() {
     let (_tmp, cfg) = test_config();
     let c = sample_chunk("slack:#eng", 0, 1_700_000_000_000);
-    upsert_chunks(&cfg, &[c.clone()]).unwrap();
+    upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap();
     let sig = tree_active_signature(&cfg);
     mark_chunk_reembed_skipped(&cfg, &c.id, &sig, "test orphan").unwrap();
     clear_chunk_reembed_skipped(&cfg, &c.id, &sig).unwrap();
@@ -77,6 +80,70 @@ fn clear_chunk_reembed_skipped_is_idempotent() {
     })
     .unwrap();
     assert_eq!(count, 0);
+}
+
+#[test]
+fn summary_reembed_tombstone_roundtrips_and_clears() {
+    let (_tmp, cfg) = test_config();
+    let now = Utc::now();
+    insert_tree(
+        &cfg,
+        &Tree {
+            id: "tree-1".into(),
+            kind: TreeKind::Source,
+            scope: "source-1".into(),
+            root_id: None,
+            max_level: 0,
+            status: TreeStatus::Active,
+            created_at: now,
+            last_sealed_at: None,
+        },
+    )
+    .unwrap();
+    with_connection(&cfg, |conn| {
+        let tx = conn.unchecked_transaction()?;
+        insert_summary_tx(
+            &tx,
+            &SummaryNode {
+                id: "summary-1".into(),
+                tree_id: "tree-1".into(),
+                tree_kind: TreeKind::Source,
+                level: 1,
+                parent_id: None,
+                child_ids: vec![],
+                content: "summary".into(),
+                token_count: 2,
+                entities: vec![],
+                topics: vec![],
+                time_range_start: now,
+                time_range_end: now,
+                score: 1.0,
+                sealed_at: now,
+                deleted: false,
+                embedding: None,
+                doc_id: None,
+                version_ms: None,
+            },
+            "model@3",
+        )?;
+        tx.commit()?;
+        Ok(())
+    })
+    .unwrap();
+    mark_summary_reembed_skipped(&cfg, "summary-1", "model@3", "oversize").unwrap();
+    with_connection(&cfg, |conn| {
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM mem_tree_summary_reembed_skipped
+             WHERE summary_id='summary-1' AND model_signature='model@3'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 1);
+        Ok(())
+    })
+    .unwrap();
+    clear_summary_reembed_skipped(&cfg, "summary-1", "model@3").unwrap();
+    clear_summary_reembed_skipped(&cfg, "summary-1", "model@3").unwrap();
 }
 
 #[test]
@@ -187,7 +254,7 @@ fn get_chunks_batch_empty_input_and_missing_ids() {
     assert!(empty.is_empty());
 
     let c = sample_chunk("slack:#eng", 0, 1_700_000_000_000);
-    upsert_chunks(&cfg, &[c.clone()]).unwrap();
+    upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap();
     let ids = vec![
         c.id.clone(),
         "ghost:no-such-1".into(),
@@ -196,8 +263,8 @@ fn get_chunks_batch_empty_input_and_missing_ids() {
     let map = get_chunks_batch(&cfg, &ids).unwrap();
     assert_eq!(map.len(), 1);
     assert_eq!(map.get(&c.id), Some(&c));
-    assert!(map.get("ghost:no-such-1").is_none());
-    assert!(map.get("ghost:no-such-2").is_none());
+    assert!(!map.contains_key("ghost:no-such-1"));
+    assert!(!map.contains_key("ghost:no-such-2"));
 }
 
 #[test]
@@ -219,7 +286,7 @@ fn batch_embedding_lookup_returns_only_signature_scoped_rows() {
     assert_eq!(map_a.len(), 2, "only c1 and c2 are under sig_a");
     assert_eq!(map_a.get(&c1.id).cloned(), Some(vec![0.1, 0.2]));
     assert_eq!(map_a.get(&c2.id).cloned(), Some(vec![0.3, 0.4]));
-    assert!(map_a.get(&c3.id).is_none(), "c3 has only sig_b");
+    assert!(!map_a.contains_key(&c3.id), "c3 has only sig_b");
 
     let map_b = get_chunk_embeddings_for_signature_batch(&cfg, &ids, sig_b).unwrap();
     assert_eq!(map_b.len(), 1);
@@ -237,7 +304,7 @@ fn batch_embedding_lookup_empty_input_returns_empty_map() {
 fn batch_embedding_lookup_unknown_ids_absent_from_map() {
     let (_tmp, cfg) = test_config();
     let c = sample_chunk("slack:#eng", 0, 1_700_000_000_000);
-    upsert_chunks(&cfg, &[c.clone()]).unwrap();
+    upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap();
     let sig = "openai/text-embedding-3-small@1536";
     set_chunk_embedding_for_signature(&cfg, &c.id, sig, &[0.1]).unwrap();
 

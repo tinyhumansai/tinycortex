@@ -127,17 +127,12 @@ pub fn list_chunk_raw_ref_paths_with_prefix(
         let mut out: std::collections::HashSet<String> = std::collections::HashSet::new();
         for row in rows {
             let json = row?;
-            match serde_json::from_str::<Vec<RawRef>>(&json) {
-                Ok(refs) => {
-                    for raw_ref in refs {
-                        if raw_ref.path.starts_with(rel_prefix) {
-                            out.insert(raw_ref.path);
-                        }
+            if let Ok(refs) = serde_json::from_str::<Vec<RawRef>>(&json) {
+                for raw_ref in refs {
+                    if raw_ref.path.starts_with(rel_prefix) {
+                        out.insert(raw_ref.path);
                     }
                 }
-                // Tolerate individually-corrupt rows: skip rather than failing
-                // the whole coverage scan.
-                Err(_) => {}
             }
         }
         Ok(out)

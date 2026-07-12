@@ -42,8 +42,16 @@
 //! not a fixed query budget. Callers on hot paths (e.g. per-request retrieval)
 //! should cap `limit` and be mindful of the underlying index's per-call cost.
 
+mod bfs;
+mod edge_store;
 pub mod query;
 pub mod types;
+
+pub use bfs::{pair_distances, PairDistance};
+pub use edge_store::{
+    clear_edges_for_entities_tx, count_edges, edge_neighbors, pairs_from_entities, upsert_edges,
+    upsert_edges_tx,
+};
 
 pub use query::{co_occurring_entities, group_by_weight, neighbors};
 pub use types::{EntityOccurrenceIndex, GraphEdge};

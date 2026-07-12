@@ -252,7 +252,7 @@ fn connection_cache_uses_separate_connections_for_different_workspaces() {
     );
 
     let c = sample_chunk("s", 0, 1_700_000_000_000);
-    upsert_chunks(&cfg1, &[c.clone()]).unwrap();
+    upsert_chunks(&cfg1, std::slice::from_ref(&c)).unwrap();
     assert_eq!(count_chunks(&cfg1).unwrap(), 1);
     assert_eq!(count_chunks(&cfg2).unwrap(), 0);
 }
@@ -372,7 +372,7 @@ fn existing_wal_db_migrates_to_truncate() {
 fn delete_chunks_by_source_removes_symlink_entry_not_target_file() {
     let (_tmp, cfg) = test_config();
     let linked_chunk = sample_chunk("slack:c-1", 0, 1_700_000_000_000);
-    upsert_chunks(&cfg, &[linked_chunk.clone()]).unwrap();
+    upsert_chunks(&cfg, std::slice::from_ref(&linked_chunk)).unwrap();
 
     let root = content_root(&cfg);
     let target_path = root.join("chunks/target.md");

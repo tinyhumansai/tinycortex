@@ -38,7 +38,7 @@ fn seed_chunk(cfg: &MemoryConfig, src: &str, seq: u32, content: &str, ts: DateTi
         created_at: ts,
         partial_message: false,
     };
-    upsert_chunks(cfg, &[c.clone()]).unwrap();
+    upsert_chunks(cfg, std::slice::from_ref(&c)).unwrap();
     c
 }
 

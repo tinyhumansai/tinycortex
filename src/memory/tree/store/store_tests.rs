@@ -11,6 +11,7 @@ use tempfile::TempDir;
 
 use crate::memory::chunks::with_connection;
 use crate::memory::config::MemoryConfig;
+use crate::memory::store::content::StagedSummary;
 
 fn test_config() -> (TempDir, MemoryConfig) {
     let tmp = TempDir::new().unwrap();
@@ -91,6 +92,58 @@ fn summary_insert_and_fetch() {
     assert_eq!(got, node);
     assert_eq!(list_summaries_at_level(&cfg, "tree-1", 1).unwrap().len(), 1);
     assert_eq!(count_summaries(&cfg, "tree-1").unwrap(), 1);
+}
+
+#[test]
+fn staged_summary_persists_preview_and_content_pointer_atomically() {
+    let (_tmp, cfg) = test_config();
+    insert_tree(&cfg, &sample_tree("tree-1", "slack:#eng")).unwrap();
+    let mut node = sample_summary("sum-staged", "tree-1", 1);
+    node.content = "x".repeat(700);
+    let staged = StagedSummary {
+        summary_id: node.id.clone(),
+        content_path: "summaries/tree-1/sum-staged.md".into(),
+        content_sha256: "abc123".into(),
+    };
+    with_connection(&cfg, |conn| {
+        let tx = conn.unchecked_transaction()?;
+        insert_staged_summary_tx(&tx, &node, Some(&staged), "test")?;
+        tx.commit()?;
+        let row: (String, String, String) = conn.query_row(
+            "SELECT content, content_path, content_sha256 FROM mem_tree_summaries WHERE id=?1",
+            [&node.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(row.0.len(), 500);
+        assert_eq!(row.1, staged.content_path);
+        assert_eq!(row.2, staged.content_sha256);
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn cascade_delete_returns_staged_paths_and_removes_tree_rows() {
+    let (_tmp, cfg) = test_config();
+    insert_tree(&cfg, &sample_tree("tree-delete", "slack:#delete")).unwrap();
+    let node = sample_summary("sum-delete", "tree-delete", 1);
+    let staged = StagedSummary {
+        summary_id: node.id.clone(),
+        content_path: "summaries/tree-delete/sum-delete.md".into(),
+        content_sha256: "abc123".into(),
+    };
+    let deleted = with_connection(&cfg, |conn| {
+        let tx = conn.unchecked_transaction()?;
+        insert_staged_summary_tx(&tx, &node, Some(&staged), "test")?;
+        let deleted = delete_tree_cascade_tx(&tx, "tree-delete")?;
+        tx.commit()?;
+        Ok(deleted)
+    })
+    .unwrap();
+    assert_eq!(deleted.removed_summaries, 1);
+    assert_eq!(deleted.content_paths, vec![staged.content_path]);
+    assert!(get_tree(&cfg, "tree-delete").unwrap().is_none());
+    assert!(get_summary(&cfg, "sum-delete").unwrap().is_none());
 }
 
 #[test]
@@ -376,7 +429,7 @@ fn get_trees_batch_returns_present_ids_and_skips_missing() {
     assert_eq!(map.len(), 2);
     assert_eq!(map.get("tree-a").unwrap(), &a);
     assert_eq!(map.get("tree-b").unwrap(), &b);
-    assert!(map.get("ghost").is_none());
+    assert!(!map.contains_key("ghost"));
 }
 
 #[test]
@@ -429,7 +482,7 @@ fn summary_batch_embedding_lookup_returns_only_signature_scoped_rows() {
     let map_a = get_summary_embeddings_for_signature_batch(&cfg, &ids, sig_a).unwrap();
     assert_eq!(map_a.len(), 2);
     assert_eq!(map_a.get("sum-1").cloned(), Some(vec![0.1, 0.2]));
-    assert!(map_a.get("sum-3").is_none());
+    assert!(!map_a.contains_key("sum-3"));
 
     let map_b = get_summary_embeddings_for_signature_batch(&cfg, &ids, sig_b).unwrap();
     assert_eq!(map_b.len(), 1);

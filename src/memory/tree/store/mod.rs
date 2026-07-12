@@ -26,22 +26,25 @@ mod tests;
 
 // ── Tree rows ───────────────────────────────────────────────────────────────
 pub use trees::{
-    archive_tree, get_tree, get_tree_by_scope, get_trees_batch, insert_tree, list_trees_by_kind,
+    archive_tree, delete_tree_cascade_tx, get_tree, get_tree_by_scope, get_tree_by_scope_conn,
+    get_trees_batch, insert_tree, insert_tree_conn, list_trees_by_kind, refresh_last_sealed_tx,
+    update_tree_after_seal_tx, TreeCascadeDeletion,
 };
-pub(crate) use trees::{refresh_last_sealed_tx, update_tree_after_seal_tx};
 
 // ── Summary rows + embeddings ───────────────────────────────────────────────
 pub use summaries::{
     count_summaries, get_summaries_batch, get_summary, get_summary_embedding,
     get_summary_embedding_for_signature, get_summary_embeddings_batch,
-    get_summary_embeddings_for_signature_batch, insert_summary_tx, list_children_of_summary,
-    list_summaries_at_level, list_summaries_in_window, set_summary_embedding,
-    set_summary_embedding_for_signature,
+    get_summary_embeddings_for_signature_batch, insert_staged_summary_tx, insert_summary_tx,
+    list_children_of_summary, list_summaries_at_level, list_summaries_in_window,
+    set_summary_embedding, set_summary_embedding_for_signature,
 };
 
 // ── Buffers ─────────────────────────────────────────────────────────────────
-pub(crate) use buffers::{consume_snapshot_tx, get_buffer_conn, upsert_buffer_tx};
-pub use buffers::{get_buffer, list_stale_buffers};
+pub(crate) use buffers::consume_snapshot_tx;
+pub use buffers::{
+    clear_buffer_tx, get_buffer, get_buffer_conn, list_stale_buffers, upsert_buffer_tx,
+};
 
 // ── Type + constant re-exports ──────────────────────────────────────────────
 pub use types::{

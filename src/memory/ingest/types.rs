@@ -12,7 +12,7 @@ use crate::memory::chunks::RawRef;
 /// is handed to a [`TreeJobSink`] for downstream extraction/admission/tree
 /// append/seal. A host wires the real queue behind this trait; tests use an
 /// in-memory recorder.
-pub trait TreeJobSink {
+pub trait TreeJobSink: Send + Sync {
     /// Enqueue an `extract_chunk` job for `chunk_id`. The downstream worker runs
     /// full extraction, the admission gate, buffer append, and sealing — none of
     /// which happen on this hot path.
@@ -48,7 +48,7 @@ pub struct IngestOptions {
 /// downstream tree append; the actual buffer append and summary seal happen in
 /// the (separately ported) async worker, so this summary reports work *pending*,
 /// not completed.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct IngestSummary {
     /// Logical source id this call ingested.
     pub source_id: String,

@@ -14,6 +14,10 @@ use chrono::{DateTime, Utc};
 use crate::memory::chunks::approx_token_count;
 use crate::memory::tree::store::TreeKind;
 
+const MAX_SUMMARY_OUTPUT_TOKENS: u32 = 5_000;
+const NUM_CTX_TOKENS: u32 = 60_000;
+const OVERHEAD_RESERVE_TOKENS: u32 = 2_048;
+
 /// One contribution being folded — a raw leaf at L0→L1, or a lower-level
 /// summary at L_n→L_{n+1}.
 #[derive(Clone, Debug)]
@@ -64,6 +68,82 @@ pub struct SummaryOutput {
     pub topics: Vec<String>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct SummaryCall {
+    pub output: SummaryOutput,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub charged_amount_usd: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreparedSummaryPrompt {
+    pub system: String,
+    pub user: String,
+    pub effective_budget: u32,
+}
+
+/// Build the canonical provider prompt for a summary fold. Returns `None`
+/// when every input is blank.
+pub fn prepare_summary_prompt(
+    inputs: &[SummaryInput],
+    ctx: &SummaryContext<'_>,
+    output_language: Option<&str>,
+) -> Option<PreparedSummaryPrompt> {
+    let effective_budget = ctx.token_budget.min(MAX_SUMMARY_OUTPUT_TOKENS);
+    let per_input_cap = if inputs.is_empty() {
+        0
+    } else {
+        NUM_CTX_TOKENS
+            .saturating_sub(effective_budget)
+            .saturating_sub(OVERHEAD_RESERVE_TOKENS)
+            / inputs.len() as u32
+    };
+    let mut ordered: Vec<_> = inputs.iter().collect();
+    ordered.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let user = ordered
+        .into_iter()
+        .filter_map(|input| {
+            let content = input.content.trim();
+            (!content.is_empty()).then(|| {
+                let (content, _) = clamp_to_budget(content, per_input_cap);
+                format!("[{}]\n{content}", input.id)
+            })
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if user.trim().is_empty() {
+        return None;
+    }
+    let language = output_language
+        .filter(|language| !language.trim().is_empty())
+        .map(|language| format!("\nWrite the summary in {language}."))
+        .unwrap_or_default();
+    Some(PreparedSummaryPrompt {
+        system: format!(
+            "You are folding multiple notes into one compact summary.\n\
+             Aim for ~{effective_budget} tokens or fewer. Capture key facts, decisions, and entities.\n\
+             Output only the summary prose — no preamble, no JSON, no markdown headings.{language}"
+        ),
+        user,
+        effective_budget,
+    })
+}
+
+pub fn finish_provider_summary(text: &str, budget: u32) -> SummaryOutput {
+    let (content, token_count) = clamp_to_budget(text.trim(), budget);
+    SummaryOutput {
+        content,
+        token_count,
+        entities: Vec::new(),
+        topics: Vec::new(),
+    }
+}
+
 /// Backend that folds inputs into one summary. Abstracted so the crate never
 /// calls a real LLM; the default is the deterministic [`ConcatSummariser`].
 #[async_trait]
@@ -81,6 +161,17 @@ pub trait Summariser: Send + Sync {
         inputs: &[SummaryInput],
         ctx: &SummaryContext<'_>,
     ) -> Result<SummaryOutput>;
+
+    async fn summarise_with_usage(
+        &self,
+        inputs: &[SummaryInput],
+        ctx: &SummaryContext<'_>,
+    ) -> Result<SummaryCall> {
+        Ok(SummaryCall {
+            output: self.summarise(inputs, ctx).await?,
+            ..SummaryCall::default()
+        })
+    }
 }
 
 /// Deterministic, dependency-free summariser: concatenate inputs (priority-first

@@ -62,13 +62,19 @@ pub fn upsert_chunks(config: &MemoryConfig, chunks: &[Chunk]) -> Result<usize> {
     }
     with_connection(config, |conn| {
         let tx = conn.unchecked_transaction()?;
-        {
-            let mut stmt = tx.prepare(UPSERT_SQL)?;
-            upsert_chunks_with_statement(&mut stmt, chunks)?;
-        }
+        let count = upsert_chunks_tx(&tx, chunks)?;
         tx.commit()?;
-        Ok(chunks.len())
+        Ok(count)
     })
+}
+
+pub fn upsert_chunks_tx(tx: &Transaction<'_>, chunks: &[Chunk]) -> Result<usize> {
+    if chunks.is_empty() {
+        return Ok(0);
+    }
+    let mut stmt = tx.prepare(UPSERT_SQL)?;
+    upsert_chunks_with_statement(&mut stmt, chunks)?;
+    Ok(chunks.len())
 }
 
 /// `INSERT ... ON CONFLICT(id) DO UPDATE` for the plain (non-staged) chunk
@@ -148,10 +154,7 @@ fn upsert_chunks_with_statement(
 /// chunk's tags to JSON fails, or if any `stmt.execute` call fails. Does not
 /// commit `tx` itself — the caller owns the transaction lifecycle.
 #[allow(dead_code)]
-pub(crate) fn upsert_staged_chunks_tx(
-    tx: &Transaction<'_>,
-    staged: &[StagedChunk],
-) -> Result<usize> {
+pub fn upsert_staged_chunks_tx(tx: &Transaction<'_>, staged: &[StagedChunk]) -> Result<usize> {
     if staged.is_empty() {
         return Ok(0);
     }
@@ -208,6 +211,52 @@ pub(crate) fn upsert_staged_chunks_tx(
 /// positions here are load-bearing: `row_to_chunk` reads columns by
 /// numeric index, so this list and that function's `row.get(N)` calls must
 /// stay in lockstep.
+pub fn update_chunk_content_sha256(
+    config: &MemoryConfig,
+    chunk_id: &str,
+    new_sha256: &str,
+) -> Result<()> {
+    with_connection(config, |conn| {
+        conn.execute(
+            "UPDATE mem_tree_chunks SET content_sha256 = ?1 WHERE id = ?2",
+            params![new_sha256, chunk_id],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn update_summary_content_sha256(
+    config: &MemoryConfig,
+    summary_id: &str,
+    new_sha256: &str,
+) -> Result<()> {
+    with_connection(config, |conn| {
+        conn.execute(
+            "UPDATE mem_tree_summaries SET content_sha256 = ?1 WHERE id = ?2",
+            params![new_sha256, summary_id],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn list_source_ids_with_prefix(
+    config: &MemoryConfig,
+    source_kind: SourceKind,
+    prefix: &str,
+) -> Result<Vec<String>> {
+    with_connection(config, |conn| {
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT source_id FROM mem_tree_chunks
+             WHERE source_kind = ?1 ORDER BY source_id ASC",
+        )?;
+        let rows = stmt.query_map(params![source_kind.as_str()], |row| row.get::<_, String>(0))?;
+        Ok(rows
+            .filter_map(std::result::Result::ok)
+            .filter(|id| id.starts_with(prefix))
+            .collect())
+    })
+}
+
 const SELECT_COLUMNS: &str = "id, source_kind, source_id, path_scope, source_ref, owner,
     timestamp_ms, time_range_start_ms, time_range_end_ms,
     tags_json, content, token_count, seq_in_source, created_at_ms";

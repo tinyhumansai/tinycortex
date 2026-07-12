@@ -64,6 +64,32 @@ pub fn write_if_new(abs_path: &Path, bytes: &[u8]) -> anyhow::Result<bool> {
     }
 }
 
+/// Ensure `abs_path` contains `full_bytes` with the expected body digest.
+///
+/// Matching files are left untouched. Missing, malformed, or stale files are
+/// replaced atomically so callers can safely persist `body_sha256` alongside
+/// the returned content path.
+pub fn write_or_replace_body(
+    abs_path: &Path,
+    full_bytes: &[u8],
+    body_sha256: &str,
+) -> anyhow::Result<()> {
+    if abs_path.exists() {
+        let disk_sha = read_body_sha256(abs_path).unwrap_or_default();
+        if disk_sha == body_sha256 {
+            return Ok(());
+        }
+    }
+
+    if let Some(parent) = abs_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| anyhow::anyhow!("create content parent {:?}: {e}", parent))?;
+    }
+
+    crate::memory::fsutil::atomic_write(abs_path, full_bytes)
+        .map_err(|e| anyhow::anyhow!("atomic content write {:?}: {e}", abs_path))
+}
+
 /// A summary that has been written to disk and is ready for SQLite upsert.
 #[derive(Debug, Clone)]
 pub struct StagedSummary {
@@ -115,24 +141,7 @@ pub fn stage_summary_with_layout(
 
     let full_bytes = composed.full.as_bytes();
 
-    // Idempotent re-stage: matching on-disk body sha → return unchanged.
-    // Mismatch → the file is stale; overwrite it via temp-file + rename so the
-    // destination is only ever the old or the new file, never missing between a
-    // `remove_file` and a re-write if the process crashes.
-    if abs_path.exists() {
-        let disk_sha = read_body_sha256(&abs_path).unwrap_or_default();
-        if disk_sha == sha256 {
-            return Ok(StagedSummary {
-                summary_id: input.summary_id.to_string(),
-                content_path: rel_path,
-                content_sha256: sha256,
-            });
-        }
-        crate::memory::fsutil::atomic_write(&abs_path, full_bytes)
-            .map_err(|e| anyhow::anyhow!("atomic overwrite {:?}: {e}", abs_path))?;
-    } else {
-        write_if_new(&abs_path, full_bytes)?;
-    }
+    write_or_replace_body(&abs_path, full_bytes, &sha256)?;
 
     Ok(StagedSummary {
         summary_id: input.summary_id.to_string(),

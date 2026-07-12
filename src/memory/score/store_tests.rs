@@ -103,6 +103,7 @@ fn index_batch() {
     let n = index_entities(&cfg, &entities, "chunk-1", "leaf", 1000, None).unwrap();
     assert_eq!(n, 3);
     assert_eq!(count_entity_index(&cfg).unwrap(), 3);
+    assert_eq!(crate::memory::graph::count_edges(&cfg).unwrap(), 3);
 }
 
 #[test]
@@ -234,5 +235,5 @@ fn get_scores_batch_empty_input_and_missing_chunk_ids() {
     let map = get_scores_batch(&cfg, &ids).unwrap();
     assert_eq!(map.len(), 1);
     assert!((map.get("c1").copied().unwrap() - 0.7).abs() < 1e-6);
-    assert!(map.get("ghost:no-such").is_none());
+    assert!(!map.contains_key("ghost:no-such"));
 }

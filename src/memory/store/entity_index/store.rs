@@ -41,10 +41,7 @@ impl SelfIdentity for NoSelfIdentity {
 ///
 /// Primary key `(entity_id, node_id)` makes re-indexing the same association a
 /// no-op update (idempotent). Indexes back both query directions.
-const INIT_SQL: &str = "
-    PRAGMA journal_mode = WAL;
-    PRAGMA synchronous = NORMAL;
-
+const SCHEMA_SQL: &str = "
     CREATE TABLE IF NOT EXISTS mem_tree_entity_index (
         entity_id    TEXT    NOT NULL,
         node_id      TEXT    NOT NULL,
@@ -59,6 +56,11 @@ const INIT_SQL: &str = "
     );
     CREATE INDEX IF NOT EXISTS idx_entity_index_entity ON mem_tree_entity_index(entity_id);
     CREATE INDEX IF NOT EXISTS idx_entity_index_node ON mem_tree_entity_index(node_id);
+";
+
+const OWNED_CONNECTION_PRAGMAS: &str = "
+    PRAGMA journal_mode = WAL;
+    PRAGMA synchronous = NORMAL;
 ";
 
 const UPSERT_SQL: &str = "INSERT OR REPLACE INTO mem_tree_entity_index (
@@ -89,7 +91,7 @@ impl EntityIndex {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(db_path)?;
-        conn.execute_batch(INIT_SQL)?;
+        Self::init_owned_connection(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             identity,
@@ -104,11 +106,29 @@ impl EntityIndex {
     /// Open an in-memory index with a custom identity resolver.
     pub fn open_in_memory_with_identity(identity: Arc<dyn SelfIdentity>) -> anyhow::Result<Self> {
         let conn = Connection::open_in_memory()?;
-        conn.execute_batch(INIT_SQL)?;
+        Self::init_owned_connection(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             identity,
         })
+    }
+
+    /// Use a connection owned and configured by the embedding application.
+    ///
+    /// Only the entity-index schema is installed. Connection pragmas and
+    /// transaction policy remain owned by the caller.
+    pub fn from_shared_connection(
+        conn: Arc<Mutex<Connection>>,
+        identity: Arc<dyn SelfIdentity>,
+    ) -> anyhow::Result<Self> {
+        conn.lock().execute_batch(SCHEMA_SQL)?;
+        Ok(Self { conn, identity })
+    }
+
+    fn init_owned_connection(conn: &Connection) -> anyhow::Result<()> {
+        conn.execute_batch(OWNED_CONNECTION_PRAGMAS)?;
+        conn.execute_batch(SCHEMA_SQL)?;
+        Ok(())
     }
 
     /// Resolve `is_user` for a single-occurrence entity via the configured
@@ -356,6 +376,27 @@ pub fn index_entities_tx(
     timestamp_ms: i64,
     tree_id: Option<&str>,
 ) -> anyhow::Result<usize> {
+    index_entities_tx_with_identity(
+        tx,
+        entities,
+        node_id,
+        node_kind,
+        timestamp_ms,
+        tree_id,
+        &NoSelfIdentity,
+    )
+}
+
+/// Identity-aware transaction-scoped batch index.
+pub fn index_entities_tx_with_identity(
+    tx: &Transaction<'_>,
+    entities: &[CanonicalEntity],
+    node_id: &str,
+    node_kind: &str,
+    timestamp_ms: i64,
+    tree_id: Option<&str>,
+    identity: &dyn SelfIdentity,
+) -> anyhow::Result<usize> {
     if entities.is_empty() {
         return Ok(0);
     }
@@ -370,10 +411,54 @@ pub fn index_entities_tx(
             e.score,
             timestamp_ms,
             tree_id,
-            0_i32,
+            identity.is_self(e.kind, &e.surface) as i32,
         ])?;
     }
     Ok(entities.len())
+}
+
+/// Remove a node's entity rows inside a caller-owned transaction.
+pub fn clear_entity_index_for_node_tx(
+    tx: &Transaction<'_>,
+    node_id: &str,
+) -> anyhow::Result<usize> {
+    Ok(tx.execute(
+        "DELETE FROM mem_tree_entity_index WHERE node_id = ?1",
+        params![node_id],
+    )?)
+}
+
+/// Index summary entity ids inside a caller-owned transaction.
+pub fn index_summary_entity_ids_tx_with_identity(
+    tx: &Transaction<'_>,
+    entity_ids: &[String],
+    node_id: &str,
+    score: f32,
+    timestamp_ms: i64,
+    tree_id: Option<&str>,
+    identity: &dyn SelfIdentity,
+) -> anyhow::Result<usize> {
+    if entity_ids.is_empty() {
+        return Ok(0);
+    }
+    let mut stmt = tx.prepare(UPSERT_SQL)?;
+    for canonical_id in entity_ids {
+        let entity_kind = canonical_id
+            .split_once(':')
+            .map_or(canonical_id.as_str(), |(kind, _)| kind);
+        stmt.execute(params![
+            canonical_id,
+            node_id,
+            "summary",
+            entity_kind,
+            canonical_id,
+            score,
+            timestamp_ms,
+            tree_id,
+            canonical_id_is_user(identity, canonical_id) as i32,
+        ])?;
+    }
+    Ok(entity_ids.len())
 }
 
 #[cfg(test)]

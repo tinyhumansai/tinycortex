@@ -179,6 +179,40 @@ pub fn hit_from_chunk(chunk: &Chunk, tree_id: &str, tree_scope: &str, score: f32
     }
 }
 
+pub(crate) fn hydrated_summary_hit(
+    config: &crate::memory::MemoryConfig,
+    node: &SummaryNode,
+    tree_scope: &str,
+) -> RetrievalHit {
+    let mut hit = hit_from_summary(node, tree_scope);
+    match crate::memory::store::content::read_summary_body(config, &node.id) {
+        Ok(body) => hit.content = body,
+        Err(error) => log::warn!(
+            "[memory:retrieval] full summary body unavailable; serving preview node_id={}: {error}",
+            node.id
+        ),
+    }
+    hit
+}
+
+pub(crate) fn hydrated_chunk_hit(
+    config: &crate::memory::MemoryConfig,
+    chunk: &Chunk,
+    tree_id: &str,
+    tree_scope: &str,
+    score: f32,
+) -> RetrievalHit {
+    let mut hit = hit_from_chunk(chunk, tree_id, tree_scope, score);
+    match crate::memory::store::content::read_chunk_body(config, &chunk.id) {
+        Ok(body) => hit.content = body,
+        Err(error) => log::warn!(
+            "[memory:retrieval] full chunk body unavailable; serving preview chunk_id={}: {error}",
+            chunk.id
+        ),
+    }
+    hit
+}
+
 /// Decide the placeholder [`TreeKind`] to report on a leaf hit. Leaves live
 /// under source trees regardless of the underlying [`SourceKind`], so we always
 /// return [`TreeKind::Source`]. Accepting the `SourceKind` argument keeps the

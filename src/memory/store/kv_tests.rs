@@ -1,8 +1,35 @@
 use super::*;
 use serde_json::json;
+use std::sync::Arc;
 
 fn store() -> KvStore {
     KvStore::open_in_memory().unwrap()
+}
+
+#[test]
+fn shared_connection_preserves_owner_pragmas_and_visibility() {
+    let conn = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+    conn.lock()
+        .execute_batch("PRAGMA synchronous = OFF;")
+        .unwrap();
+
+    let kv = KvStore::from_shared_connection(Arc::clone(&conn)).unwrap();
+    kv.set_global("theme", &json!("dark")).unwrap();
+
+    let synchronous: i64 = conn
+        .lock()
+        .query_row("PRAGMA synchronous", [], |row| row.get(0))
+        .unwrap();
+    let stored: String = conn
+        .lock()
+        .query_row(
+            "SELECT value_json FROM kv_global WHERE key='theme'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(synchronous, 0);
+    assert_eq!(stored, "\"dark\"");
 }
 
 #[test]

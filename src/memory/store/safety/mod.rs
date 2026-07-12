@@ -4,20 +4,25 @@
 //! prefers false positives over leaking credentials into long-lived stores.
 //!
 //! The exhaustive multilingual national-ID PII module (`safety::pii`, ~1k lines
-//! of checksum logic) is **deferred**: this port keeps the full secret-pattern
-//! surface that the KV write guard depends on, plus a lightweight PII screen
-//! (email / phone / US SSN / Brazilian CPF) sufficient for the KV "reject
-//! PII-like key" contract. Hosts that need full national-ID redaction can layer
-//! it back on top.
+//! of checksum logic) is ported from OpenHuman and runs as part of
+//! [`sanitize_text`]. The write-rejection boundary stays stricter than content
+//! scrubbing: formatted national IDs are rejected, while phone/email-like text is
+//! scrubbed from content without rejecting every write that mentions them.
 
 use std::sync::LazyLock;
 
 use regex::Regex;
 use serde_json::Value;
 
+/// Exhaustive checksum-gated multilingual national-ID PII module (ported from
+/// OpenHuman). Content scrubbing runs from [`sanitize_text`]; the boundary
+/// check is re-exported as [`has_likely_pii`].
+pub mod pii;
+
+pub use pii::{has_likely_email, has_likely_pii};
+
 const REDACTED_SECRET: &str = "[REDACTED_SECRET]";
 const REDACTED_PRIVATE_KEY: &str = "[REDACTED_PRIVATE_KEY]";
-const REDACTED_PII: &str = "[REDACTED_PII]";
 const MAX_JSON_SANITIZE_DEPTH: usize = 128;
 
 /// Tally of what a sanitization pass changed.
@@ -175,38 +180,10 @@ static REDACTION_PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(
     ]
 });
 
-// Lightweight PII screen (the heavy multilingual national-ID module is deferred).
-static PII_PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
-    vec![
-        (
-            Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-                .expect("valid email pii"),
-            REDACTED_PII,
-        ),
-        (
-            Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").expect("valid ssn pii"),
-            REDACTED_PII,
-        ),
-        (
-            Regex::new(r"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b").expect("valid cpf pii"),
-            REDACTED_PII,
-        ),
-        (
-            Regex::new(r"\+\d{7,15}\b").expect("valid e164 pii"),
-            REDACTED_PII,
-        ),
-    ]
-});
-
 /// True when `value` looks like it contains a credential.
 pub fn has_likely_secret(value: &str) -> bool {
     BLOCK_PATTERNS.iter().any(|p| p.is_match(value))
         || REDACTION_PATTERNS.iter().any(|(p, _)| p.is_match(value))
-}
-
-/// True when `value` looks like it contains a personal identifier.
-pub fn has_likely_pii(value: &str) -> bool {
-    PII_PATTERNS.iter().any(|(p, _)| p.is_match(value))
 }
 
 /// Scrub secrets and PII from free text, returning the cleaned text plus a
@@ -231,13 +208,12 @@ pub fn sanitize_text(value: &str) -> Sanitized<String> {
         }
     }
 
-    for (pattern, replacement) in PII_PATTERNS.iter() {
-        let hits = pattern.find_iter(&out).count();
-        if hits > 0 {
-            report.pii_redactions += hits;
-            out = pattern.replace_all(&out, *replacement).into_owned();
-        }
-    }
+    // Full multilingual national-ID PII scrub (checksum-gated, normalization
+    // pre-pass) — runs after secret redaction so every call site that scrubs
+    // secrets also scrubs PII.
+    let pii = pii::redact_pii(&out);
+    report = report.merge(pii.report);
+    out = pii.value;
 
     Sanitized { value: out, report }
 }

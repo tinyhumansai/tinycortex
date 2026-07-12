@@ -269,13 +269,13 @@ fn split_email_messages(md: &str) -> Vec<String> {
         if line == "---" {
             // Check if one of the next 8 lines starts with `From:`
             let window_end = (i + 9).min(n);
-            for j in (i + 1)..window_end {
-                if lines[j].starts_with("From:") {
+            for candidate in lines.iter().take(window_end).skip(i + 1) {
+                if candidate.starts_with("From:") {
                     split_positions.push(i);
                     break;
                 }
                 // Skip blank lines between `---` and `From:`
-                if !lines[j].trim().is_empty() {
+                if !candidate.trim().is_empty() {
                     break;
                 }
             }
@@ -298,7 +298,7 @@ fn split_email_messages(md: &str) -> Vec<String> {
         } else {
             n
         };
-        let piece_lines: Vec<&str> = lines[start..end].iter().copied().collect();
+        let piece_lines: Vec<&str> = lines[start..end].to_vec();
         let piece = piece_lines.join("\n").trim_end().to_string();
         if !piece.is_empty() {
             pieces.push(piece);

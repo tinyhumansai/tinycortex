@@ -25,6 +25,7 @@
 pub mod store;
 
 pub mod bucket_seal;
+mod direct_ingest;
 pub mod factory;
 pub mod flush;
 mod hydrate;
@@ -37,10 +38,17 @@ pub mod summarise;
 // ── Public API surface ──────────────────────────────────────────────────────
 
 pub use bucket_seal::{
-    append_leaf, append_leaf_deferred, append_to_buffer, cascade_all_from, LabelStrategy, LeafRef,
+    append_leaf, append_leaf_deferred, append_to_buffer, cascade_all_from,
+    cascade_all_from_with_services, seal_document_subtree_with_services,
+    seal_one_level_with_services, should_seal, LabelStrategy, LeafRef, SealObserver, SealServices,
+    MERGE_LEVEL_BASE,
 };
+pub use direct_ingest::{ingest_summary, SummaryIngestInput, SummaryIngestOutcome};
 pub use factory::{TreeFactory, TreeProfile, GLOBAL_SCOPE};
-pub use flush::{flush_stale_buffers, flush_stale_buffers_default, force_flush_tree};
+pub use flush::{
+    flush_stale_buffers, flush_stale_buffers_default, flush_stale_buffers_with_services,
+    force_flush_tree,
+};
 pub use hydrate::fetch_leaves;
 pub use io::{
     TreeLabelStrategy, TreeLeafPayload, TreeReadHit, TreeReadRequest, TreeReadResult,
@@ -53,5 +61,6 @@ pub use store::{
     SUMMARY_FANOUT,
 };
 pub use summarise::{
-    fallback_summary, ConcatSummariser, Summariser, SummaryContext, SummaryInput, SummaryOutput,
+    fallback_summary, finish_provider_summary, prepare_summary_prompt, ConcatSummariser,
+    PreparedSummaryPrompt, Summariser, SummaryCall, SummaryContext, SummaryInput, SummaryOutput,
 };

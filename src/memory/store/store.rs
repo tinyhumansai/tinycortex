@@ -93,7 +93,7 @@ impl MemoryStore for InMemoryMemoryStore {
                 query
                     .namespace
                     .as_deref()
-                    .map_or(true, |namespace| record.namespace == namespace)
+                    .is_none_or(|namespace| record.namespace == namespace)
             })
             .filter_map(|record| {
                 let score = match needle.as_deref() {

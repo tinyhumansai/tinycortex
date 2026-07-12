@@ -64,9 +64,17 @@ pub(crate) fn hydrate_summary_inputs(
         let Some(node) = node_by_id.get(id) else {
             continue;
         };
+        let content = crate::memory::store::content::read_summary_body(config, &node.id)
+            .unwrap_or_else(|error| {
+                log::warn!(
+                    "[memory_tree:hydrate] staged summary read failed id={}: {error}; using SQL content",
+                    node.id
+                );
+                node.content.clone()
+            });
         out.push(SummaryInput {
             id: node.id.clone(),
-            content: node.content.clone(),
+            content,
             token_count: node.token_count,
             entities: node.entities.clone(),
             topics: node.topics.clone(),

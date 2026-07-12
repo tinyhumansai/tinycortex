@@ -26,7 +26,7 @@ use crate::memory::config::MemoryConfig;
 use crate::memory::tree::store::{get_tree_by_scope, list_summaries_in_window};
 use crate::memory::tree::{SummaryNode, TreeKind};
 
-use super::types::{hit_from_chunk, hit_from_summary, QueryResponse, RetrievalHit};
+use super::types::{hydrated_chunk_hit, hydrated_summary_hit, QueryResponse, RetrievalHit};
 
 /// Default cap on returned cover items when the caller passes `limit = 0`.
 const DEFAULT_LIMIT: usize = 200;
@@ -78,6 +78,29 @@ pub fn cover_window(
     source_kind: Option<SourceKind>,
     limit: usize,
 ) -> Result<QueryResponse> {
+    cover_window_scoped(
+        config,
+        since_ms,
+        until_ms,
+        source_id,
+        source_kind,
+        None,
+        limit,
+    )
+}
+
+/// Compute a cover while restricting memory-source chunks to `source_scope`.
+/// The filter runs before the scan cap and result limit so disallowed sources
+/// cannot crowd permitted sources out of the response.
+pub fn cover_window_scoped(
+    config: &MemoryConfig,
+    since_ms: i64,
+    until_ms: i64,
+    source_id: Option<&str>,
+    source_kind: Option<SourceKind>,
+    source_scope: Option<HashSet<String>>,
+    limit: usize,
+) -> Result<QueryResponse> {
     let limit = if limit == 0 { DEFAULT_LIMIT } else { limit };
     if until_ms < since_ms {
         return Err(anyhow::anyhow!(
@@ -85,7 +108,14 @@ pub fn cover_window(
         ));
     }
 
-    let mut hits = collect_cover(config, since_ms, until_ms, source_id, source_kind)?;
+    let mut hits = collect_cover(
+        config,
+        since_ms,
+        until_ms,
+        source_id,
+        source_kind,
+        source_scope,
+    )?;
 
     // Group by source, then chronological ascending within each source.
     hits.sort_by(|a, b| {
@@ -107,7 +137,9 @@ fn collect_cover(
     until_ms: i64,
     source_id: Option<&str>,
     source_kind: Option<SourceKind>,
+    source_scope: Option<HashSet<String>>,
 ) -> Result<Vec<RetrievalHit>> {
+    let restrict_summaries = source_id.is_some() || source_scope.is_some();
     let chunks = list_chunks(
         config,
         &ListChunksQuery {
@@ -117,6 +149,7 @@ fn collect_cover(
             until_ms: Some(until_ms),
             limit: Some(MAX_WINDOW_CHUNKS),
             exclude_dropped: true,
+            source_scope,
             ..Default::default()
         },
     )?;
@@ -130,7 +163,6 @@ fn collect_cover(
     // An exact `source_id` filter means `chunks` is a strict subset of its
     // (possibly shared) tree, so shared-tree summaries must be restricted to the
     // requested leaves.
-    let exact_source = source_id.is_some();
     let mut hits: Vec<RetrievalHit> = Vec::new();
     for (source, src_chunks) in by_source {
         cover_one_source(
@@ -139,7 +171,7 @@ fn collect_cover(
             since_ms,
             until_ms,
             src_chunks,
-            exact_source,
+            restrict_summaries,
             &mut hits,
         )?;
     }
@@ -173,7 +205,7 @@ fn cover_one_source(
     let by_id: HashMap<&str, &SummaryNode> = eligible.iter().map(|s| (s.id.as_str(), s)).collect();
     for id in &plan.maximal_ids {
         if let Some(node) = by_id.get(id.as_str()) {
-            out.push(hit_from_summary(node, source));
+            out.push(hydrated_summary_hit(config, node, source));
         }
     }
 
@@ -181,7 +213,7 @@ fn cover_one_source(
         if plan.covered_chunk_ids.contains(&chunk.id) || suppressed_chunk_ids.contains(&chunk.id) {
             continue;
         }
-        out.push(hit_from_chunk(chunk, &tree_id, source, 0.0));
+        out.push(hydrated_chunk_hit(config, chunk, &tree_id, source, 0.0));
     }
     Ok(())
 }

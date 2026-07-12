@@ -130,7 +130,7 @@ fn delete_chunks_by_source_filter(
 
         let chunks = {
             let mut stmt = tx.prepare(
-                "SELECT id, source_id, owner, content_path
+                "SELECT id, source_id, owner, content_path, path_scope
                    FROM mem_tree_chunks
                   WHERE source_kind = ?1",
             )?;
@@ -140,11 +140,14 @@ fn delete_chunks_by_source_filter(
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
                 ))
             })?;
             rows.filter_map(|row| match row {
-                Ok((id, source_id, owner, content_path)) if matches_chunk(&source_id, &owner) => {
-                    Some(Ok((id, source_id, content_path)))
+                Ok((id, source_id, owner, content_path, path_scope))
+                    if matches_chunk(&source_id, &owner) =>
+                {
+                    Some(Ok((id, source_id, content_path, path_scope)))
                 }
                 Ok(_) => None,
                 Err(error) => Some(Err(error)),
@@ -155,10 +158,16 @@ fn delete_chunks_by_source_filter(
 
         let deleted_source_ids: HashSet<String> = chunks
             .iter()
-            .map(|(_, source_id, _)| source_id.clone())
+            .map(|(_, source_id, _, _)| source_id.clone())
+            .collect();
+        let deleted_tree_scopes: HashSet<String> = chunks
+            .iter()
+            .map(|(_, source_id, _, path_scope)| {
+                path_scope.clone().unwrap_or_else(|| source_id.clone())
+            })
             .collect();
 
-        for (chunk_id, _source_id, content_path) in &chunks {
+        for (chunk_id, _source_id, content_path, _path_scope) in &chunks {
             tx.execute(
                 "DELETE FROM mem_tree_score WHERE chunk_id = ?1",
                 params![chunk_id],
@@ -229,6 +238,26 @@ fn delete_chunks_by_source_filter(
             )?;
         }
 
+        for scope in &deleted_tree_scopes {
+            let remaining: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM mem_tree_chunks
+                  WHERE source_kind = ?1 AND COALESCE(path_scope, source_id) = ?2",
+                params![source_kind.as_str(), scope],
+                |row| row.get(0),
+            )?;
+            if remaining != 0 {
+                continue;
+            }
+            if let Some(tree) = crate::memory::tree::store::get_tree_by_scope_conn(
+                &tx,
+                crate::memory::tree::store::TreeKind::Source,
+                scope,
+            )? {
+                let cascade = crate::memory::tree::store::delete_tree_cascade_tx(&tx, &tree.id)?;
+                content_paths.extend(cascade.content_paths);
+            }
+        }
+
         let deleted = chunks.len();
         tx.commit()?;
         Ok(deleted)
@@ -236,6 +265,60 @@ fn delete_chunks_by_source_filter(
 
     remove_chunk_content_files(config, &content_paths);
     Ok(deleted)
+}
+
+/// Remove stale gates and a source-scoped tree once no chunks remain.
+pub fn delete_orphaned_source_tree(
+    config: &MemoryConfig,
+    source_kind: SourceKind,
+    source_id: &str,
+) -> Result<bool> {
+    let mut content_paths = Vec::new();
+    let cascaded = with_connection(config, |conn| {
+        let tx = conn.unchecked_transaction()?;
+        let remaining: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM mem_tree_chunks WHERE source_kind=?1 AND source_id=?2",
+            params![source_kind.as_str(), source_id],
+            |row| row.get(0),
+        )?;
+        if remaining > 0 {
+            return Ok(false);
+        }
+        let versioned_prefix = format!("{source_id}@");
+        let gate_ids = {
+            let mut stmt =
+                tx.prepare("SELECT source_id FROM mem_tree_ingested_sources WHERE source_kind=?1")?;
+            let rows =
+                stmt.query_map(params![source_kind.as_str()], |row| row.get::<_, String>(0))?;
+            rows.filter_map(|row| match row {
+                Ok(id) if id == source_id || id.starts_with(&versioned_prefix) => Some(Ok(id)),
+                Ok(_) => None,
+                Err(error) => Some(Err(error)),
+            })
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for gate_id in gate_ids {
+            tx.execute(
+                "DELETE FROM mem_tree_ingested_sources WHERE source_kind=?1 AND source_id=?2",
+                params![source_kind.as_str(), gate_id],
+            )?;
+        }
+        let cascaded = if let Some(tree) = crate::memory::tree::store::get_tree_by_scope_conn(
+            &tx,
+            crate::memory::tree::store::TreeKind::Source,
+            source_id,
+        )? {
+            let deleted = crate::memory::tree::store::delete_tree_cascade_tx(&tx, &tree.id)?;
+            content_paths.extend(deleted.content_paths);
+            true
+        } else {
+            false
+        };
+        tx.commit()?;
+        Ok(cascaded)
+    })?;
+    remove_chunk_content_files(config, &content_paths);
+    Ok(cascaded)
 }
 
 /// Best-effort removal of on-disk chunk content files, with strict sandboxing:

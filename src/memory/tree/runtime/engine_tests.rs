@@ -5,6 +5,7 @@
 use super::*;
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
+use std::sync::Mutex;
 use tempfile::TempDir;
 
 use crate::memory::config::MemoryConfig;
@@ -17,6 +18,33 @@ fn test_config(tmp: &TempDir) -> MemoryConfig {
 /// Summariser returning a fixed reply.
 struct StubSummariser {
     reply: String,
+}
+
+#[derive(Default)]
+struct RecordingObserver {
+    events: Mutex<Vec<String>>,
+}
+
+impl RuntimeObserver for RecordingObserver {
+    fn hour_completed(&self, namespace: &str, node_id: &str, _token_count: u32) {
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("hour:{namespace}:{node_id}"));
+    }
+
+    fn node_propagated(
+        &self,
+        namespace: &str,
+        node_id: &str,
+        _level: NodeLevel,
+        _token_count: u32,
+    ) {
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("propagated:{namespace}:{node_id}"));
+    }
 }
 impl StubSummariser {
     fn with_reply(reply: impl Into<String>) -> Self {
@@ -199,6 +227,34 @@ async fn run_summarization_builds_ancestor_chain() {
         );
     }
     assert!(store::buffer_read(&cfg, ns).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn observed_run_reports_hour_and_propagation_progress() {
+    let tmp = TempDir::new().unwrap();
+    let cfg = test_config(&tmp);
+    let ns = "observed";
+    let ts = Utc.with_ymd_and_hms(2024, 4, 1, 8, 0, 0).unwrap();
+    store::buffer_write(&cfg, ns, "raw", &ts, None).unwrap();
+    let observer = RecordingObserver::default();
+
+    run_summarization_observed(
+        &cfg,
+        &StubSummariser::with_reply("summary"),
+        ns,
+        ts,
+        &observer,
+    )
+    .await
+    .unwrap();
+
+    let events = observer.events.lock().unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.starts_with("hour:observed:")));
+    assert!(events
+        .iter()
+        .any(|event| event == "propagated:observed:root"));
 }
 
 #[tokio::test]

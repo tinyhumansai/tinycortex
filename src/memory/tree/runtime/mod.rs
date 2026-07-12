@@ -12,7 +12,10 @@ pub mod engine;
 pub mod store;
 pub mod types;
 
-pub use engine::{discover_active_namespaces, rebuild_tree, run_summarization, Summariser};
+pub use engine::{
+    discover_active_namespaces, rebuild_tree, rebuild_tree_observed, run_summarization,
+    run_summarization_observed, RuntimeObserver, Summariser,
+};
 pub use types::{
     derive_node_ids, derive_parent_id, estimate_tokens, level_from_node_id, node_id_to_path,
     IngestRequest, NodeLevel, QueryResult, TreeNode, TreeStatus,

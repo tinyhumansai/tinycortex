@@ -37,6 +37,10 @@ pub struct MemoryConfig {
     /// exist yet at construction time — callers create it (or fail informatively)
     /// when they first open the workspace.
     pub workspace: PathBuf,
+    /// Optional override for the chunk/summary content vault. `None` uses
+    /// `<workspace>/memory_tree/content`.
+    #[serde(default)]
+    pub content_root: Option<PathBuf>,
     /// Embedding configuration.
     #[serde(default)]
     pub embedding: EmbeddingConfig,
@@ -49,6 +53,9 @@ pub struct MemoryConfig {
     /// Per-source sync budget ceilings (enforced when a host invokes ingest).
     #[serde(default)]
     pub sync_budget: SyncBudgetConfig,
+    /// Live synchronization configuration.
+    #[serde(default)]
+    pub sync: SyncConfig,
 }
 
 impl MemoryConfig {
@@ -67,10 +74,12 @@ impl MemoryConfig {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         Self {
             workspace: workspace.into(),
+            content_root: None,
             embedding: EmbeddingConfig::default(),
             tree: TreeConfig::default(),
             retrieval: RetrievalConfig::default(),
             sync_budget: SyncBudgetConfig::default(),
+            sync: SyncConfig::default(),
         }
     }
 }
@@ -132,6 +141,7 @@ impl Default for TreeConfig {
 /// that the four weights sum to `1.0` — the built-in profiles are chosen that
 /// way by convention so scores land in a familiar `[0.0, 1.0]`-ish range when
 /// every signal is itself in `[0.0, 1.0]`, but a custom profile with a
+///
 /// different total simply rescales the final score.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct WeightProfile {
@@ -221,12 +231,86 @@ impl Default for RetrievalConfig {
 /// than an already-enforced global cap.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SyncBudgetConfig {
+    /// Maximum records persisted by one sync tick.
+    pub max_items: Option<u32>,
     /// Token ceiling per ingest run; `None` leaves token spend unbounded.
     pub max_tokens_per_sync: Option<u64>,
     /// USD cost ceiling per ingest run; `None` leaves cost unbounded.
     pub max_cost_per_sync_usd: Option<f64>,
     /// How many days back a source sync may reach; `None` imposes no horizon.
     pub sync_depth_days: Option<u32>,
+}
+
+/// Live synchronization configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SyncConfig {
+    /// Request and ingest ceilings.
+    #[serde(default)]
+    pub budget: SyncBudgetConfig,
+    /// Composio transport configuration; absent disables Composio sync.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composio: Option<ComposioSyncConfig>,
+    /// Global periodic cadence. `Some(0)` means manual-only; shorter non-zero
+    /// values are clamped to the 24-hour default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
+}
+
+/// Composio HTTP transport mode.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComposioMode {
+    /// Call backend.composio.dev using a BYO API key.
+    Direct,
+    /// Call a host proxy using a bearer token.
+    #[default]
+    Proxied,
+}
+
+/// Redacted secret value. Debug and Display never reveal the payload.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct SecretString(String);
+
+impl SecretString {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.trim().is_empty()
+    }
+}
+
+impl std::fmt::Debug for SecretString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SecretString([REDACTED])")
+    }
+}
+
+impl std::fmt::Display for SecretString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
+/// Composio connection settings injected by the host.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComposioSyncConfig {
+    #[serde(default)]
+    pub mode: ComposioMode,
+    pub base_url: String,
+    /// Direct-mode key. Never serialized or printed.
+    #[serde(skip)]
+    pub api_key: Option<SecretString>,
+    /// Proxied-mode bearer. Never serialized or printed.
+    #[serde(skip)]
+    pub bearer_token: Option<SecretString>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<String>,
 }
 
 #[cfg(test)]

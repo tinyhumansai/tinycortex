@@ -249,6 +249,19 @@ impl SourceRegistry {
         Ok(entry)
     }
 
+    /// Batch-upsert Composio sources with one load and one atomic save.
+    pub fn upsert_composio_sources_batch(&self, targets: &[ComposioUpsertTarget]) -> Result<u32> {
+        if targets.is_empty() {
+            return Ok(0);
+        }
+        let mut sources = self.list()?;
+        for (toolkit, connection_id, label) in targets {
+            upsert_composio_entry_in_place(&mut sources, toolkit, connection_id, label);
+        }
+        self.write_all(&sources)?;
+        Ok(targets.len().min(u32::MAX as usize) as u32)
+    }
+
     /// Enable every source and clear all per-source caps ("All In" mode).
     pub fn apply_all_in(&self) -> Result<Vec<MemorySourceEntry>> {
         let mut sources = self.list()?;
@@ -267,6 +280,8 @@ impl SourceRegistry {
         Ok(sources)
     }
 }
+
+pub type ComposioUpsertTarget = (String, String, String);
 
 /// Apply a single composio upsert to an in-memory source list.
 ///

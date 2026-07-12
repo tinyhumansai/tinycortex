@@ -288,8 +288,6 @@ pub async fn score_chunk(chunk: &Chunk, cfg: &ScoringConfig) -> Result<ScoreResu
     //    result is inspectable in tests even when the chunk is dropped.
     let canonical_entities = canonicalise(&extracted);
 
-    if !kept {}
-
     Ok(ScoreResult {
         chunk_id: chunk.id.clone(),
         total,

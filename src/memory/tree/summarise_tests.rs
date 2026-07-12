@@ -59,3 +59,22 @@ async fn concat_summariser_matches_fallback() {
     assert!(out.content.contains("second"));
     assert_eq!(out.content, fallback_summary(&inputs, 10_000).content);
 }
+
+#[test]
+fn provider_prompt_is_priority_ordered_language_aware_and_budgeted() {
+    let mut low = sample_input("low", "low priority");
+    low.score = 0.1;
+    let mut high = sample_input("high", "high priority");
+    high.score = 0.9;
+    let context = SummaryContext {
+        tree_id: "tree:test",
+        tree_kind: TreeKind::Source,
+        target_level: 1,
+        token_budget: 9_000,
+    };
+    let prompt = prepare_summary_prompt(&[low, high], &context, Some("French")).unwrap();
+    assert!(prompt.user.starts_with("[high]"));
+    assert!(prompt.system.contains("Write the summary in French"));
+    assert_eq!(prompt.effective_budget, 5_000);
+    assert!(prepare_summary_prompt(&[], &context, None).is_none());
+}

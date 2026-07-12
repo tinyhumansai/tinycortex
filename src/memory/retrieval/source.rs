@@ -37,7 +37,7 @@ use crate::memory::tree::store::{
 use crate::memory::tree::{Tree, TreeKind};
 
 use super::rerank::rerank_by_semantic_similarity;
-use super::types::{hit_from_summary, QueryResponse, RetrievalHit};
+use super::types::{hydrated_summary_hit, QueryResponse, RetrievalHit};
 
 /// Default result cap applied when the caller passes `limit = 0`.
 const DEFAULT_LIMIT: usize = 10;
@@ -128,7 +128,7 @@ pub(crate) fn collect_source_hits(
                 }
                 node_ids.push(node.id.clone());
                 embeddings.push(node.embedding.clone());
-                hits.push(hit_from_summary(&node, &tree.scope));
+                hits.push(hydrated_summary_hit(config, &node, &tree.scope));
             }
         }
     }

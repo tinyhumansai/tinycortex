@@ -26,7 +26,7 @@ pub enum ExtractionMode {
 
 impl ExtractionMode {
     /// Returns the string representation of the extraction mode.
-    pub(super) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Sentence => "sentence",
             Self::Chunk => "chunk",
