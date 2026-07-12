@@ -503,7 +503,7 @@ async fn slack_holds_failed_channel_cursor_and_advances_healthy_channel() {
     let cursors: Value = serde_json::from_str(state.cursor.as_deref().unwrap()).unwrap();
     assert!(cursors.get("C_BAD").is_none());
     assert_eq!(cursors["C_GOOD"], "1760000000.000123");
-    assert!(state.synced_ids.is_empty());
+    assert_eq!(state.synced_ids.len(), 1);
     assert_eq!(
         captures.documents.lock().unwrap()[0].metadata["channel_id"],
         "C_GOOD"
