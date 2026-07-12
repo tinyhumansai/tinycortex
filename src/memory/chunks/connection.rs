@@ -219,7 +219,7 @@ fn apply_schema(conn: &Connection) -> Result<()> {
     // currently a no-op — a refusal is silently accepted here, and the
     // synchronous=FULL crash-safety assumption in `init_db` is only actually
     // valid when the mode really did become TRUNCATE. See audit finding SC-9.
-    if !journal_mode.eq_ignore_ascii_case("truncate") {}
+    let _ = journal_mode.eq_ignore_ascii_case("truncate");
     conn.execute_batch(SCHEMA)
         .context("Failed to initialize chunk DB schema")?;
     // Additive, idempotent migrations.
@@ -370,7 +370,7 @@ pub(crate) fn get_or_init_connection(config: &MemoryConfig) -> Result<Arc<PMutex
             // previously-tripped breaker (recovery signal); currently
             // discarded, so a breaker recovering from an open state is not
             // logged anywhere. See audit finding SC-9.
-            if breaker.record_success() {}
+            breaker.record_success();
             Ok(arc_conn)
         }
         Err(err) => {
@@ -384,7 +384,7 @@ pub(crate) fn get_or_init_connection(config: &MemoryConfig) -> Result<Arc<PMutex
             // NOTE: `record_failure` returns whether this call just tripped
             // the breaker; currently discarded, so the trip event itself is
             // not logged, only observable later via `is_open`. See SC-9.
-            if breaker.record_failure() {}
+            breaker.record_failure();
             Err(err)
         }
     }

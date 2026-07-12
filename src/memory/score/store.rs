@@ -42,6 +42,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::memory::chunks::with_connection;
 use crate::memory::config::MemoryConfig;
+use crate::memory::graph::{pairs_from_entities, upsert_edges_tx};
 use crate::memory::score::extract::EntityKind;
 use crate::memory::score::resolver::CanonicalEntity;
 use crate::memory::score::signals::ScoreSignals;
@@ -295,6 +296,11 @@ pub fn index_entities(
                 ])?;
             }
         }
+        let entity_ids: Vec<_> = entities
+            .iter()
+            .map(|entity| entity.canonical_id.clone())
+            .collect();
+        upsert_edges_tx(&tx, &pairs_from_entities(&entity_ids), timestamp_ms)?;
         tx.commit()?;
         Ok(entities.len())
     })
@@ -364,6 +370,8 @@ pub fn index_summary_entity_ids_tx(
             canonical_id_is_user(canonical_id) as i32,
         ])?;
     }
+    drop(stmt);
+    upsert_edges_tx(tx, &pairs_from_entities(entity_ids), timestamp_ms)?;
     Ok(entity_ids.len())
 }
 
@@ -395,6 +403,12 @@ pub fn index_entities_tx(
             entity_is_user(e) as i32,
         ])?;
     }
+    drop(stmt);
+    let entity_ids: Vec<_> = entities
+        .iter()
+        .map(|entity| entity.canonical_id.clone())
+        .collect();
+    upsert_edges_tx(tx, &pairs_from_entities(&entity_ids), timestamp_ms)?;
     Ok(entities.len())
 }
 

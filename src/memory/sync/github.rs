@@ -80,7 +80,7 @@ impl SyncPipeline for GithubRepoSyncPipeline {
 
         self.event(context, SyncStage::Fetching, None).await;
         let items = reader.list_items(&self.source).await?;
-        let content_root = config.workspace.join("memory_tree/content");
+        let content_root = crate::memory::chunks::content_root(config);
         let mut archived = 0u32;
         for item in &items {
             let Some((kind, uid)) = raw_coordinates(&item.id) else {

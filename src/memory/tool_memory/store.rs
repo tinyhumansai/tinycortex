@@ -147,12 +147,7 @@ impl ToolMemoryStore {
         let mut rules: Vec<ToolMemoryRule> = entries
             .into_iter()
             .filter(|entry| entry.key.starts_with("rule/"))
-            .filter_map(
-                |entry| match serde_json::from_str::<ToolMemoryRule>(&entry.content) {
-                    Ok(rule) => Some(rule),
-                    Err(_) => None,
-                },
-            )
+            .filter_map(|entry| serde_json::from_str::<ToolMemoryRule>(&entry.content).ok())
             .collect();
 
         rules.sort_by(|a, b| {

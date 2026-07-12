@@ -336,7 +336,7 @@ pub fn conservative_token_estimate(text: &str) -> u32 {
         .chars()
         .map(|c| u64::from(char_token_quarters(c)))
         .sum();
-    let tokens = (quarters + 3) / 4; // ceil(quarters / 4)
+    let tokens = quarters.div_ceil(4); // ceil(quarters / 4)
     tokens.min(u64::from(u32::MAX)) as u32
 }
 

@@ -60,8 +60,8 @@ async fn entities_are_canonicalised() {
         .iter()
         .map(|e| e.canonical_id.as_str())
         .collect();
-    assert!(ids.iter().any(|id| *id == "email:alice@example.com"));
-    assert!(ids.iter().any(|id| *id == "handle:alice"));
+    assert!(ids.contains(&"email:alice@example.com"));
+    assert!(ids.contains(&"handle:alice"));
 }
 
 // ── Short-circuit / LLM-extractor tests ─────────────────────────────

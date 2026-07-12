@@ -110,9 +110,6 @@ impl SyncPipeline for WorkspaceSourcePipeline {
                 continue;
             }
             let source_id = self.source_id(&item.id);
-            if state.item_versions.contains_key(&item.id) {
-                local_documents.delete(&source_id).await?;
-            }
             let content = match &self.reader {
                 Some(reader) => reader
                     .read_item(&self.source, &item.id, config)
@@ -367,7 +364,7 @@ mod tests {
         assert!(host.documents.lock().unwrap().is_empty());
         assert_eq!(
             host.deletes.lock().unwrap().as_slice(),
-            ["mem_src:folder-1:daily.md", "mem_src:folder-1:daily.md"]
+            ["mem_src:folder-1:daily.md"]
         );
     }
 
@@ -425,12 +422,22 @@ mod tests {
             0
         );
         host.external_items.lock().unwrap()[0].updated_at_ms = Some(2);
-        host.external_bodies
-            .lock()
-            .unwrap()
-            .get_mut("post-1")
-            .unwrap()
-            .body = "second".into();
+        host.external_bodies.lock().unwrap().remove("post-1");
+        assert!(pipeline.tick(&config, &context).await.is_err());
+        assert_eq!(
+            host.documents.lock().unwrap()["mem_src:rss-1:post-1"].body,
+            "first"
+        );
+        host.external_bodies.lock().unwrap().insert(
+            "post-1".into(),
+            SourceContent {
+                id: "post-1".into(),
+                title: "Post".into(),
+                body: "second".into(),
+                content_type: ContentType::Plaintext,
+                metadata: serde_json::Value::Null,
+            },
+        );
         assert_eq!(
             pipeline
                 .tick(&config, &context)

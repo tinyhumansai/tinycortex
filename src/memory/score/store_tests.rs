@@ -103,6 +103,7 @@ fn index_batch() {
     let n = index_entities(&cfg, &entities, "chunk-1", "leaf", 1000, None).unwrap();
     assert_eq!(n, 3);
     assert_eq!(count_entity_index(&cfg).unwrap(), 3);
+    assert_eq!(crate::memory::graph::count_edges(&cfg).unwrap(), 3);
 }
 
 #[test]

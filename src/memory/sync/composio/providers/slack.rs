@@ -226,7 +226,7 @@ impl IncrementalSource for SlackSyncPipeline {
         true
     }
     fn retain_dedup_keys(&self) -> bool {
-        false
+        true
     }
 
     fn advance_scope_cursor(&self, state: &mut SyncState, scope: &SyncScope, cursor: &str) {
