@@ -98,12 +98,15 @@ impl KvStore {
     /// characters collapse to `_` so `"team alpha/#1"` and `"team_alpha/_1"`
     /// address the same bucket.
     fn sanitize_namespace(namespace: &str) -> String {
-        namespace
+        let trimmed = namespace.trim();
+        if trimmed.is_empty() {
+            return crate::memory::types::GLOBAL_NAMESPACE.to_string();
+        }
+        trimmed
             .chars()
             .map(|c| match c {
-                c if c.is_whitespace() => '_',
-                '#' => '_',
-                other => other,
+                c if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/') => c,
+                _ => '_',
             })
             .collect()
     }
