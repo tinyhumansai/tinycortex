@@ -628,7 +628,7 @@ pub async fn seal_document_subtree_with_services(
             [&tree.id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        if current_root.is_none() || root_level > current_max {
+        if current_root.as_deref() != Some(root_id.as_str()) || root_level > current_max {
             store::update_tree_after_seal_tx(
                 &transaction,
                 &tree.id,

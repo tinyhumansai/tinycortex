@@ -139,6 +139,7 @@ fn collect_cover(
     source_kind: Option<SourceKind>,
     source_scope: Option<HashSet<String>>,
 ) -> Result<Vec<RetrievalHit>> {
+    let restrict_summaries = source_id.is_some() || source_scope.is_some();
     let chunks = list_chunks(
         config,
         &ListChunksQuery {
@@ -162,7 +163,6 @@ fn collect_cover(
     // An exact `source_id` filter means `chunks` is a strict subset of its
     // (possibly shared) tree, so shared-tree summaries must be restricted to the
     // requested leaves.
-    let exact_source = source_id.is_some();
     let mut hits: Vec<RetrievalHit> = Vec::new();
     for (source, src_chunks) in by_source {
         cover_one_source(
@@ -171,7 +171,7 @@ fn collect_cover(
             since_ms,
             until_ms,
             src_chunks,
-            exact_source,
+            restrict_summaries,
             &mut hits,
         )?;
     }

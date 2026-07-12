@@ -1528,7 +1528,7 @@ dependencies = [
 [[package]]
 name = "tinyagents"
 version = "1.9.0"
-source = "git+https://github.com/senamakel/tinyagents?rev=777cd76#777cd7600c4b6560ec6e9732b4f06d462c6059ed"
+source = "git+https://github.com/senamakel/tinyagents?rev=8f75355#8f753557278e448c6c5bcf48ab8503505a47c663"
 dependencies = [
  "async-trait",
  "bytes",
