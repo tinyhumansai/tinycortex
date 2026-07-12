@@ -56,6 +56,13 @@ pub fn upsert_buffer_tx(tx: &Transaction<'_>, buf: &Buffer) -> Result<()> {
     Ok(())
 }
 
+/// Reset a buffer at `(tree_id, level)` to empty.
+///
+/// Seal transactions should use the snapshot-aware internal consumer instead.
+pub fn clear_buffer_tx(tx: &Transaction<'_>, tree_id: &str, level: u32) -> Result<()> {
+    upsert_buffer_tx(tx, &Buffer::empty(tree_id, level))
+}
+
 /// Consume exactly a previously-read buffer snapshot during a seal.
 ///
 /// The current row must still begin with the snapshot ids. Items appended
