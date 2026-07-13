@@ -6,7 +6,14 @@
 //!
 //! ## Usage
 //!
+//! Either export the key inline, or copy `.env.example` to `.env` and fill it
+//! in (`.env` is gitignored; the harness loads it automatically, and real
+//! process env still overrides it):
+//!
 //! ```sh
+//! cp .env.example .env   # then edit
+//! cargo run --example composio_harness --features sync
+//! # or:
 //! COMPOSIO_API_KEY=ak_... cargo run --example composio_harness --features sync
 //! ```
 //!
@@ -379,6 +386,14 @@ async fn main() {
 }
 
 async fn run() -> anyhow::Result<()> {
+    // Load a `.env` from the working dir (and any ancestor) if present. Existing
+    // process env always wins, so `COMPOSIO_API_KEY=... cargo run` still works.
+    match dotenvy::dotenv() {
+        Ok(path) => println!("loaded env from {}", path.display()),
+        Err(error) if error.not_found() => {}
+        Err(error) => eprintln!("warning: could not read .env: {error}"),
+    }
+
     let api_key = env_opt("COMPOSIO_API_KEY")
         .ok_or_else(|| anyhow::anyhow!("COMPOSIO_API_KEY is required"))?;
     let base_url = env_opt("COMPOSIO_BASE_URL").unwrap_or_else(|| DEFAULT_BASE_URL.to_owned());
