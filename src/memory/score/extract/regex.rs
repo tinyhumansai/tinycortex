@@ -28,8 +28,9 @@ static RE_URL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"https?://[^\s<>\]\[()]+[^\s<>\]\[()\.\,;:\!\?]").unwrap()
 });
 
-static RE_HANDLE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?:^|[\s(])@([A-Za-z0-9_][A-Za-z0-9_.\-]{1,})").unwrap());
+static RE_HANDLE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:^|[\s(])@([A-Za-z0-9_](?:[A-Za-z0-9_.\-]*[A-Za-z0-9_])?)").unwrap()
+});
 
 static RE_DISCRIM: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b([A-Za-z0-9_.\-]{2,32})#\d{4}\b").unwrap());
@@ -45,12 +46,6 @@ static RE_HASHTAG: LazyLock<Regex> =
 /// Hashtag matches are additionally surfaced as [`ExtractedTopic`] rows so
 /// they can be promoted into the canonical entity stream by the resolver.
 ///
-/// NOTE: `RE_HANDLE` allows `.`/`-` anywhere in the captured group, including
-/// at the end, so trailing sentence punctuation folded into a handle (e.g.
-/// "ping @alice." at end-of-sentence) is captured as part of the surface
-/// form. `handle:alice.` and `handle:alice` then canonicalise to distinct
-/// entities, splitting co-occurrence weight for what is really one person
-/// (see audit finding RS-12).
 pub fn extract(text: &str) -> ExtractedEntities {
     let mut entities: Vec<ExtractedEntity> = Vec::new();
     let mut topics: Vec<ExtractedTopic> = Vec::new();

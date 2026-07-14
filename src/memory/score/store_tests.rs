@@ -237,3 +237,88 @@ fn get_scores_batch_empty_input_and_missing_chunk_ids() {
     assert!((map.get("c1").copied().unwrap() - 0.7).abs() < 1e-6);
     assert!(!map.contains_key("ghost:no-such"));
 }
+
+#[test]
+fn transactional_score_and_entity_helpers_commit_together() {
+    use crate::memory::chunks::with_connection;
+
+    let (_tmp, cfg) = test_config();
+    let row = sample_row("tx-chunk", false);
+    let entities = vec![sample_entity("alice"), sample_entity("bob")];
+    with_connection(&cfg, |conn| {
+        let tx = conn.unchecked_transaction()?;
+        upsert_score_tx(&tx, &row)?;
+        assert_eq!(
+            index_entities_tx(&tx, &entities, "tx-chunk", "leaf", 42, Some("tree"))?,
+            2
+        );
+        assert_eq!(clear_entity_index_for_node_tx(&tx, "tx-chunk")?, 2);
+        assert_eq!(
+            index_entities_tx(&tx, &entities[..1], "tx-chunk", "leaf", 43, None)?,
+            1
+        );
+        tx.commit()?;
+        Ok(())
+    })
+    .unwrap();
+
+    assert_eq!(get_score(&cfg, "tx-chunk").unwrap().unwrap().total, 0.7);
+    assert_eq!(
+        list_entity_ids_for_node(&cfg, "tx-chunk").unwrap(),
+        vec!["email:alice"]
+    );
+}
+
+#[test]
+fn empty_transactional_entity_batches_are_noops() {
+    use crate::memory::chunks::with_connection;
+
+    let (_tmp, cfg) = test_config();
+    with_connection(&cfg, |conn| {
+        let tx = conn.unchecked_transaction()?;
+        assert_eq!(index_entities_tx(&tx, &[], "node", "leaf", 0, None)?, 0);
+        assert_eq!(
+            index_summary_entity_ids_tx(&tx, &[], "node", 0.0, 0, None)?,
+            0
+        );
+        tx.commit()?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        index_entities(&cfg, &[], "node", "leaf", 0, None).unwrap(),
+        0
+    );
+}
+
+#[test]
+fn score_batch_reads_across_sql_parameter_windows() {
+    let (_tmp, cfg) = test_config();
+    let ids: Vec<String> = (0..=MAX_FETCH_BATCH)
+        .map(|index| format!("chunk-{index}"))
+        .collect();
+    for id in &ids {
+        upsert_score(&cfg, &sample_row(id, false)).unwrap();
+    }
+
+    let scores = get_scores_batch(&cfg, &ids).unwrap();
+
+    assert_eq!(scores.len(), MAX_FETCH_BATCH + 1);
+    assert!(ids.iter().all(|id| scores.contains_key(id)));
+}
+
+#[test]
+fn summary_entity_without_colon_uses_whole_id_as_kind_and_surfaces_parse_error() {
+    use crate::memory::chunks::with_connection;
+
+    let (_tmp, cfg) = test_config();
+    with_connection(&cfg, |conn| {
+        let tx = conn.unchecked_transaction()?;
+        index_summary_entity_ids_tx(&tx, &["unknown".into()], "summary", 1.0, 1, None)?;
+        tx.commit()?;
+        Ok(())
+    })
+    .unwrap();
+
+    assert!(lookup_entity(&cfg, "unknown", None).is_err());
+}

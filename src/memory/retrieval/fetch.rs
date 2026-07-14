@@ -3,7 +3,7 @@
 //!
 //! The contract, ported from OpenHuman's `memory_tree::retrieval::fetch`:
 //! "given these chunk ids, give me the full content + metadata so I can cite."
-//! The batch is capped at [`MAX_BATCH`] to keep the round-trip bounded. Missing
+//! The batch is capped by retrieval config to keep the round-trip bounded. Missing
 //! ids are silently skipped — the return is best-effort, so partial failures
 //! are visible via `hits.len() < ids.len()`.
 //!
@@ -19,8 +19,8 @@ use crate::memory::score::store::get_scores_batch;
 
 use super::types::{hydrated_chunk_hit, RetrievalHit};
 
-/// Max batch size. Callers that pass more than this get truncated (no error so
-/// the caller still sees a partial result).
+/// Default fetch batch retained for source compatibility. Runtime behavior is
+/// controlled by [`RetrievalLimits::fetch_batch_limit`](crate::memory::config::RetrievalLimits::fetch_batch_limit).
 pub const MAX_BATCH: usize = 20;
 
 /// Fetch chunk rows by id in the provided order. Missing ids are dropped from
@@ -30,8 +30,9 @@ pub fn fetch_leaves(config: &MemoryConfig, chunk_ids: &[String]) -> Result<Vec<R
         return Ok(Vec::new());
     }
 
-    let ids: &[String] = if chunk_ids.len() > MAX_BATCH {
-        &chunk_ids[..MAX_BATCH]
+    let max_batch = config.retrieval.limits.fetch_batch_limit;
+    let ids: &[String] = if chunk_ids.len() > max_batch {
+        &chunk_ids[..max_batch]
     } else {
         chunk_ids
     };

@@ -3,8 +3,8 @@
 use super::*;
 use crate::memory::config::MemoryConfig;
 use crate::memory::retrieval::test_support::{
-    fixed_ts, index_entity_occurrence, insert_chunks, insert_summary, insert_tree_row,
-    sample_chunk, source_tree, summary_node, test_config,
+    fixed_ts, index_entity_occurrence, insert_chunks, insert_score, insert_summary,
+    insert_tree_row, sample_chunk, sample_chunk_at, source_tree, summary_node, test_config,
 };
 use crate::memory::score::embed::InertEmbedder;
 use crate::memory::score::extract::EntityKind;
@@ -12,6 +12,16 @@ use chrono::{DateTime, TimeZone, Utc};
 
 fn inert() -> InertEmbedder {
     InertEmbedder::new()
+}
+
+#[test]
+fn millisecond_conversion_saturates_out_of_range_values() {
+    assert_eq!(ms_to_utc(i64::MIN), DateTime::<Utc>::MIN_UTC);
+    assert_eq!(ms_to_utc(i64::MAX), DateTime::<Utc>::MAX_UTC);
+    assert_eq!(
+        ms_to_utc(1_700_000_000_000),
+        Utc.timestamp_millis_opt(1_700_000_000_000).unwrap()
+    );
 }
 
 /// Seed a source tree at `scope` with one L1 summary `summary_id` at `ts`.
@@ -188,4 +198,92 @@ async fn query_topic_window_filters_old_nodes() {
     .unwrap();
     assert_eq!(resp.hits.len(), 1);
     assert_eq!(resp.hits[0].node_id, "s:new");
+}
+
+#[tokio::test]
+async fn query_topic_applies_historical_window_before_lookup_cap() {
+    use crate::memory::chunks::with_connection;
+
+    let (_tmp, cfg) = test_config();
+    let old = Utc.timestamp_millis_opt(1_000_000_000_000).unwrap();
+    let chunk = sample_chunk_at("slack:#history", 0, "historic phoenix", old);
+    insert_chunks(&cfg, std::slice::from_ref(&chunk));
+    index_entity_occurrence(
+        &cfg,
+        "topic:phoenix",
+        EntityKind::Topic,
+        "phoenix",
+        &chunk.id,
+        "leaf",
+        old.timestamp_millis(),
+        None,
+    );
+    // More than the configured topic cap recent stale index rows used to hide the old
+    // real row because LIMIT ran before the historical-window filter.
+    with_connection(&cfg, |conn| {
+        let tx = conn.unchecked_transaction()?;
+        for index in 0..=cfg.retrieval.limits.topic_lookup_limit {
+            tx.execute(
+                "INSERT INTO mem_tree_entity_index
+                 (entity_id,node_id,node_kind,entity_kind,surface,score,timestamp_ms,tree_id,is_user)
+                 VALUES ('topic:phoenix',?1,'leaf','topic','phoenix',1.0,?2,NULL,0)",
+                rusqlite::params![
+                    format!("stale-{index}"),
+                    fixed_ts().timestamp_millis() + index as i64
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    })
+    .unwrap();
+
+    let response = query_topic(
+        &cfg,
+        "topic:phoenix",
+        Some(old.timestamp_millis() - 1),
+        Some(old.timestamp_millis() + 1),
+        None,
+        &inert(),
+        10,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(response.hits.len(), 1);
+    assert_eq!(response.hits[0].node_id, chunk.id);
+}
+
+#[tokio::test]
+async fn query_topic_excludes_chunks_with_dropped_score_rows() {
+    use crate::memory::chunks::with_connection;
+
+    let (_tmp, cfg) = test_config();
+    let chunk = sample_chunk("slack:#eng", 0, "phoenix");
+    insert_chunks(&cfg, std::slice::from_ref(&chunk));
+    insert_score(&cfg, &chunk.id, 0.1);
+    with_connection(&cfg, |conn| {
+        conn.execute(
+            "UPDATE mem_tree_score SET dropped=1 WHERE chunk_id=?1",
+            rusqlite::params![chunk.id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    index_entity_occurrence(
+        &cfg,
+        "topic:phoenix",
+        EntityKind::Topic,
+        "phoenix",
+        &chunk.id,
+        "leaf",
+        fixed_ts().timestamp_millis(),
+        None,
+    );
+
+    let response = query_topic(&cfg, "topic:phoenix", None, None, None, &inert(), 10)
+        .await
+        .unwrap();
+
+    assert!(response.hits.is_empty());
 }

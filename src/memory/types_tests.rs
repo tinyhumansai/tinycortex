@@ -15,7 +15,7 @@ fn memory_category_display_outputs_expected_values() {
     assert_eq!(MemoryCategory::Conversation.to_string(), "conversation");
     assert_eq!(
         MemoryCategory::Custom("project_notes".into()).to_string(),
-        "project_notes"
+        "custom:project_notes"
     );
 }
 
@@ -33,6 +33,28 @@ fn memory_category_serde_uses_snake_case() {
         serde_json::to_string(&MemoryCategory::Conversation).unwrap(),
         "\"conversation\""
     );
+    assert_eq!(
+        serde_json::to_string(&MemoryCategory::Custom("core".into())).unwrap(),
+        "\"custom:core\""
+    );
+    for category in [
+        MemoryCategory::Core,
+        MemoryCategory::Daily,
+        MemoryCategory::Conversation,
+        MemoryCategory::Custom("core".into()),
+        MemoryCategory::Custom("tool_memory".into()),
+    ] {
+        assert_eq!(
+            category.to_string().parse::<MemoryCategory>().unwrap(),
+            category
+        );
+        let json = serde_json::to_string(&category).unwrap();
+        assert_eq!(
+            serde_json::from_str::<MemoryCategory>(&json).unwrap(),
+            category
+        );
+    }
+    assert!("project_notes".parse::<MemoryCategory>().is_err());
 }
 
 #[test]
@@ -87,6 +109,18 @@ fn memory_taint_db_str_roundtrip_and_fails_closed() {
     assert_eq!(
         MemoryTaint::from_db_str("future"),
         MemoryTaint::ExternalSync
+    );
+}
+
+#[test]
+fn memory_taint_serde_unknown_values_fail_closed() {
+    assert_eq!(
+        serde_json::from_str::<MemoryTaint>("\"unexpected\"").unwrap(),
+        MemoryTaint::ExternalSync
+    );
+    assert_eq!(
+        serde_json::to_string(&MemoryTaint::ExternalSync).unwrap(),
+        "\"external_sync\""
     );
 }
 

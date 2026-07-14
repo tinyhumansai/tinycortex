@@ -28,20 +28,8 @@ use crate::memory::tree::{SummaryNode, TreeKind};
 
 use super::types::{hydrated_chunk_hit, hydrated_summary_hit, QueryResponse, RetrievalHit};
 
-/// Default cap on returned cover items when the caller passes `limit = 0`.
-const DEFAULT_LIMIT: usize = 200;
-
-/// Upper bound on in-window chunks scanned across all sources.
-///
-/// NOTE: this is a silent truncation with no signal distinct from the
-/// `limit`-based one. [`QueryResponse::truncated`] is derived only from
-/// `total > hits.len()` after the [`cover_window`] result-count cut. If the
-/// window contains more in-window chunks than this cap, `list_chunks`
-/// truncates before `cover_window` ever sees the rest, and the caller has no
-/// way to distinguish "there were more chunks than the scan cap allows" from
-/// "there were exactly this many, all covered by summaries".
-const MAX_WINDOW_CHUNKS: usize = 5_000;
-
+/// Page size used while scanning the complete in-window chunk set. Pagination
+/// bounds each SQLite materialisation without silently dropping later sources.
 /// Derive the tree scope a chunk seals under: `path_scope` overrides
 /// `source_id` for shared-directory document sources, mirroring the append
 /// path's scope derivation.
@@ -101,7 +89,11 @@ pub fn cover_window_scoped(
     source_scope: Option<HashSet<String>>,
     limit: usize,
 ) -> Result<QueryResponse> {
-    let limit = if limit == 0 { DEFAULT_LIMIT } else { limit };
+    let limit = if limit == 0 {
+        config.retrieval.limits.cover_default_limit
+    } else {
+        limit
+    };
     if until_ms < since_ms {
         return Err(anyhow::anyhow!(
             "cover_window: until_ms ({until_ms}) precedes since_ms ({since_ms})"
@@ -140,19 +132,29 @@ fn collect_cover(
     source_scope: Option<HashSet<String>>,
 ) -> Result<Vec<RetrievalHit>> {
     let restrict_summaries = source_id.is_some() || source_scope.is_some();
-    let chunks = list_chunks(
-        config,
-        &ListChunksQuery {
-            source_id: source_id.map(|s| s.to_string()),
-            source_kind,
-            since_ms: Some(since_ms),
-            until_ms: Some(until_ms),
-            limit: Some(MAX_WINDOW_CHUNKS),
-            exclude_dropped: true,
-            source_scope,
-            ..Default::default()
-        },
-    )?;
+    let page_size = config.retrieval.limits.window_chunk_page_size;
+    let mut chunks = Vec::new();
+    loop {
+        let page = list_chunks(
+            config,
+            &ListChunksQuery {
+                source_id: source_id.map(str::to_owned),
+                source_kind,
+                since_ms: Some(since_ms),
+                until_ms: Some(until_ms),
+                limit: Some(page_size),
+                offset: Some(chunks.len()),
+                exclude_dropped: true,
+                source_scope: source_scope.clone(),
+                ..Default::default()
+            },
+        )?;
+        let page_len = page.len();
+        chunks.extend(page);
+        if page_len < page_size {
+            break;
+        }
+    }
 
     let mut by_source: HashMap<String, Vec<Chunk>> = HashMap::new();
     for chunk in chunks {

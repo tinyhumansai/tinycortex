@@ -8,15 +8,9 @@
 //! binds a [`MemoryConfig`] so retrieval can compute graph relevance for an
 //! entity without the graph layer depending on SQLite.
 //!
-//! NOTE: the co-occurrence derivation in `crate::memory::graph` calls
-//! [`ConfigEntityIndex::entities_on_node`] once per node returned by
-//! [`ConfigEntityIndex::nodes_for_entity`] — i.e. 1 + up to
-//! `OCCURRENCE_LOOKUP_LIMIT` separate SQL queries per derivation, rather
-//! than a single self-join. Combined with the newest-first truncation at
-//! `OCCURRENCE_LOOKUP_LIMIT`, edge weights for popular entities (more
-//! occurrences than the cap) are systematically undercounted and
-//! "strongest neighbor" ordering can be wrong. See the improvement plan for
-//! the planned SQL self-join fast path.
+//! The adapter implements the graph trait's backend-native co-occurrence fast
+//! path as one SQL self-join, without the per-entity occurrence cap. Direct
+//! calls to `nodes_for_entity` remain capped for bounded diagnostics.
 //!
 //! Also recall the crate-level NOTE in [`crate::memory::retrieval`]: nothing
 //! in this crate currently calls into `crate::memory::graph` through this
@@ -25,13 +19,11 @@
 use anyhow::Result;
 
 use crate::memory::config::MemoryConfig;
-use crate::memory::graph::EntityOccurrenceIndex;
+use crate::memory::graph::{EntityOccurrenceIndex, GraphEdge};
 use crate::memory::score::store::{list_entity_ids_for_node, lookup_entity};
 
-/// Per-entity lookup cap for the occurrence reads. Popular entities can touch
-/// many nodes; this bounds the fan-out while staying well above any realistic
-/// `k`.
-const OCCURRENCE_LOOKUP_LIMIT: usize = 500;
+#[cfg(test)]
+pub(crate) const OCCURRENCE_LOOKUP_LIMIT: usize = 500;
 
 /// SQLite-backed [`EntityOccurrenceIndex`] over `mem_tree_entity_index`.
 pub struct ConfigEntityIndex<'a> {
@@ -46,11 +38,49 @@ impl<'a> ConfigEntityIndex<'a> {
 }
 
 impl EntityOccurrenceIndex for ConfigEntityIndex<'_> {
+    fn co_occurring_entities(
+        &self,
+        subject_entity: &str,
+        limit: usize,
+    ) -> Result<Option<Vec<GraphEdge>>> {
+        crate::memory::chunks::with_connection(self.config, |conn| {
+            let limit = limit.min(i64::MAX as usize) as i64;
+            let mut stmt = conn.prepare(
+                "SELECT b.entity_id, COUNT(DISTINCT a.node_id) AS weight
+                   FROM mem_tree_entity_index a
+                   JOIN mem_tree_entity_index b ON a.node_id = b.node_id
+              LEFT JOIN mem_tree_score score ON score.chunk_id = a.node_id
+              LEFT JOIN mem_tree_summaries summary ON summary.id = a.node_id
+                  WHERE a.entity_id = ?1 AND b.entity_id <> ?1
+                    AND ((a.node_kind = 'summary' AND summary.id IS NOT NULL AND summary.deleted = 0)
+                      OR (a.node_kind <> 'summary' AND COALESCE(score.dropped, 0) = 0))
+               GROUP BY b.entity_id
+               ORDER BY weight DESC, b.entity_id ASC
+                  LIMIT ?2",
+            )?;
+            let rows = stmt
+                .query_map(rusqlite::params![subject_entity, limit], |row| {
+                    let weight: i64 = row.get(1)?;
+                    Ok(GraphEdge {
+                        subject: subject_entity.to_string(),
+                        object: row.get(0)?,
+                        weight: weight.max(0).min(i64::from(u32::MAX)) as u32,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(Some(rows))
+        })
+    }
+
     /// Distinct node ids indexed against `entity_id`, newest-first,
-    /// deduplicated, capped at `OCCURRENCE_LOOKUP_LIMIT`. Returns `Err` on
+    /// deduplicated, capped by retrieval config. Returns `Err` on
     /// a SQLite read failure; an unknown `entity_id` yields `Ok(vec![])`.
     fn nodes_for_entity(&self, entity_id: &str) -> Result<Vec<String>> {
-        let hits = lookup_entity(self.config, entity_id, Some(OCCURRENCE_LOOKUP_LIMIT))?;
+        let hits = lookup_entity(
+            self.config,
+            entity_id,
+            Some(self.config.retrieval.limits.occurrence_lookup_limit),
+        )?;
         let mut out: Vec<String> = Vec::with_capacity(hits.len());
         // `lookup_entity` already returns distinct (entity_id, node_id) rows
         // ordered newest-first; collect node ids preserving first-seen order.
@@ -63,9 +93,9 @@ impl EntityOccurrenceIndex for ConfigEntityIndex<'_> {
         Ok(out)
     }
 
-    /// Canonical entity ids indexed against `node_id`. Called once per node
-    /// returned by [`nodes_for_entity`](Self::nodes_for_entity) — see the
-    /// module-level NOTE on the resulting query-count cost.
+    /// Canonical entity ids indexed against `node_id`. This supports the
+    /// portable graph fallback and direct diagnostics; production
+    /// co-occurrence uses the set-based method above.
     fn entities_on_node(&self, node_id: &str) -> Result<Vec<String>> {
         list_entity_ids_for_node(self.config, node_id)
     }

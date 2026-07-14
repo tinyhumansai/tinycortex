@@ -30,7 +30,7 @@
 //! The `mem_tree_score` table in TinyCortex does not carry `llm_importance` /
 //! `llm_importance_reason` columns, so those fields are admission-time signals
 //! only: the persisted row records the resulting `total`. They are kept on
-//! [`ScoreRow`] / [`ScoreSignals`] for API compatibility and read back as their
+//! `ScoreRow` / [`ScoreSignals`] for API compatibility and read back as their
 //! defaults (`0.0` / `None`). TinyCortex also has no identity registry, so the
 //! `is_user` column is always written as `0`.
 
@@ -46,6 +46,11 @@ use crate::memory::graph::{pairs_from_entities, upsert_edges_tx};
 use crate::memory::score::extract::EntityKind;
 use crate::memory::score::resolver::CanonicalEntity;
 use crate::memory::score::signals::ScoreSignals;
+
+pub use super::store_query::{
+    count_entity_index, count_scores, list_entity_ids_for_node, lookup_entity,
+    lookup_entity_in_window,
+};
 
 /// Resolve `is_user` for one canonical entity.
 ///
@@ -223,6 +228,37 @@ pub fn get_scores_batch(
             for row in rows {
                 let (chunk_id, total) = row.context("decode get_scores_batch row")?;
                 out.insert(chunk_id, total);
+            }
+        }
+        Ok(out)
+    })
+}
+
+/// Return the subset of `chunk_ids` whose latest persisted admission result is
+/// dropped. Missing score rows are not considered dropped.
+pub fn get_dropped_chunk_ids_batch(
+    config: &MemoryConfig,
+    chunk_ids: &[String],
+) -> Result<std::collections::HashSet<String>> {
+    if chunk_ids.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
+    with_connection(config, |conn| {
+        let mut out = std::collections::HashSet::new();
+        for window in chunk_ids.chunks(MAX_FETCH_BATCH) {
+            let placeholders = (1..=window.len())
+                .map(|index| format!("?{index}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT chunk_id FROM mem_tree_score
+                  WHERE dropped != 0 AND chunk_id IN ({placeholders})"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let params: Vec<&dyn rusqlite::ToSql> =
+                window.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+            for row in stmt.query_map(params.as_slice(), |row| row.get::<_, String>(0))? {
+                out.insert(row?);
             }
         }
         Ok(out)
@@ -439,88 +475,6 @@ pub struct EntityHit {
     /// Always `false` in TinyCortex (no identity registry yet).
     #[serde(default)]
     pub is_user: bool,
-}
-
-/// Find all nodes indexed against `entity_id`, newest first.
-pub fn lookup_entity(
-    config: &MemoryConfig,
-    entity_id: &str,
-    limit: Option<usize>,
-) -> Result<Vec<EntityHit>> {
-    // Clamp to i64::MAX before casting so callers can't wrap a large usize into
-    // a negative LIMIT and bypass it.
-    let limit = limit.unwrap_or(100).min(i64::MAX as usize) as i64;
-    with_connection(config, |conn| {
-        let mut stmt = conn.prepare(
-            "SELECT entity_id, node_id, node_kind, entity_kind, surface,
-                    score, timestamp_ms, tree_id, is_user
-             FROM mem_tree_entity_index
-             WHERE entity_id = ?1
-             ORDER BY timestamp_ms DESC
-             LIMIT ?2",
-        )?;
-        let rows = stmt
-            .query_map(params![entity_id, limit], |row| {
-                let kind_s: String = row.get(3)?;
-                let entity_kind = EntityKind::parse(&kind_s).map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        3,
-                        rusqlite::types::Type::Text,
-                        e.into(),
-                    )
-                })?;
-                let is_user_int: i32 = row.get(8)?;
-                Ok(EntityHit {
-                    entity_id: row.get(0)?,
-                    node_id: row.get(1)?,
-                    node_kind: row.get(2)?,
-                    entity_kind,
-                    surface: row.get(4)?,
-                    score: row.get(5)?,
-                    timestamp_ms: row.get(6)?,
-                    tree_id: row.get(7)?,
-                    is_user: is_user_int != 0,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    })
-}
-
-/// All distinct canonical entity ids associated with `node_id`, ordered by
-/// score (desc) then recency. Used by topic-routing to pick which topic trees a
-/// node should fan into.
-pub fn list_entity_ids_for_node(config: &MemoryConfig, node_id: &str) -> Result<Vec<String>> {
-    with_connection(config, |conn| {
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT entity_id
-               FROM mem_tree_entity_index
-              WHERE node_id = ?1
-              ORDER BY score DESC, timestamp_ms DESC, entity_id ASC",
-        )?;
-        let rows = stmt
-            .query_map(params![node_id], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    })
-}
-
-/// Count rows in the entity index (for tests / diagnostics).
-pub fn count_entity_index(config: &MemoryConfig) -> Result<u64> {
-    with_connection(config, |conn| {
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM mem_tree_entity_index", [], |r| {
-            r.get(0)
-        })?;
-        Ok(n.max(0) as u64)
-    })
-}
-
-/// Count score rows (for tests / diagnostics).
-pub fn count_scores(config: &MemoryConfig) -> Result<u64> {
-    with_connection(config, |conn| {
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM mem_tree_score", [], |r| r.get(0))?;
-        Ok(n.max(0) as u64)
-    })
 }
 
 #[cfg(test)]

@@ -7,12 +7,18 @@
 
 use std::path::PathBuf;
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
+
+mod policy;
+pub use policy::{QueueConfig, RetrievalLimits, ScoringPolicyConfig};
 
 /// OpenHuman tree-summarisation input budget (tokens).
 pub const INPUT_TOKEN_BUDGET: u32 = 50_000;
 /// OpenHuman tree-summarisation output budget (tokens).
 pub const OUTPUT_TOKEN_BUDGET: u32 = 5_000;
+/// Prompt/instruction headroom reserved inside the summarisation input budget.
+pub const SUMMARY_OVERHEAD_RESERVE_TOKENS: u32 = 2_048;
 /// Number of summary siblings before a bucket seals.
 pub const SUMMARY_FANOUT: u32 = 10;
 /// Default flush age for stale buffers (7 days, in seconds).
@@ -28,12 +34,11 @@ pub const FOLDER_FILE_SIZE_CAP_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Top-level configuration for a memory engine instance.
 ///
-/// This struct performs no validation or filesystem I/O on its own — building
-/// one (via [`Self::new`], `Default::default()` on the nested configs, or
-/// deserializing from JSON/TOML) never touches disk or fails. Path sandboxing
-/// (rejecting traversal / symlink escapes out of `workspace`) and any other
-/// invariant enforcement happen where a config is actually consumed (see
-/// `memory::sources::validation`), not here.
+/// Direct construction and serde deserialization do not touch disk; call
+/// [`Self::validate`] after constructing manually. [`Self::from_toml_file`]
+/// is the safe file-loading entry point and validates before returning. Path
+/// sandboxing for individual source paths remains enforced where those paths
+/// are consumed (see `memory::sources::validation`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryConfig {
     /// Workspace root. Markdown content, SQLite indexes, and ledgers live under
@@ -54,6 +59,16 @@ pub struct MemoryConfig {
     /// Default hybrid retrieval weighting.
     #[serde(default)]
     pub retrieval: RetrievalConfig,
+    /// Admission-scoring policy. Runtime extractor implementations remain
+    /// injected separately and are combined with this serializable policy.
+    #[serde(default)]
+    pub scoring: ScoringPolicyConfig,
+    /// Deterministic document-extraction policy.
+    #[serde(default)]
+    pub ingestion: crate::memory::ingest::MemoryIngestionConfig,
+    /// Queue locking, retry, and concurrency policy.
+    #[serde(default)]
+    pub queue: QueueConfig,
     /// Per-source sync budget ceilings (enforced when a host invokes ingest).
     #[serde(default)]
     pub sync_budget: SyncBudgetConfig,
@@ -82,14 +97,144 @@ impl MemoryConfig {
             embedding: EmbeddingConfig::default(),
             tree: TreeConfig::default(),
             retrieval: RetrievalConfig::default(),
+            scoring: ScoringPolicyConfig::default(),
+            ingestion: crate::memory::ingest::MemoryIngestionConfig::default(),
+            queue: QueueConfig::default(),
             sync_budget: SyncBudgetConfig::default(),
             sync: SyncConfig::default(),
         }
     }
+
+    /// Load a TOML configuration file and validate its runtime invariants.
+    ///
+    /// Relative workspace paths remain relative to the host's current working
+    /// directory; the loader does not silently reinterpret them relative to the
+    /// config file.
+    pub fn from_toml_file(path: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
+        let path = path.as_ref();
+        let text = std::fs::read_to_string(path)
+            .map_err(anyhow::Error::from)
+            .with_context(|| format!("failed to read memory config {}", path.display()))?;
+        let config: Self = toml::from_str(&text)
+            .map_err(anyhow::Error::from)
+            .with_context(|| format!("failed to parse memory config {}", path.display()))?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Validate configuration values that would otherwise produce degenerate
+    /// stores, budgets, or ranking behavior.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.workspace.as_os_str().is_empty(),
+            "workspace must not be empty"
+        );
+        self.scoring.validate()?;
+        self.queue.validate()?;
+        self.retrieval.limits.validate()?;
+        anyhow::ensure!(
+            (0.0..=1.0).contains(&self.ingestion.entity_threshold)
+                && (0.0..=1.0).contains(&self.ingestion.relation_threshold)
+                && (0.0..=1.0).contains(&self.ingestion.adjacency_threshold),
+            "ingestion thresholds must be between zero and one"
+        );
+        anyhow::ensure!(
+            self.ingestion.batch_size > 0,
+            "ingestion.batch_size must be positive"
+        );
+        anyhow::ensure!(
+            self.embedding.dim > 0,
+            "embedding.dim must be greater than zero"
+        );
+        anyhow::ensure!(
+            self.tree.input_token_budget > 0,
+            "tree.input_token_budget must be greater than zero"
+        );
+        anyhow::ensure!(
+            self.tree.output_token_budget > 0,
+            "tree.output_token_budget must be greater than zero"
+        );
+        anyhow::ensure!(
+            self.tree.summary_overhead_reserve_tokens < self.tree.input_token_budget,
+            "tree.summary_overhead_reserve_tokens must be smaller than tree.input_token_budget"
+        );
+        anyhow::ensure!(
+            self.tree.summary_fanout > 0,
+            "tree.summary_fanout must be greater than zero"
+        );
+        anyhow::ensure!(
+            self.tree.flush_age_secs > 0,
+            "tree.flush_age_secs must be greater than zero"
+        );
+        anyhow::ensure!(
+            self.tree.flavour_root_token_budget > 0,
+            "tree.flavour_root_token_budget must be greater than zero"
+        );
+        let weights = [
+            self.retrieval.default_profile.graph,
+            self.retrieval.default_profile.vector,
+            self.retrieval.default_profile.keyword,
+            self.retrieval.default_profile.freshness,
+        ];
+        anyhow::ensure!(
+            weights
+                .iter()
+                .all(|weight| weight.is_finite() && *weight >= 0.0),
+            "retrieval weights must be finite and non-negative"
+        );
+        anyhow::ensure!(
+            weights.iter().sum::<f64>() > 0.0,
+            "at least one retrieval weight must be positive"
+        );
+        validate_budget("sync_budget", &self.sync_budget)?;
+        validate_budget("sync.budget", &self.sync.budget)?;
+        if let Some(composio) = &self.sync.composio {
+            let base_url = composio.base_url.trim();
+            anyhow::ensure!(
+                base_url.starts_with("https://") || base_url.starts_with("http://"),
+                "sync.composio.base_url must be an http(s) URL"
+            );
+            anyhow::ensure!(
+                composio.api_key.as_ref().is_none_or(|key| !key.is_empty()),
+                "sync.composio.api_key must not be blank"
+            );
+            anyhow::ensure!(
+                composio
+                    .bearer_token
+                    .as_ref()
+                    .is_none_or(|token| !token.is_empty()),
+                "sync.composio.bearer_token must not be blank"
+            );
+        }
+        Ok(())
+    }
+}
+
+fn validate_budget(name: &str, budget: &SyncBudgetConfig) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        budget.max_items.is_none_or(|value| value > 0),
+        "{name}.max_items must be greater than zero"
+    );
+    anyhow::ensure!(
+        budget.max_tokens_per_sync.is_none_or(|value| value > 0),
+        "{name}.max_tokens_per_sync must be greater than zero"
+    );
+    anyhow::ensure!(
+        budget
+            .max_cost_per_sync_usd
+            .is_none_or(|value| value.is_finite() && value >= 0.0),
+        "{name}.max_cost_per_sync_usd must be finite and non-negative"
+    );
+    anyhow::ensure!(
+        budget.sync_depth_days.is_none_or(|value| value > 0),
+        "{name}.sync_depth_days must be greater than zero"
+    );
+    Ok(())
 }
 
 /// Embedding backend configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct EmbeddingConfig {
     /// Vector dimension. OpenHuman fixes this at 768.
     pub dim: usize,
@@ -112,11 +257,16 @@ impl Default for EmbeddingConfig {
 
 /// Summary-tree budgets and sealing behavior.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TreeConfig {
     /// Max input tokens fed into one summarisation pass (see [`INPUT_TOKEN_BUDGET`]).
     pub input_token_budget: u32,
     /// Max tokens a summary may emit (see [`OUTPUT_TOKEN_BUDGET`]).
     pub output_token_budget: u32,
+    /// Tokens reserved for provider instructions and formatting rather than
+    /// source inputs.
+    #[serde(default = "default_summary_overhead_reserve_tokens")]
+    pub summary_overhead_reserve_tokens: u32,
     /// Number of summary siblings accumulated before a bucket seals into a parent
     /// (see [`SUMMARY_FANOUT`]).
     pub summary_fanout: u32,
@@ -137,11 +287,16 @@ fn default_flavour_root_token_budget() -> u32 {
     FLAVOUR_ROOT_TOKEN_BUDGET
 }
 
+fn default_summary_overhead_reserve_tokens() -> u32 {
+    SUMMARY_OVERHEAD_RESERVE_TOKENS
+}
+
 impl Default for TreeConfig {
     fn default() -> Self {
         Self {
             input_token_budget: INPUT_TOKEN_BUDGET,
             output_token_budget: OUTPUT_TOKEN_BUDGET,
+            summary_overhead_reserve_tokens: SUMMARY_OVERHEAD_RESERVE_TOKENS,
             summary_fanout: SUMMARY_FANOUT,
             flush_age_secs: DEFAULT_FLUSH_AGE_SECS,
             flavour_root_token_budget: FLAVOUR_ROOT_TOKEN_BUDGET,
@@ -202,38 +357,42 @@ impl WeightProfile {
         freshness: 0.0,
     };
 
-    /// Resolve a profile by its wire name. Unknown names fall back to balanced.
+    /// Resolve a profile by its wire name, returning `None` for unknown names.
     ///
     /// # Examples
     ///
     /// ```
     /// use tinycortex::memory::config::WeightProfile;
     ///
-    /// assert_eq!(WeightProfile::by_name("semantic"), WeightProfile::SEMANTIC);
-    /// // Unrecognised names fail closed to the balanced default, never an error.
-    /// assert_eq!(WeightProfile::by_name("nonexistent"), WeightProfile::BALANCED);
+    /// assert_eq!(WeightProfile::by_name("semantic"), Some(WeightProfile::SEMANTIC));
+    /// assert_eq!(WeightProfile::by_name("nonexistent"), None);
     /// ```
-    pub fn by_name(name: &str) -> Self {
+    pub fn by_name(name: &str) -> Option<Self> {
         match name {
-            "semantic" => Self::SEMANTIC,
-            "lexical" => Self::LEXICAL,
-            "graph_first" => Self::GRAPH_FIRST,
-            _ => Self::BALANCED,
+            "balanced" => Some(Self::BALANCED),
+            "semantic" => Some(Self::SEMANTIC),
+            "lexical" => Some(Self::LEXICAL),
+            "graph_first" => Some(Self::GRAPH_FIRST),
+            _ => None,
         }
     }
 }
 
 /// Default retrieval configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RetrievalConfig {
     /// Default weight profile applied when a query does not specify one.
     pub default_profile: WeightProfile,
+    /// Operative result, candidate, graph, and paging bounds.
+    pub limits: RetrievalLimits,
 }
 
 impl Default for RetrievalConfig {
     fn default() -> Self {
         Self {
             default_profile: WeightProfile::BALANCED,
+            limits: RetrievalLimits::default(),
         }
     }
 }
@@ -247,6 +406,7 @@ impl Default for RetrievalConfig {
 /// fallback a host applies when a source has not set its own override, rather
 /// than an already-enforced global cap.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SyncBudgetConfig {
     /// Maximum records persisted by one sync tick.
     pub max_items: Option<u32>,
@@ -260,6 +420,7 @@ pub struct SyncBudgetConfig {
 
 /// Live synchronization configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SyncConfig {
     /// Request and ingest ceilings.
     #[serde(default)]
@@ -267,8 +428,8 @@ pub struct SyncConfig {
     /// Composio transport configuration; absent disables Composio sync.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub composio: Option<ComposioSyncConfig>,
-    /// Global periodic cadence. `Some(0)` means manual-only; shorter non-zero
-    /// values are clamped to the 24-hour default.
+    /// Global periodic cadence. `Some(0)` means manual-only; every other
+    /// configured value is honoured exactly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interval_secs: Option<u64>,
 }

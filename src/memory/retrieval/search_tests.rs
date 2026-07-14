@@ -82,6 +82,40 @@ fn matches_on_surface_substring() {
 }
 
 #[test]
+fn like_metacharacters_are_matched_literally() {
+    let (_tmp, cfg) = test_config();
+    index_entity_occurrence(
+        &cfg,
+        "topic:100%_ready",
+        EntityKind::Topic,
+        "100%_ready",
+        "leaf-literal",
+        "leaf",
+        1_700_000_000_000,
+        None,
+    );
+    index_entity_occurrence(
+        &cfg,
+        "topic:100x-ready",
+        EntityKind::Topic,
+        "100x-ready",
+        "leaf-wildcard-decoy",
+        "leaf",
+        1_700_000_000_001,
+        None,
+    );
+
+    let matches = search_entities(&cfg, "100%_", None, 10).unwrap();
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].canonical_id, "topic:100%_ready");
+}
+
+#[test]
+fn escape_like_literal_escapes_escape_and_wildcard_characters() {
+    assert_eq!(escape_like_literal(r"a\b%c_d"), r"a\\b\%c\_d");
+}
+
+#[test]
 fn kind_filter_narrows_results() {
     let (_tmp, cfg) = test_config();
     seed_entities(&cfg, "leaf-1");
@@ -154,6 +188,7 @@ fn limit_truncates_results() {
 fn build_sql_without_kinds_has_no_in_clause() {
     let (sql, _params) = build_sql_and_params("%a%", None, 5);
     assert!(sql.contains("LOWER(entity_id) LIKE"));
+    assert!(sql.contains("ESCAPE '\\'"));
     assert!(!sql.contains("entity_kind IN"));
 }
 
@@ -168,10 +203,18 @@ fn build_sql_with_kinds_adds_in_clause() {
 
 #[test]
 fn zero_limit_defaults_to_five() {
-    assert_eq!(normalise_limit(0), DEFAULT_LIMIT);
+    let config = MemoryConfig::new("/tmp/search-limit-test");
+    assert_eq!(
+        normalise_limit(&config, 0),
+        config.retrieval.limits.search_default_limit
+    );
 }
 
 #[test]
 fn huge_limit_is_clamped() {
-    assert_eq!(normalise_limit(10_000), MAX_LIMIT);
+    let config = MemoryConfig::new("/tmp/search-limit-test");
+    assert_eq!(
+        normalise_limit(&config, 10_000),
+        config.retrieval.limits.max_limit
+    );
 }

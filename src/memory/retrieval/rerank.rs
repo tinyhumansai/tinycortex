@@ -5,11 +5,9 @@
 //! and the hit's stored embedding. Hits with no embedding (legacy rows, or
 //! leaves whose chunk was never embedded) sort to the bottom.
 //!
-//! NOTE: the un-embedded tail is NOT kept in incoming order — every
-//! un-embedded hit shares the `NEG_INFINITY` similarity sentinel, so the tie
-//! break (`time_range_end` DESC, see [`rerank_by_semantic_similarity`]) reorders
-//! it newest-first. The same tie break applies among embedded hits with equal
-//! similarity.
+//! Un-embedded hits sort after embedded hits while preserving their incoming
+//! order. Equal-similarity embedded hits use recency as a deterministic tie
+//! break.
 //!
 //! Embedding failures (e.g. a local model being unavailable) never surface as
 //! an error to the caller: the helper logs nothing (per repo rules) and falls
@@ -28,10 +26,9 @@ use super::types::RetrievalHit;
 /// shorter of the two rather than panicking, since [`Iterator::zip`] stops at
 /// the shorter side).
 ///
-/// Ordering: embedded hits sort before un-embedded hits; within each group,
-/// ties break on `time_range_end` DESC (see the module-level NOTE — this
-/// applies to the *entire* un-embedded group, not just genuine similarity
-/// ties). On any embed failure (e.g. `embedder.embed` erroring) `hits` is
+/// Ordering: embedded hits sort before un-embedded hits; similarity ties among
+/// embedded hits break on `time_range_end` DESC, while un-embedded hits retain
+/// input order. On any embed failure (e.g. `embedder.embed` erroring) `hits` is
 /// returned as-is, in its original incoming order, with no decoration or
 /// sorting attempted.
 pub(crate) async fn rerank_by_semantic_similarity(
@@ -48,28 +45,33 @@ pub(crate) async fn rerank_by_semantic_similarity(
 
     // Decorate each hit with (similarity, has_embedding). Un-embedded rows get
     // `NEG_INFINITY` so they sort last but keep their incoming relative order.
-    let mut decorated: Vec<(f32, bool, RetrievalHit)> = hits
+    let mut decorated: Vec<(f32, bool, usize, RetrievalHit)> = hits
         .into_iter()
         .zip(embeddings)
-        .map(|(h, emb)| match emb {
+        .enumerate()
+        .map(|(index, (h, emb))| match emb {
             Some(v) if v.len() == query_vec.len() => {
                 let sim = cosine_similarity(&query_vec, &v);
-                (sim, true, h)
+                (sim, true, index, h)
             }
-            _ => (f32::NEG_INFINITY, false, h),
+            _ => (f32::NEG_INFINITY, false, index, h),
         })
         .collect();
 
     decorated.sort_by(|a, b| match (a.1, b.1) {
         (true, false) => std::cmp::Ordering::Less,
         (false, true) => std::cmp::Ordering::Greater,
-        // Both ranked (or both unranked): similarity DESC, then recency DESC.
-        _ => {
+        (false, false) => a.2.cmp(&b.2),
+        (true, true) => {
             b.0.partial_cmp(&a.0)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| b.2.time_range_end.cmp(&a.2.time_range_end))
+                .then_with(|| b.3.time_range_end.cmp(&a.3.time_range_end))
         }
     });
 
-    decorated.into_iter().map(|(_, _, h)| h).collect()
+    decorated.into_iter().map(|(_, _, _, h)| h).collect()
 }
+
+#[cfg(test)]
+#[path = "rerank_tests.rs"]
+mod tests;

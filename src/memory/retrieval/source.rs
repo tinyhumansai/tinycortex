@@ -7,23 +7,18 @@
 //!    kind (chat / email / document).
 //! 3. Neither → every source tree.
 //!
-//! For each tree we pull all level ≥ 1 summaries. With `time_window_days` we
-//! keep only summaries whose `[time_range_start, time_range_end]` overlaps
-//! `[now − window, now]`. When `query` is `Some`, hits are reranked by cosine
+//! For each tree we pull level ≥ 1 summaries. With `time_window_days`, an SQL
+//! predicate keeps only summaries whose `[time_range_start, time_range_end]`
+//! overlaps `[now − window, now]` before embeddings are hydrated. When `query`
+//! is `Some`, hits are reranked by cosine
 //! similarity between the query embedding and each summary's stored embedding;
 //! otherwise they are ordered newest-first by `time_range_end`.
 //!
 //! This is a thin read-only view over `mem_tree_trees` and `mem_tree_summaries`
 //! — no new indexes or tables.
 //!
-//! NOTE: the `time_window_days` filter above is applied in Rust *after* every
-//! summary (across every selected tree, at every level ≥ 1) has been loaded
-//! and embedding-hydrated — see `collect_source_hits`. There is no
-//! SQL-level window push-down, so a query like "last 7 days, limit 10" still
-//! pays the full O(total summaries in scope) read + hydrate cost on a store
-//! with years of history.
-//! [`crate::memory::tree::store::list_summaries_in_window`] exists and does
-//! push the window into SQL (used by [`super::cover`]) but is not used here.
+//! Unwindowed queries still materialize all selected summaries; callers should
+//! supply a window for bounded historical retrieval.
 
 use anyhow::Result;
 use chrono::{Duration, Utc};
@@ -32,15 +27,13 @@ use crate::memory::chunks::SourceKind;
 use crate::memory::config::MemoryConfig;
 use crate::memory::score::embed::Embedder;
 use crate::memory::tree::store::{
-    get_summary_embeddings_batch, get_tree_by_scope, list_summaries_at_level, list_trees_by_kind,
+    get_summary_embeddings_batch, get_tree_by_scope, list_summaries_at_level,
+    list_summaries_overlapping_window, list_trees_by_kind,
 };
 use crate::memory::tree::{Tree, TreeKind};
 
 use super::rerank::rerank_by_semantic_similarity;
 use super::types::{hydrated_summary_hit, QueryResponse, RetrievalHit};
-
-/// Default result cap applied when the caller passes `limit = 0`.
-const DEFAULT_LIMIT: usize = 10;
 
 /// A summary hit paired with its (possibly sidecar-hydrated) embedding, kept
 /// together so window-filtering and reranking stay aligned.
@@ -61,14 +54,19 @@ pub async fn query_source(
     embedder: &dyn Embedder,
     limit: usize,
 ) -> Result<QueryResponse> {
-    let limit = if limit == 0 { DEFAULT_LIMIT } else { limit };
+    let limits = &config.retrieval.limits;
+    let limit = if limit == 0 {
+        limits.default_limit
+    } else {
+        limit.min(limits.max_limit)
+    };
 
-    let mut scored = collect_source_hits(config, source_id, source_kind)?;
-    if let Some(days) = time_window_days {
+    let window = time_window_days.map(|days| {
         let now = Utc::now();
         let start = now - Duration::days(days as i64);
-        scored.retain(|(h, _)| h.time_range_end >= start && h.time_range_start <= now);
-    }
+        (start.timestamp_millis(), now.timestamp_millis())
+    });
+    let scored = collect_source_hits(config, source_id, source_kind, window)?;
     let total = scored.len();
 
     let sorted = order_hits(scored, query, embedder).await;
@@ -101,14 +99,14 @@ pub(crate) async fn order_hits(
 /// the selected source trees, hydrating each summary's embedding from the
 /// per-model sidecar when the legacy in-row column is empty.
 ///
-/// No time or count filtering happens here — callers ([`query_source`],
-/// [`super::global::query_global`]) apply their window filter afterwards, in
-/// Rust, over the full result. This is O(number of non-deleted summaries
+/// When `window_ms` is present, filtering happens in SQLite before embedding
+/// hydration. Without a window this remains O(number of non-deleted summaries
 /// across the selected trees), unbounded by any `limit` argument.
 pub(crate) fn collect_source_hits(
     config: &MemoryConfig,
     source_id: Option<&str>,
     source_kind: Option<SourceKind>,
+    window_ms: Option<(i64, i64)>,
 ) -> Result<Vec<ScoredHit>> {
     let trees = select_trees(config, source_id, source_kind)?;
 
@@ -121,14 +119,25 @@ pub(crate) fn collect_source_hits(
         if tree.max_level == 0 && tree.root_id.is_none() {
             continue;
         }
-        for level in 1..=tree.max_level {
-            for node in list_summaries_at_level(config, &tree.id, level)? {
+        if let Some((since_ms, until_ms)) = window_ms {
+            for node in list_summaries_overlapping_window(config, &tree.id, since_ms, until_ms)? {
                 if node.deleted {
                     continue;
                 }
                 node_ids.push(node.id.clone());
                 embeddings.push(node.embedding.clone());
                 hits.push(hydrated_summary_hit(config, &node, &tree.scope));
+            }
+        } else {
+            for level in 1..=tree.max_level {
+                for node in list_summaries_at_level(config, &tree.id, level)? {
+                    if node.deleted {
+                        continue;
+                    }
+                    node_ids.push(node.id.clone());
+                    embeddings.push(node.embedding.clone());
+                    hits.push(hydrated_summary_hit(config, &node, &tree.scope));
+                }
             }
         }
     }

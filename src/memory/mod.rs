@@ -81,22 +81,6 @@ pub mod sync;
 pub mod tool_memory;
 pub mod tree;
 
-// ── Feature-gated boundary surfaces ─────────────────────────────────────────
-/// reqwest-based embedding / LLM HTTP providers.
-///
-/// Gated behind the `providers-http` feature (implies `tokio`). Reserves the
-/// HTTP provider seam and gates the reqwest dependency; the concrete providers
-/// land with goals C3/M3.
-#[cfg(feature = "providers-http")]
-pub mod providers;
-
-/// serde schema / envelope surface for the RPC boundary.
-///
-/// Gated behind the `rpc` feature. Reserves the wire-facing surface for goal
-/// C5 without adding heavy dependencies.
-#[cfg(feature = "rpc")]
-pub mod rpc;
-
 // ── Re-exports ──────────────────────────────────────────────────────────────
 pub use config::{MemoryConfig, WeightProfile};
 pub use error::{MemoryEngineResult, MemoryError as MemoryEngineError};
@@ -110,6 +94,6 @@ pub use types::{
 // Starter in-memory store API (kept stable for the smoke test and as a simple
 // reference backend while richer backends are ported under `store`).
 pub use store::types::{
-    MemoryError, MemoryId, MemoryInput, MemoryQuery, MemoryRecord, MemoryResult, SearchHit,
+    MemoryId, MemoryInput, MemoryQuery, MemoryRecord, MemoryResult, SearchHit, StoreError,
 };
 pub use store::{InMemoryMemoryStore, MemoryStore};

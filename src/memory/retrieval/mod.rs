@@ -16,7 +16,7 @@
 //! - [`query_topic`] — entity/topic-scoped retrieval reconstructed from the
 //!   entity index plus hydrated source-tree nodes.
 //! - [`search_entities`] — fuzzy `LIKE` lookup over the entity index.
-//! - [`drill_down`] — descend a summary's `child_ids` (BFS, optional rerank).
+//! - [`drill_down()`] — descend a summary's `child_ids` (BFS, optional rerank).
 //! - [`cover_window`] — minimum-node cover of a `[since, until]` window.
 //! - [`fetch_leaves`] — batch-hydrate raw chunk leaves by id, capped.
 //!
