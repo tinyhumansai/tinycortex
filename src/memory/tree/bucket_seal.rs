@@ -289,6 +289,21 @@ pub async fn cascade_all_from_with_services(
         .await?;
         sealed_ids.push(summary_id);
     }
+
+    // Flavoured trees carry a first-class compiled root artifact; refresh it
+    // whenever a seal in this cascade may have moved the root. `tree` here is a
+    // pre-seal snapshot, so `compile_flavoured_root` re-reads the live row to
+    // pick up the new `root_id`. Best-effort: a stale artifact must never fail
+    // an otherwise-successful seal.
+    if !sealed_ids.is_empty() && tree.kind == crate::memory::tree::TreeKind::Flavoured {
+        if let Err(err) = crate::memory::tree::flavoured::compile_flavoured_root(config, &tree.id) {
+            log::warn!(
+                "[memory_tree:flavoured] compile root failed tree_id={}: {err:#}",
+                tree.id
+            );
+        }
+    }
+
     Ok(sealed_ids)
 }
 
