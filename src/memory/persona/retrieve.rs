@@ -232,11 +232,7 @@ fn tier_weight(tier: EvidenceTier) -> f32 {
 /// Returns `None` for lines that are not observation bullets. Mirrors the render
 /// format in [`reduce::render_observations`](super::reduce); tolerant of a
 /// missing quote or a missing/garbled tier tag (defaults to `T3`).
-fn parse_observation(
-    facet: PersonaFacet,
-    line: &str,
-    timestamp: DateTime<Utc>,
-) -> Option<ObsDoc> {
+fn parse_observation(facet: PersonaFacet, line: &str, timestamp: DateTime<Utc>) -> Option<ObsDoc> {
     let body = line.trim().strip_prefix("- ")?.trim();
     if body.is_empty() {
         return None;
@@ -331,10 +327,45 @@ fn push_token(out: &mut Vec<String>, tok: String) {
 fn is_stopword(tok: &str) -> bool {
     matches!(
         tok,
-        "the" | "and" | "for" | "are" | "but" | "not" | "you" | "all" | "any" | "can" | "her"
-            | "was" | "one" | "our" | "out" | "use" | "with" | "this" | "that" | "they" | "them"
-            | "when" | "what" | "your" | "from" | "have" | "has" | "should" | "would" | "will"
-            | "into" | "than" | "then" | "their" | "there" | "which" | "while" | "who" | "whom"
+        "the"
+            | "and"
+            | "for"
+            | "are"
+            | "but"
+            | "not"
+            | "you"
+            | "all"
+            | "any"
+            | "can"
+            | "her"
+            | "was"
+            | "one"
+            | "our"
+            | "out"
+            | "use"
+            | "with"
+            | "this"
+            | "that"
+            | "they"
+            | "them"
+            | "when"
+            | "what"
+            | "your"
+            | "from"
+            | "have"
+            | "has"
+            | "should"
+            | "would"
+            | "will"
+            | "into"
+            | "than"
+            | "then"
+            | "their"
+            | "there"
+            | "which"
+            | "while"
+            | "who"
+            | "whom"
     )
 }
 

@@ -31,7 +31,10 @@ fn parses_observation_with_quote_and_tier() {
 
 #[test]
 fn parses_observation_without_quote() {
-    let d = doc(PersonaFacet::CodingStyle, "- Keep modules under 500 lines [t2]");
+    let d = doc(
+        PersonaFacet::CodingStyle,
+        "- Keep modules under 500 lines [t2]",
+    );
     assert_eq!(d.tier, EvidenceTier::T2);
     assert_eq!(d.text, "Keep modules under 500 lines");
     assert!(d.quote.is_none());
@@ -69,9 +72,18 @@ fn tokenizer_drops_stopwords_and_shorts() {
 #[test]
 fn search_ranks_lexically_relevant_first() {
     let docs = vec![
-        doc(PersonaFacet::CodingStyle, "- Write focused unit tests beside each module [t2]"),
-        doc(PersonaFacet::Stack, "- Reach for tokio and async Rust by default [t2]"),
-        doc(PersonaFacet::Workflow, "- Commit small and often with clear messages [t2]"),
+        doc(
+            PersonaFacet::CodingStyle,
+            "- Write focused unit tests beside each module [t2]",
+        ),
+        doc(
+            PersonaFacet::Stack,
+            "- Reach for tokio and async Rust by default [t2]",
+        ),
+        doc(
+            PersonaFacet::Workflow,
+            "- Commit small and often with clear messages [t2]",
+        ),
     ];
     let r = PersonaRetriever::from_docs(docs);
     let hits = r.search("how should I structure my tests", None, 3);
@@ -82,8 +94,14 @@ fn search_ranks_lexically_relevant_first() {
 #[test]
 fn facet_filter_restricts_results() {
     let docs = vec![
-        doc(PersonaFacet::CodingStyle, "- Prefer explicit error handling with Result [t2]"),
-        doc(PersonaFacet::Stack, "- Prefer Rust and Result-based error types [t2]"),
+        doc(
+            PersonaFacet::CodingStyle,
+            "- Prefer explicit error handling with Result [t2]",
+        ),
+        doc(
+            PersonaFacet::Stack,
+            "- Prefer Rust and Result-based error types [t2]",
+        ),
     ];
     let r = PersonaRetriever::from_docs(docs);
     let hits = r.search("error handling", Some(PersonaFacet::Stack), 5);
@@ -95,8 +113,14 @@ fn facet_filter_restricts_results() {
 fn higher_tier_wins_at_equal_relevance() {
     // Identical text, different tiers → the higher-confidence rule ranks first.
     let docs = vec![
-        doc(PersonaFacet::Workflow, "- Use git worktrees for parallel agents [t3]"),
-        doc(PersonaFacet::Workflow, "- Use git worktrees for parallel agents [t0]"),
+        doc(
+            PersonaFacet::Workflow,
+            "- Use git worktrees for parallel agents [t3]",
+        ),
+        doc(
+            PersonaFacet::Workflow,
+            "- Use git worktrees for parallel agents [t0]",
+        ),
     ];
     let r = PersonaRetriever::from_docs(docs);
     let hits = r.search("git worktrees parallel", None, 2);
@@ -140,9 +164,15 @@ async fn loads_from_a_real_persona_workspace() {
         ],
     };
 
-    fold_digest(&config, &digest, &FacetAsks::default(), &summariser, &mut state)
-        .await
-        .unwrap();
+    fold_digest(
+        &config,
+        &digest,
+        &FacetAsks::default(),
+        &summariser,
+        &mut state,
+    )
+    .await
+    .unwrap();
 
     let retriever = PersonaRetriever::load(&config).unwrap();
     assert_eq!(retriever.len(), 2);

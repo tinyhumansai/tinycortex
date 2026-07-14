@@ -285,8 +285,8 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // ── Load the memory layer ────────────────────────────────────────────────
-    let workspace = std::env::var("TINYCORTEX_WORKSPACE")
-        .unwrap_or_else(|_| "./persona-workspace".to_string());
+    let workspace =
+        std::env::var("TINYCORTEX_WORKSPACE").unwrap_or_else(|_| "./persona-workspace".to_string());
     let config = MemoryConfig::new(&workspace);
     let retriever = PersonaRetriever::load(&config)?;
     let directives = read_directives(&config);
@@ -337,10 +337,7 @@ async fn main() -> anyhow::Result<()> {
     let run = harness
         .invoke_default(
             &state,
-            vec![
-                Message::system(SYSTEM_PROMPT),
-                Message::user(&question),
-            ],
+            vec![Message::system(SYSTEM_PROMPT), Message::user(&question)],
         )
         .await?;
 
