@@ -14,7 +14,8 @@ use crate::memory::config::MemoryConfig;
 use crate::memory::ingest::canonicalize::chat::{ChatBatch, ChatMessage};
 use crate::memory::ingest::canonicalize::document::DocumentInput;
 use crate::memory::ingest::canonicalize::email::{EmailMessage, EmailThread};
-use crate::memory::ingest::types::{NullJobSink, TreeJobSink};
+use crate::memory::ingest::types::{NullJobSink, QueueJobSink, TreeJobSink};
+use crate::memory::queue::{count_by_status, JobStatus};
 use crate::memory::score::ScoringConfig;
 
 /// Records every enqueued extract job id for assertions.
@@ -24,9 +25,14 @@ struct RecordingJobSink {
 }
 
 impl TreeJobSink for RecordingJobSink {
-    fn enqueue_extract(&self, chunk_id: &str) -> anyhow::Result<()> {
+    fn enqueue_extract_tx(
+        &self,
+        _tx: &rusqlite::Transaction<'_>,
+        chunk_id: &str,
+        _default_max_attempts: u32,
+    ) -> anyhow::Result<bool> {
         self.ids.lock().unwrap().push(chunk_id.to_string());
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -39,12 +45,17 @@ struct TogglingJobSink {
 }
 
 impl TreeJobSink for TogglingJobSink {
-    fn enqueue_extract(&self, chunk_id: &str) -> anyhow::Result<()> {
+    fn enqueue_extract_tx(
+        &self,
+        _tx: &rusqlite::Transaction<'_>,
+        chunk_id: &str,
+        _default_max_attempts: u32,
+    ) -> anyhow::Result<bool> {
         if self.fail.load(Ordering::SeqCst) {
             anyhow::bail!("simulated enqueue failure");
         }
         self.ids.lock().unwrap().push(chunk_id.to_string());
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -115,6 +126,36 @@ async fn ingest_chat_writes_chunks_and_enqueues_extract_jobs() {
 }
 
 #[tokio::test]
+async fn queue_sink_commits_chunk_lifecycle_and_extract_job_together() {
+    let (_tmp, cfg) = test_config();
+    let out = ingest_chat(
+        &cfg,
+        "slack:#atomic",
+        "alice",
+        vec![],
+        substantive_batch(),
+        &QueueJobSink,
+        &ScoringConfig::default_regex_only(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(out.extract_jobs_enqueued, out.chunk_ids.len());
+    assert_eq!(
+        count_by_status(&cfg, JobStatus::Ready).unwrap(),
+        out.extract_jobs_enqueued as u64
+    );
+    for chunk_id in out.chunk_ids {
+        assert_eq!(
+            get_chunk_lifecycle_status(&cfg, &chunk_id)
+                .unwrap()
+                .as_deref(),
+            Some(CHUNK_STATUS_PENDING_EXTRACTION)
+        );
+    }
+}
+
+#[tokio::test]
 async fn ingest_chat_empty_batch_is_noop() {
     let (_tmp, cfg) = test_config();
     let sink = NullJobSink;
@@ -158,6 +199,11 @@ async fn second_document_ingest_with_same_source_id_is_short_circuited() {
     .unwrap();
     assert!(!first.already_ingested);
     assert!(first.chunks_written >= 1);
+    let staged_files_before = walkdir::WalkDir::new(crate::memory::chunks::content_root(&cfg))
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .count();
 
     // Even with completely different content under the same source_id the second
     // ingest must write nothing: documents are append-only and source_id is the
@@ -182,10 +228,19 @@ async fn second_document_ingest_with_same_source_id_is_short_circuited() {
     assert!(second.chunk_ids.is_empty());
 
     assert_eq!(count_chunks(&cfg).unwrap(), first.chunks_written as u64);
+    let staged_files_after = walkdir::WalkDir::new(crate::memory::chunks::content_root(&cfg))
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .count();
+    assert_eq!(
+        staged_files_after, staged_files_before,
+        "a losing gate attempt must reclaim its unreferenced staged bodies"
+    );
 }
 
 #[tokio::test]
-async fn failed_document_ingest_releases_gate_so_retry_ingests() {
+async fn failed_document_ingest_rolls_back_gate_so_retry_ingests() {
     let (_tmp, cfg) = test_config();
     let sink = TogglingJobSink::default();
     let scoring = ScoringConfig::default_regex_only();
@@ -198,8 +253,8 @@ async fn failed_document_ingest_releases_gate_so_retry_ingests() {
         source_ref: Some("notion://page/abc".into()),
     };
 
-    // First attempt: a post-gate stage (enqueue) fails. The whole ingest must
-    // error, and the source gate must NOT be left claimed.
+    // First attempt: enqueue fails inside the database tail. The whole
+    // transaction, including the source gate, must roll back.
     sink.fail.store(true, Ordering::SeqCst);
     let err = ingest_document(
         &cfg,

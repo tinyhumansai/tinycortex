@@ -21,15 +21,12 @@ use super::types::{MemorySourceEntry, SourceKind};
 /// Returns a human-readable error message describing the first failing rule.
 /// `id` and `label` are required for every kind; kind-specific fields follow.
 ///
-/// NOTE: `id` is only checked for non-emptiness — it is not constrained to a
-/// safe charset. An id containing `\n` or `:` is accepted here but can
-/// corrupt downstream consumers that assume single-line, colon-free ids:
-/// the diff ledger's commit-message trailers (a `\n` injects extra trailer
-/// lines) and `extract_item_id`'s first-`:` split (a `:` produces spurious
-/// added/removed churn instead of a stable item id).
 pub fn validate_entry(entry: &MemorySourceEntry) -> Result<(), String> {
-    if entry.id.is_empty() {
+    if entry.id.trim().is_empty() {
         return Err("id is required".to_string());
+    }
+    if entry.id.contains(':') || entry.id.chars().any(char::is_control) {
+        return Err("id must not contain ':' or control characters".to_string());
     }
     if entry.label.is_empty() {
         return Err("label is required".to_string());

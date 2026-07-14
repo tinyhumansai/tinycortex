@@ -169,3 +169,67 @@ fn backoff_classifies_busy_as_transient() {
     ));
     assert_eq!(backoff_for(&busy, &opts), Some(opts.busy_backoff));
 }
+
+#[test]
+fn backoff_classifies_disk_full_io_and_generic_errors() {
+    let opts = WorkerLoopConfig::default();
+    let sqlite = |code, extended_code, message: &str| {
+        anyhow::Error::from(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code,
+                extended_code,
+            },
+            Some(message.into()),
+        ))
+    };
+    assert_eq!(
+        backoff_for(
+            &sqlite(
+                rusqlite::ErrorCode::DiskFull,
+                13,
+                "database or disk is full"
+            ),
+            &opts
+        ),
+        Some(opts.disk_full_backoff)
+    );
+    assert_eq!(
+        backoff_for(
+            &sqlite(rusqlite::ErrorCode::SystemIoFailure, 10, "disk I/O error"),
+            &opts
+        ),
+        Some(opts.io_backoff)
+    );
+    assert_eq!(
+        backoff_for(&anyhow::anyhow!("other"), &opts),
+        Some(opts.error_backoff)
+    );
+}
+
+#[tokio::test]
+async fn run_bootstraps_and_returns_when_shutdown_is_pretriggered() {
+    let (_tmp, cfg) = test_config();
+    let delegates = RecordingDelegates::admitting();
+    let shutdown = Shutdown::new();
+    shutdown.trigger();
+
+    run(
+        &cfg,
+        &delegates,
+        &fast_worker_opts(),
+        &SchedulerLoopConfig {
+            tick: Duration::from_millis(1),
+        },
+        &shutdown,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn interruptible_sleep_handles_zero_and_pretriggered_shutdown() {
+    let shutdown = Shutdown::new();
+    interruptible_sleep(Duration::ZERO, &shutdown).await;
+    shutdown.trigger();
+    interruptible_sleep(Duration::from_secs(1), &shutdown).await;
+}

@@ -62,6 +62,7 @@ pub async fn flush_stale_buffers_with_services(
     let tree_by_id = store::get_trees_batch(config, &distinct_tree_ids)?;
 
     let mut seals = 0;
+    let mut failures = Vec::new();
     for buf in stale {
         let Some(tree) = tree_by_id.get(&buf.tree_id) else {
             continue; // orphan buffer — tree row gone
@@ -69,8 +70,18 @@ pub async fn flush_stale_buffers_with_services(
         let sealed = cascade_all_from_with_services(
             config, tree, buf.level, true, services, strategy, false,
         )
-        .await?;
-        seals += sealed.len();
+        .await;
+        match sealed {
+            Ok(ids) => seals += ids.len(),
+            Err(err) => failures.push(format!("{} level {}: {err:#}", buf.tree_id, buf.level)),
+        }
+    }
+    if !failures.is_empty() {
+        anyhow::bail!(
+            "failed to flush {} stale buffer(s) after sealing {seals}: {}",
+            failures.len(),
+            failures.join("; ")
+        );
     }
     Ok(seals)
 }

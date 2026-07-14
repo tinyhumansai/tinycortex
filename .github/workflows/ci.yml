@@ -45,6 +45,9 @@ jobs:
       - name: Test
         run: cargo test --all-features
 
+      - name: Documentation
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
+
   features:
     name: Features (${{ matrix.features.name }})
     runs-on: ubuntu-latest
@@ -61,10 +64,8 @@ jobs:
             flags: --no-default-features --features tokio
           - name: git-diff
             flags: --no-default-features --features git-diff
-          - name: providers-http
-            flags: --no-default-features --features providers-http
-          - name: rpc
-            flags: --no-default-features --features rpc
+          - name: sync
+            flags: --no-default-features --features sync
           - name: all features
             flags: --all-features
     steps:
@@ -80,5 +81,5 @@ jobs:
           workspaces: .
           key: features-${{ matrix.features.name }}
 
-      - name: Check
-        run: cargo check --all-targets ${{ matrix.features.flags }}
+      - name: Test
+        run: cargo test --all-targets ${{ matrix.features.flags }}

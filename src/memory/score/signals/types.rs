@@ -38,7 +38,8 @@ pub struct ScoreSignals {
 /// `llm_importance` defaults to `0.0` (disabled). Callers who configure an
 /// LLM extractor should bump it (typical: 2.0 — comparable to the
 /// metadata/source weights, well below the interaction-direct signal).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct SignalWeights {
     /// Multiplier for [`ScoreSignals::token_count`]. Default `1.0`.
     pub token_count: f32,

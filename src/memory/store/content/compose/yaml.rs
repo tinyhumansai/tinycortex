@@ -116,7 +116,7 @@ pub fn split_front_matter(content: &str) -> Option<(&str, &str)> {
 /// provider-controlled values (`source_id`, `owner`, `source_ref`, tags) must
 /// not be able to inject additional front-matter lines or terminate the block
 /// early with an embedded `\n---\n`. Escapes are decoded by
-/// [`unescape_double_quoted`] via [`scan_fm_field`], so values round-trip.
+/// the matching scanner unescape path, so values round-trip.
 pub fn yaml_scalar(s: &str) -> String {
     let needs_quoting = s.is_empty()
         || s.trim() != s

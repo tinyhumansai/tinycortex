@@ -40,6 +40,33 @@ fn mark_done_settles_current_lessee() {
 }
 
 #[test]
+fn mark_done_commits_followup_in_parent_settlement_transaction() {
+    let (_tmp, cfg) = test_config();
+    let parent_id = enqueue(&cfg, &extract_job("c-parent", 5))
+        .unwrap()
+        .expect("inserted");
+    let claimed = claim_next(&cfg, DEFAULT_LOCK_DURATION_MS).unwrap().unwrap();
+    let follow_up = NewJob::append_buffer(&AppendBufferPayload {
+        node: NodeRef::Leaf {
+            chunk_id: "c-parent".into(),
+        },
+        target: AppendTarget::Source {
+            source_id: "slack:#atomic".into(),
+        },
+    })
+    .unwrap();
+
+    mark_done_with_followups(&cfg, &claimed, &[follow_up]).unwrap();
+
+    assert_eq!(
+        get_job(&cfg, &parent_id).unwrap().unwrap().status,
+        JobStatus::Done
+    );
+    assert_eq!(count_by_status(&cfg, JobStatus::Ready).unwrap(), 1);
+    assert_eq!(count_total(&cfg).unwrap(), 2);
+}
+
+#[test]
 fn mark_failed_typed_unrecoverable_terminates_immediately() {
     let (_tmp, cfg) = test_config();
     let id = enqueue(&cfg, &extract_job("c-budget", 5))
@@ -245,7 +272,9 @@ fn release_running_locks_resets_running_rows_regardless_of_lease() {
     assert_eq!(released, 1);
     let row = get_job(&cfg, &id).unwrap().unwrap();
     assert_eq!(row.status, JobStatus::Ready);
+    assert_eq!(row.attempts, 0, "shutdown must not spend a retry");
     assert!(row.locked_until_ms.is_none());
+    assert!(row.started_at_ms.is_none());
 }
 
 #[test]
@@ -310,6 +339,37 @@ fn mark_deferred_does_not_increment_attempts() {
     let claim2 = claim_next(&cfg, DEFAULT_LOCK_DURATION_MS).unwrap().unwrap();
     assert_eq!(claim2.id, id);
     assert_eq!(claim2.attempts, 1, "Defer didn't count toward the budget");
+}
+
+#[test]
+fn mark_deferred_parks_jobs_that_exceed_the_defer_age_bound() {
+    let (_tmp, cfg) = test_config();
+    let max_defer_age_ms = cfg.queue.max_defer_age_ms;
+    let id = enqueue(&cfg, &extract_job("c-defer-expired", 5))
+        .unwrap()
+        .expect("inserted");
+    let claimed = claim_next(&cfg, DEFAULT_LOCK_DURATION_MS).unwrap().unwrap();
+    with_connection(&cfg, |conn| {
+        conn.execute(
+            "UPDATE mem_tree_jobs SET created_at_ms = ?1 WHERE id = ?2",
+            rusqlite::params![
+                Utc::now()
+                    .timestamp_millis()
+                    .saturating_sub(max_defer_age_ms + 1),
+                id,
+            ],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    mark_deferred(&cfg, &claimed, i64::MAX, "still blocked").unwrap();
+
+    let row = get_job(&cfg, &id).unwrap().unwrap();
+    assert_eq!(row.status, JobStatus::Failed);
+    assert_eq!(row.failure_reason.as_deref(), Some("defer_age_exceeded"));
+    assert_eq!(row.failure_class.as_deref(), Some("unrecoverable"));
+    assert!(row.completed_at_ms.is_some());
 }
 
 #[test]

@@ -170,3 +170,29 @@ fn scoped_cover_filters_memory_sources_before_result_limit() {
     assert_eq!(response.hits.len(), 1);
     assert_eq!(response.hits[0].tree_scope, "slack:#allowed");
 }
+
+#[test]
+fn cover_paginates_past_scan_page_without_starving_later_source() {
+    let (_tmp, cfg) = test_config();
+    let ts = Utc.timestamp_millis_opt(1_700_000_000_000).unwrap();
+    let page_size = cfg.retrieval.limits.window_chunk_page_size;
+    let mut chunks = (0..page_size)
+        .map(|seq| sample_chunk_at("alpha", seq as u32, &format!("alpha-{seq}"), ts))
+        .collect::<Vec<_>>();
+    chunks.push(sample_chunk_at("zulu", 0, "must survive page boundary", ts));
+    insert_chunks(&cfg, &chunks);
+
+    let response = cover_window(
+        &cfg,
+        ts.timestamp_millis() - 1,
+        ts.timestamp_millis() + 1,
+        None,
+        None,
+        chunks.len(),
+    )
+    .unwrap();
+
+    assert_eq!(response.total, chunks.len());
+    assert!(response.hits.iter().any(|hit| hit.tree_scope == "zulu"));
+    assert!(!response.truncated);
+}

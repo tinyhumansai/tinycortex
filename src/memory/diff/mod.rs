@@ -6,7 +6,7 @@
 //! over time.
 //!
 //! Snapshots are built from **already-ingested** data (supplied by an injected
-//! [`SnapshotItemSource`], not by re-calling source readers), so diffs cost no
+//! `SnapshotItemSource`, not by re-calling source readers), so diffs cost no
 //! upstream API calls. The authoritative store remains whatever backs the item
 //! source; this module's storage is a *derived* git ledger.
 //!
@@ -20,31 +20,34 @@
 //! - Read marker → ref `refs/openhuman/read/<encoded_source_id>`.
 //! - Diff → git tree diff scoped to a source path.
 //!
-//! See [`ledger`] for the mapping and [`DiffEngine`] for the operations.
+//! See the ledger module for the mapping and `DiffEngine` for the operations.
 //!
 //! ## Decoupling from `chunks`
 //!
 //! The chunk store is ported separately, so the engine takes a
-//! [`source::SnapshotItemSource`] by injection rather than hard-depending on
-//! `chunks`. [`source::InMemoryItemSource`] is a reference/test backend.
+//! `SnapshotItemSource` by injection rather than hard-depending on
+//! `chunks`. `InMemoryItemSource` is a reference/test backend.
 //!
 //! ## Operations
 //!
-//! - [`DiffEngine::take_snapshot`] / [`DiffEngine::auto_snapshot_after_sync`]
-//! - [`DiffEngine::list_snapshots`]
-//! - [`DiffEngine::compute_diff`] (explicit pair)
-//! - [`DiffEngine::diff_since_last`] (latest vs previous)
-//! - [`DiffEngine::diff_since_read`] (latest vs read marker, optional advance)
-//! - [`DiffEngine::mark_read`]
-//! - [`DiffEngine::create_checkpoint`] / [`DiffEngine::list_checkpoints`]
-//! - [`DiffEngine::diff_since_checkpoint`] (cross-source)
-//! - [`DiffEngine::cleanup`]
+//! - `DiffEngine::take_snapshot` / `DiffEngine::auto_snapshot_after_sync`
+//! - `DiffEngine::list_snapshots`
+//! - `DiffEngine::compute_diff` (explicit pair)
+//! - `DiffEngine::diff_since_last` (latest vs previous)
+//! - `DiffEngine::diff_since_read` (latest vs read marker, optional advance)
+//! - `DiffEngine::mark_read`
+//! - `DiffEngine::create_checkpoint` / `DiffEngine::list_checkpoints`
+//! - `DiffEngine::diff_since_checkpoint` (cross-source)
+//! - `DiffEngine::cleanup`
 
 use std::path::PathBuf;
 
 pub mod checkpoint;
+// Keep the established `memory::diff::diff` path for downstream callers.
+#[allow(clippy::module_inception)]
 pub mod diff;
 pub mod ledger;
+mod ledger_helpers;
 pub mod snapshot;
 pub mod source;
 pub mod types;

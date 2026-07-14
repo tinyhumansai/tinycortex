@@ -155,6 +155,28 @@ async fn read_item_returns_formatted_content() {
 }
 
 #[tokio::test]
+async fn read_item_accepts_legitimate_double_dot_in_stem() {
+    let tmp = tempdir().unwrap();
+    let threads_dir = tmp.path().join("threads");
+    fs::create_dir_all(&threads_dir).unwrap();
+    fs::write(
+        threads_dir.join("standup..2026.json"),
+        r#"{"title":"Standup","messages":[]}"#,
+    )
+    .unwrap();
+    let reader = ConversationReader;
+    let content = reader
+        .read_item(
+            &conversation_source(),
+            "standup..2026",
+            &MemoryConfig::new(tmp.path()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(content.id, "standup..2026");
+}
+
+#[tokio::test]
 async fn read_item_returns_error_for_missing_thread() {
     let tmp = tempdir().unwrap();
     let threads_dir = tmp.path().join("threads");

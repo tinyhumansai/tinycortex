@@ -3,7 +3,7 @@
 //! Defines the records that flow through the store: an untrusted [`MemoryInput`]
 //! supplied by callers, the persisted [`MemoryRecord`] minted from it, the
 //! [`MemoryQuery`] filter shape, the [`SearchHit`] returned by retrieval, and
-//! the [`MemoryError`] failure modes. These are pure data contracts; persistence
+//! the [`StoreError`] failure modes. These are pure data contracts; persistence
 //! and retrieval behavior live in sibling store modules.
 
 use chrono::{DateTime, Utc};
@@ -14,12 +14,12 @@ use uuid::Uuid;
 
 /// Stable, machine-readable identity for a [`MemoryRecord`]; a v4 UUID.
 pub type MemoryId = Uuid;
-/// Result alias for fallible store operations, carrying [`MemoryError`].
-pub type MemoryResult<T> = Result<T, MemoryError>;
+/// Result alias for fallible store operations, carrying [`StoreError`].
+pub type MemoryResult<T> = Result<T, StoreError>;
 
 /// Failure modes for memory store operations.
 #[derive(Debug, Error, PartialEq, Eq)]
-pub enum MemoryError {
+pub enum StoreError {
     /// No record exists for the requested [`MemoryId`].
     #[error("memory record not found: {0}")]
     NotFound(MemoryId),
@@ -76,12 +76,12 @@ impl MemoryRecord {
     /// Promotes a [`MemoryInput`] into a persisted record.
     ///
     /// Trims `content` and rejects empty results with
-    /// [`MemoryError::EmptyContent`]. Mints a fresh [`MemoryId`] and stamps both
+    /// [`StoreError::EmptyContent`]. Mints a fresh [`MemoryId`] and stamps both
     /// timestamps with the current UTC instant.
     pub fn from_input(input: MemoryInput) -> MemoryResult<Self> {
         let content = input.content.trim().to_owned();
         if content.is_empty() {
-            return Err(MemoryError::EmptyContent);
+            return Err(StoreError::EmptyContent);
         }
 
         let now = Utc::now();

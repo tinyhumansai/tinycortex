@@ -120,7 +120,7 @@ fn walk_with_embeddings(
         // Update per-document latest version with any doc-roots on THIS level
         // before walking, so two side-by-side revisions resolve to the newer.
         for id in &current_level {
-            if let Some(s) = summary_by_id.get(id) {
+            if let Some(s) = summary_by_id.get(id).filter(|summary| !summary.deleted) {
                 if let Some(doc_id) = s.doc_id.as_deref() {
                     let v = s.version_ms.unwrap_or(i64::MIN);
                     max_version_by_doc
@@ -167,27 +167,19 @@ fn walk_with_embeddings(
 
         for id in &current_level {
             if let Some(summary) = summary_by_id.remove(id) {
+                if summary.deleted {
+                    continue;
+                }
                 // Latest-wins: skip a doc-root superseded by a newer revision.
                 if let Some(doc_id) = summary.doc_id.as_deref() {
                     let v = summary.version_ms.unwrap_or(i64::MIN);
                     if max_version_by_doc.get(doc_id).is_some_and(|&max| v < max) {
                         continue;
                     }
-                    // Dedup duplicates at the winning version.
-                    //
-                    // NOTE (see module-level doc): this insert claims
-                    // `emitted_docs` for `doc_id` even if the soft-delete
-                    // check below then skips this node. A soft-deleted
-                    // newest revision therefore suppresses every older
-                    // sibling revision too — the whole document vanishes
-                    // from this level instead of falling back to the
-                    // latest surviving one.
+                    // Dedup duplicates at the winning surviving version.
                     if !emitted_docs.insert(doc_id.to_string()) {
                         continue;
                     }
-                }
-                if summary.deleted {
-                    continue;
                 }
                 let scope = tree_by_id
                     .get(&summary.tree_id)

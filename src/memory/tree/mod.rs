@@ -4,7 +4,8 @@
 //! Two engines live here:
 //!
 //! - **Bucket-seal SQLite trees** ([`store`], [`bucket_seal`], [`flush`],
-//!   [`registry`], [`factory`], [`io`], [`read`], [`summarise`], [`hydrate`]).
+//!   [`registry`], [`factory`], [`io`], [`read`], [`summarise`], and internal
+//!   hydration helpers).
 //!   Source/topic/global trees keyed by `(kind, scope)` in `mem_tree_trees`.
 //!   Leaves accumulate in per-`(tree, level)` buffers; when a buffer crosses its
 //!   token (L0) or fan-in (L≥1) gate it seals into an immutable
@@ -26,23 +27,25 @@ pub mod store;
 
 pub mod bucket_seal;
 mod direct_ingest;
+mod document_seal;
 pub mod factory;
 pub mod flavoured;
 pub mod flush;
 mod hydrate;
 pub mod io;
+mod label_resolver;
 pub mod read;
 pub mod registry;
 pub mod runtime;
 pub mod summarise;
+pub mod types;
 
 // ── Public API surface ──────────────────────────────────────────────────────
 
 pub use bucket_seal::{
     append_leaf, append_leaf_deferred, append_to_buffer, cascade_all_from,
     cascade_all_from_with_services, seal_document_subtree_with_services,
-    seal_one_level_with_services, should_seal, LabelStrategy, LeafRef, SealObserver, SealServices,
-    MERGE_LEVEL_BASE,
+    seal_one_level_with_services, should_seal, MERGE_LEVEL_BASE,
 };
 pub use direct_ingest::{ingest_summary, SummaryIngestInput, SummaryIngestOutcome};
 pub use factory::{TreeFactory, TreeProfile, GLOBAL_SCOPE};
@@ -69,3 +72,4 @@ pub use summarise::{
     fallback_summary, finish_provider_summary, prepare_summary_prompt, ConcatSummariser,
     PreparedSummaryPrompt, Summariser, SummaryCall, SummaryContext, SummaryInput, SummaryOutput,
 };
+pub use types::{LabelStrategy, LeafRef, SealObserver, SealServices};

@@ -46,7 +46,7 @@ fn empty_chat_input_produces_one_empty_chunk() {
 }
 
 #[test]
-fn chat_messages_pack_into_one_chunk_when_small() {
+fn chat_messages_keep_one_chunk_per_message_when_small() {
     let md = "## 2026-01-01T00:00:00Z — alice\nHello world\n\n## 2026-01-01T00:01:00Z — bob\nParagraph one.\n\nParagraph two.".to_string();
     let input = ChunkerInput {
         source_kind: SourceKind::Chat,
@@ -57,14 +57,14 @@ fn chat_messages_pack_into_one_chunk_when_small() {
     let chunks = chunk_markdown(&input, &ChunkerOptions::default());
     assert_eq!(
         chunks.len(),
-        1,
-        "small messages should be packed into one chunk; got {chunks:?}"
+        2,
+        "each message must keep a stable replay boundary; got {chunks:?}"
     );
     assert!(chunks[0].content.contains("alice"));
-    assert!(chunks[0].content.contains("bob"));
-    assert!(chunks[0].content.contains("Paragraph one."));
-    assert!(chunks[0].content.contains("Paragraph two."));
-    assert!(!chunks[0].partial_message);
+    assert!(chunks[1].content.contains("bob"));
+    assert!(chunks[1].content.contains("Paragraph one."));
+    assert!(chunks[1].content.contains("Paragraph two."));
+    assert!(chunks.iter().all(|chunk| !chunk.partial_message));
 }
 
 #[test]
@@ -93,7 +93,7 @@ fn chat_messages_split_at_boundary_when_large() {
 }
 
 #[test]
-fn email_threads_pack_into_one_chunk_when_small() {
+fn email_threads_keep_one_chunk_per_message_when_small() {
     let md = "---\nFrom: alice@example.com\nSubject: Hello\nDate: 2026-01-01T00:00:00Z\n\nFirst body.\n---\nFrom: bob@example.com\nSubject: Re: Hello\nDate: 2026-01-01T00:01:00Z\n\nSecond body.\n---\nFrom: carol@example.com\nSubject: Re: Hello\nDate: 2026-01-01T00:02:00Z\n\nThird body.".to_string();
     let input = ChunkerInput {
         source_kind: SourceKind::Email,
@@ -104,13 +104,13 @@ fn email_threads_pack_into_one_chunk_when_small() {
     let chunks = chunk_markdown(&input, &ChunkerOptions::default());
     assert_eq!(
         chunks.len(),
-        1,
-        "three small emails should pack into one chunk; got {chunks:?}"
+        3,
+        "each email must keep a stable replay boundary; got {chunks:?}"
     );
     assert!(chunks[0].content.contains("First body."));
-    assert!(chunks[0].content.contains("Second body."));
-    assert!(chunks[0].content.contains("Third body."));
-    assert!(!chunks[0].partial_message);
+    assert!(chunks[1].content.contains("Second body."));
+    assert!(chunks[2].content.contains("Third body."));
+    assert!(chunks.iter().all(|chunk| !chunk.partial_message));
 }
 
 #[test]
@@ -159,7 +159,7 @@ fn oversize_single_email_splits_with_partial_flag() {
 }
 
 #[test]
-fn packed_units_joined_by_double_newline() {
+fn chat_units_keep_independent_chunks() {
     let md =
         "## 2026-01-01T00:00:00Z — alice\nfoo\n\n## 2026-01-01T00:01:00Z — bob\nbar".to_string();
     let input = ChunkerInput {
@@ -169,12 +169,32 @@ fn packed_units_joined_by_double_newline() {
         metadata: meta(),
     };
     let chunks = chunk_markdown(&input, &ChunkerOptions::default());
-    assert_eq!(chunks.len(), 1);
-    assert!(
-        chunks[0].content.contains("\n\n"),
-        "packed units must be joined by \\n\\n; content={:?}",
-        chunks[0].content
-    );
+    assert_eq!(chunks.len(), 2);
+    assert!(chunks[0].content.contains("alice"));
+    assert!(chunks[1].content.contains("bob"));
+}
+
+#[test]
+fn overlapping_chat_batches_reuse_message_chunk_ids() {
+    let first = ChunkerInput {
+        source_kind: SourceKind::Chat,
+        source_id: "slack:eng".into(),
+        markdown: "## 2026-01-01T00:00:00Z — alice\none\n\n## 2026-01-01T00:01:00Z — bob\ntwo"
+            .into(),
+        metadata: meta(),
+    };
+    let second = ChunkerInput {
+        source_kind: SourceKind::Chat,
+        source_id: "slack:eng".into(),
+        markdown: "## 2026-01-01T00:01:00Z — bob\ntwo\n\n## 2026-01-01T00:02:00Z — carol\nthree"
+            .into(),
+        metadata: meta(),
+    };
+    let first_chunks = chunk_markdown(&first, &ChunkerOptions::default());
+    let second_chunks = chunk_markdown(&second, &ChunkerOptions::default());
+
+    assert_eq!(first_chunks[1].content, second_chunks[0].content);
+    assert_eq!(first_chunks[1].id, second_chunks[0].id);
 }
 
 #[test]

@@ -1,5 +1,14 @@
 # Memory Engine Improvement Plan
 
+> Remediation record (2026-07-14): phases 0, 1, 2, and 4 have been
+> implemented with regression coverage. Phase 3's contract consolidation is
+> complete for the local reference backend (`InMemoryMemoryStore` implements
+> `Memory` and the conflicting store error was renamed); the network backend
+> remains a separate future product capability described in
+> [configurable-store.md](configurable-store.md), not an implemented feature.
+> The architecture alternatives in audits 07–10 remain decision records where
+> they propose replacing the shared transactional SQLite boundary.
+
 Derived from the [audit findings](README.md). Phases are ordered by risk:
 each phase is independently shippable, and within a phase the workstreams are
 parallelizable (use separate worktrees per the repo guidelines). Finding IDs

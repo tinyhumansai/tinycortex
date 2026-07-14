@@ -37,7 +37,7 @@ pub use summaries::{
     get_summary_embedding_for_signature, get_summary_embeddings_batch,
     get_summary_embeddings_for_signature_batch, insert_staged_summary_tx, insert_summary_tx,
     list_children_of_summary, list_summaries_at_level, list_summaries_in_window,
-    set_summary_embedding, set_summary_embedding_for_signature,
+    list_summaries_overlapping_window, set_summary_embedding, set_summary_embedding_for_signature,
 };
 
 // ── Buffers ─────────────────────────────────────────────────────────────────

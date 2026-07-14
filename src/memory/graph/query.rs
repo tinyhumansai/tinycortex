@@ -13,10 +13,9 @@
 //!  LIMIT ?2
 //! ```
 //!
-//! Here the same derivation runs in Rust over the injected
-//! [`EntityOccurrenceIndex`] so the graph stays decoupled from storage: gather
-//! the subject's nodes, fan out to the entities sharing each node, and count
-//! distinct shared nodes per neighbour.
+//! Persistent adapters can execute that self-join through the injected
+//! [`EntityOccurrenceIndex`] fast path. Lightweight indexes used by tests fall
+//! back to gathering the subject's nodes and counting in Rust.
 
 use std::collections::{HashMap, HashSet};
 
@@ -34,14 +33,8 @@ const DEFAULT_LIMIT: usize = 100;
 /// output regardless of the index's iteration order. Self-edges are excluded.
 /// `limit` caps the result set; `None` defaults to `DEFAULT_LIMIT` (100).
 ///
-/// # Cost
-///
-/// This issues one [`EntityOccurrenceIndex::nodes_for_entity`] call plus one
-/// [`EntityOccurrenceIndex::entities_on_node`] call per node the subject
-/// occurs on — `1 + subject_nodes.len()` index round-trips in total. `limit`
-/// only truncates the *output*; it does not bound the number of nodes
-/// gathered or the fan-out cost, so a subject with many occurrences is
-/// expensive to query regardless of how small `limit` is.
+/// Backends with a native co-occurrence implementation execute one set-based
+/// query. Other indexes use `1 + subject_nodes.len()` portable trait calls.
 ///
 /// # Errors
 ///
@@ -53,6 +46,13 @@ pub fn co_occurring_entities(
     limit: Option<usize>,
 ) -> Result<Vec<GraphEdge>> {
     let cap = limit.unwrap_or(DEFAULT_LIMIT);
+
+    if let Some(edges) = index
+        .co_occurring_entities(subject_entity, cap)
+        .with_context(|| format!("co_occurring_entities({subject_entity})"))?
+    {
+        return Ok(edges);
+    }
 
     // For each neighbour, the set of distinct nodes shared with the subject.
     // Using a set (rather than a bare counter) makes the distinct-node count

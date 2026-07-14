@@ -1,6 +1,6 @@
 //! Shared filesystem primitives for the memory engine.
 //!
-//! [`atomic_write`] is the single crash-safe write path used by the on-disk
+//! `atomic_write` is the single crash-safe write path used by the on-disk
 //! stores (goals list, time-tree nodes, staged summaries). It writes to a
 //! hidden same-directory temp file, fsyncs it, then renames it over the
 //! destination. Because POSIX `rename(2)` is atomic, a crash or a concurrent
@@ -14,6 +14,27 @@
 
 use std::io;
 use std::path::Path;
+
+/// Sanitize one machine identifier into a path component while preserving
+/// collision resistance. Safe, non-empty inputs retain their spelling;
+/// transformed or empty inputs receive a short digest of the exact raw value.
+pub(crate) fn sanitize_component_with_digest(raw: &str, allowed: impl Fn(char) -> bool) -> String {
+    use sha2::{Digest, Sha256};
+
+    let sanitized = raw
+        .chars()
+        .map(|character| if allowed(character) { character } else { '_' })
+        .collect::<String>();
+    if sanitized == raw && !sanitized.is_empty() {
+        return sanitized;
+    }
+    let digest = Sha256::digest(raw.as_bytes());
+    let suffix = digest[..6]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("{sanitized}-{suffix}")
+}
 
 /// Atomically write `bytes` to `path`, replacing any existing file.
 ///

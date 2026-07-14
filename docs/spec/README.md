@@ -1,6 +1,6 @@
 # Memory Engine Audit & Improvement Spec
 
-_Audit date: 2026-07-11 · Baseline: `main` @ `c9d1afd` · All 1025 unit tests + 1 integration test green at time of audit._
+_Initial audit: 2026-07-11 · Architecture follow-up: 2026-07-14 · Remediation implementation: 2026-07-14._
 
 This folder holds the results of a full-codebase audit of the TinyCortex memory
 engine and the improvement plan derived from it. The audit swept every
@@ -25,7 +25,58 @@ carries `file:line` evidence.
 | [audit/09-verification-infrastructure.md](audit/09-verification-infrastructure.md) | Per-block verifiability: test coverage map, CI feature matrix, setup/test scripts |
 | [audit/10-simplification-dead-weight.md](audit/10-simplification-dead-weight.md) | Duplication, dead/speculative code, dependency weight, error/async story |
 
-## Executive summary
+## Remediation status
+
+The correctness remediation described by audits 01–06 is implemented. The
+work preserves wire ids while closing the verified data-loss, concurrency,
+parser, queue-settlement, retrieval, and contract defects. Fixes that were
+already present were retained and covered rather than reimplemented.
+
+The resulting trust baseline includes:
+
+- atomic or compensated persistence at every audited crash boundary, including
+  document ingest, queue follow-ups, staged summaries, time-tree rebuilds,
+  goals, and source/tool-memory registries;
+- concurrency-safe buffer sealing, conversation sequencing, source mutation,
+  read markers, and shared SQLite/entity-index ownership;
+- SQL-bounded retrieval and graph operations without the audited 200/500/5000
+  silent truncation cliffs;
+- fail-closed taint/category contracts, a real `Memory` implementation for the
+  reference store, validated partial config loading, and configurable scoring,
+  ingestion, retrieval-limit, queue, sync, and tree policy roots;
+- a real ingest → durable queue drain → tree seal → retrieval functional test,
+  feature-matrix tests (including `sync`), setup/test scripts, corruption and
+  crash-window tests, and source files split below the 500-line repository cap;
+- removal of the empty `rpc` and `providers-http` feature surfaces. Optional
+  features now correspond to concrete code rather than reserved placeholders.
+
+Audits 07–10 intentionally also contain longer-horizon design alternatives,
+such as replacing the shared transactional SQLite database with separately
+owned persistence services or adding a remote store backend. Those are not
+correctness defects and are not silently presented as completed here. The
+shared database remains the documented atomicity boundary; the public
+in-memory backend now implements the consolidated `Memory` contract, while
+the separate [configurable-store specification](configurable-store.md) remains
+the design for a future network backend.
+
+Verification is recorded from clean commands run at the end of remediation;
+the exact test and coverage totals below are updated only from command output.
+
+| Gate | Final result |
+| --- | --- |
+| Formatting | `cargo fmt --all -- --check` passes |
+| Static validation | all-feature check and clippy with warnings denied pass |
+| Unit tests | 1300 passed |
+| Functional tests | 15 passed; 1 credentialed live smoke intentionally ignored |
+| Doctests | 4 passed; 1 example intentionally ignored |
+| Documentation | strict all-feature rustdoc passes with no warnings |
+| Line coverage | **90.60%** (`cargo llvm-cov --all-features --workspace`) |
+| Packaging | `cargo package --no-verify` succeeds without warnings |
+
+## Original audit executive summary
+
+The following describes the pre-remediation baseline and is retained as the
+rationale for the fixes, not as a statement about the current tree.
 
 The engine is well-layered and richly documented, and the full test suite
 passes — but the audit surfaced **4 critical** and **~20 major** verified

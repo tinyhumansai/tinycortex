@@ -19,14 +19,11 @@
 //!   (`memory::queue::runtime`) instead of driving `run_once` by hand.
 //! - `git-diff`: compiles in `memory::diff` (git-backed source snapshots,
 //!   diffs, checkpoints, read markers) and its native `git2`/libgit2 dependency.
-//! - `providers-http`: compiles in `memory::providers` (reqwest-based
-//!   embedding / LLM HTTP providers). Implies `tokio`.
-//! - `rpc`: compiles in `memory::rpc` (the serde wire-envelope surface for
-//!   exposing the engine over an RPC boundary).
+//! - `sync`: compiles in the live Composio and workspace synchronization
+//!   pipelines and implies `tokio`.
 //!
 //! With every feature off, `cargo check` / `cargo test` still exercise the full
 //! synchronous engine (storage, ingest, retrieval, tree, graph, goals, …); the
-//! feature-gated modules only reserve a seam until their concrete
-//! implementations land.
+//! feature-gated modules contain concrete optional implementations.
 
 pub mod memory;

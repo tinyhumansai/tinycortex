@@ -155,12 +155,13 @@ async fn gmail_sync_paginates_persists_cursor_taint_and_is_idempotent() {
     let first = pipeline.tick(&config, &context).await.unwrap();
     assert_eq!(first.records_ingested, 2);
     assert_eq!(first.actions_called, 2);
-    let docs = captures.documents.lock().unwrap();
-    assert_eq!(docs.len(), 2);
-    assert!(docs
-        .iter()
-        .all(|doc| doc.metadata["taint"] == "external_sync"));
-    drop(docs);
+    {
+        let docs = captures.documents.lock().unwrap();
+        assert_eq!(docs.len(), 2);
+        assert!(docs
+            .iter()
+            .all(|doc| doc.metadata["taint"] == "external_sync"));
+    }
 
     let state = SyncState::load(captures.as_ref(), "gmail", "conn-1")
         .await

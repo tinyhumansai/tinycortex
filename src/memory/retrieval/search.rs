@@ -8,18 +8,12 @@
 //!
 //! Matching rules (ported from OpenHuman's `memory_tree::retrieval::search`):
 //! - The query is lowercased before binding into the `LIKE` parameter.
-//! - A row matches when `entity_id LIKE '%q%'` OR `surface LIKE '%q%'`.
+//! - A row matches when `entity_id LIKE '%q%'` OR `surface LIKE '%q%'`, with
+//!   SQLite wildcard characters in `q` treated literally.
 //! - `kinds` narrows the match by `entity_kind IN (...)` when non-empty.
 //! - Output is ordered by mention count DESC (then recency) so the strongest
 //!   matches surface first.
 //!
-//! NOTE: `query`'s SQLite `LIKE` metacharacters (`%`, `_`) are NOT escaped
-//! before being embedded in the `%…%` pattern — there is no `ESCAPE` clause.
-//! A literal query of `"100%"` or `"_"` is interpreted as a wildcard, not a
-//! literal string, and can match far more broadly than the caller intended
-//! (up to "everything, capped at `limit`"). Escape `%`/`_`/the escape
-//! character itself in `query` before calling if literal matching is
-//! required.
 
 use anyhow::{Context, Result};
 use rusqlite::params_from_iter;
@@ -30,11 +24,6 @@ use crate::memory::score::extract::EntityKind;
 
 use super::types::EntityMatch;
 
-/// Default result cap applied when the caller passes `limit = 0`.
-const DEFAULT_LIMIT: usize = 5;
-/// Hard ceiling on `limit` regardless of what the caller requests.
-const MAX_LIMIT: usize = 100;
-
 /// Search the entity index for canonical ids matching `query`.
 ///
 /// Returns at most `limit` matches (default 5, clamped to 100). Each match is
@@ -42,9 +31,6 @@ const MAX_LIMIT: usize = 100;
 /// total occurrences regardless of which tree they came from. A blank /
 /// whitespace-only query returns no matches (rather than dumping the whole
 /// index via `LIKE '%%'`).
-///
-/// See the module-level NOTE: `query` is matched as a raw `LIKE` pattern with
-/// no metacharacter escaping.
 ///
 /// # Errors
 ///
@@ -57,13 +43,13 @@ pub fn search_entities(
     kinds: Option<&[EntityKind]>,
     limit: usize,
 ) -> Result<Vec<EntityMatch>> {
-    let limit = normalise_limit(limit);
+    let limit = normalise_limit(config, limit);
     let query = query.trim();
     if query.is_empty() {
         return Ok(Vec::new());
     }
 
-    let q_lower = query.to_lowercase();
+    let q_lower = escape_like_literal(&query.to_lowercase());
     with_connection(config, |conn| {
         let pattern = format!("%{q_lower}%");
         let (sql, params) = build_sql_and_params(&pattern, kinds, limit);
@@ -78,12 +64,19 @@ pub fn search_entities(
     })
 }
 
-/// Clamp `limit` into `[1, MAX_LIMIT]`, substituting [`DEFAULT_LIMIT`] for `0`.
-fn normalise_limit(limit: usize) -> usize {
+fn escape_like_literal(query: &str) -> String {
+    query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// Apply the configured default and hard cap.
+fn normalise_limit(config: &MemoryConfig, limit: usize) -> usize {
     if limit == 0 {
-        DEFAULT_LIMIT
+        config.retrieval.limits.search_default_limit
     } else {
-        limit.min(MAX_LIMIT)
+        limit.min(config.retrieval.limits.max_limit)
     }
 }
 
@@ -103,7 +96,8 @@ fn build_sql_and_params(
             COUNT(*) AS mention_count,
             MAX(timestamp_ms) AS last_seen_ms
          FROM mem_tree_entity_index
-         WHERE (LOWER(entity_id) LIKE ?1 OR LOWER(surface) LIKE ?1)",
+         WHERE (LOWER(entity_id) LIKE ?1 ESCAPE '\\'
+             OR LOWER(surface) LIKE ?1 ESCAPE '\\')",
     );
     let mut params: Vec<Value> = vec![Value::Text(pattern.to_string())];
 

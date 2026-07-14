@@ -20,23 +20,29 @@
 //! The Sentry-once emission and the storage-degraded flag stay host-owned
 //! regardless.
 
-use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock};
 
 use anyhow::Result;
 
 use crate::memory::config::MemoryConfig;
 use crate::memory::queue::gate::{LlmGate, Permit};
 use crate::memory::queue::handlers::{self, QueueDelegates};
-use crate::memory::queue::store::{claim_next, purge_retired_jobs, DEFAULT_LOCK_DURATION_MS};
+use crate::memory::queue::ops::set_backfill_in_progress;
+use crate::memory::queue::store::{claim_next, purge_retired_jobs};
 use crate::memory::queue::store_settle::{
-    mark_deferred, mark_done, mark_failed_typed, recover_stale_locks,
+    mark_deferred, mark_done_with_followups, mark_failed_typed, recover_stale_locks,
 };
-use crate::memory::queue::types::{Job, JobFailure, JobOutcome};
+use crate::memory::queue::types::{
+    Job, JobFailure, JobKind, JobOutcome, JobStatus, NewJob, SealPayload,
+};
 
 /// Process-wide LLM concurrency gate. Single-slot by default (mirrors the
 /// upstream single-permit semaphore); LLM-bound jobs hold a permit for the
 /// duration of their handler.
 static LLM_GATE: LazyLock<LlmGate> = LazyLock::new(LlmGate::default);
+static CONFIGURED_LLM_GATES: LazyLock<parking_lot::Mutex<HashMap<usize, Arc<LlmGate>>>> =
+    LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 
 /// Short delay used when an LLM job is claimed while the process-wide gate is
 /// full. Deferring releases the job lease and attempt immediately, avoiding a
@@ -60,7 +66,7 @@ pub fn bootstrap(config: &MemoryConfig) -> Result<(usize, usize)> {
 /// Claim and run a single job. Returns `true` when work was processed, `false`
 /// when no eligible row was available.
 ///
-/// The job's lease ([`DEFAULT_LOCK_DURATION_MS`]) starts counting at claim
+/// The job's configured lease starts counting at claim
 /// time, before the LLM gate is acquired below — a job that waits a long time
 /// for a free permit eats into its own lease window before its handler even
 /// starts.
@@ -72,7 +78,15 @@ pub fn bootstrap(config: &MemoryConfig) -> Result<(usize, usize)> {
 /// handler and drop it; the other blocks the only executor thread inside
 /// `acquire`).
 pub async fn run_once(config: &MemoryConfig, delegates: &dyn QueueDelegates) -> Result<bool> {
-    run_once_with_gate(config, delegates, &LLM_GATE).await
+    let gate = {
+        let mut gates = CONFIGURED_LLM_GATES.lock();
+        Arc::clone(
+            gates
+                .entry(config.queue.llm_permits)
+                .or_insert_with(|| Arc::new(LlmGate::new(config.queue.llm_permits))),
+        )
+    };
+    run_once_with_gate(config, delegates, &gate).await
 }
 
 async fn run_once_with_gate(
@@ -80,7 +94,7 @@ async fn run_once_with_gate(
     delegates: &dyn QueueDelegates,
     gate: &LlmGate,
 ) -> Result<bool> {
-    let Some(job) = claim_next(config, DEFAULT_LOCK_DURATION_MS)? else {
+    let Some(job) = claim_next(config, config.queue.lock_duration_ms)? else {
         return Ok(false);
     };
 
@@ -101,22 +115,74 @@ async fn run_once_with_gate(
         None
     };
 
-    let result = handlers::handle_job(config, &job, delegates).await;
+    let result = handlers::plan_job(config, &job, delegates).await;
     drop(permit);
 
-    settle_job(config, &job, result)?;
+    settle_planned_job(config, &job, result)?;
     Ok(true)
 }
 
-/// Translate a handler's [`Result<JobOutcome>`] into the matching store
-/// settlement call (`mark_done` / `mark_deferred` / `mark_failed_typed`).
+/// Translate a handler plan into the matching store settlement call. Successful
+/// follow-up enqueues commit in the same transaction as `mark_done`.
 /// Errors from the settlement call itself (e.g. a busy database) propagate to
 /// the caller — the job's `running` row is then left for lease-expiry
 /// recovery rather than being retried inline here.
+#[cfg(test)]
 fn settle_job(config: &MemoryConfig, job: &Job, result: Result<JobOutcome>) -> Result<()> {
+    settle_planned_job(
+        config,
+        job,
+        result.map(|outcome| handlers::JobPlan {
+            outcome,
+            follow_ups: Vec::new(),
+        }),
+    )
+}
+
+fn settle_planned_job(
+    config: &MemoryConfig,
+    job: &Job,
+    result: Result<handlers::JobPlan>,
+) -> Result<()> {
     match result {
-        Ok(JobOutcome::Done) => mark_done(config, job),
-        Ok(JobOutcome::Defer { until_ms, reason }) => {
+        Ok(handlers::JobPlan {
+            outcome: JobOutcome::Done,
+            follow_ups,
+        }) => {
+            let arms_reembed = follow_ups
+                .iter()
+                .any(|follow_up| follow_up.kind == JobKind::ReembedBackfill);
+            let committed = mark_done_with_followups(config, job, &follow_ups)?;
+            if committed && arms_reembed {
+                set_backfill_in_progress(true);
+            }
+
+            // A same-level seal enqueue can be suppressed while this row is
+            // running. Once its dedupe key is released, re-check the live
+            // buffer and restore the edge if content appended during the seal
+            // crossed the gate again.
+            if job.kind == JobKind::Seal
+                && matches!(
+                    crate::memory::queue::store::get_job(config, &job.id)?,
+                    Some(current) if current.status == JobStatus::Done
+                )
+            {
+                let payload: SealPayload = serde_json::from_str(&job.payload_json)?;
+                let buffer = crate::memory::tree::store::get_buffer(
+                    config,
+                    &payload.tree_id,
+                    payload.level,
+                )?;
+                if crate::memory::tree::should_seal(config, &buffer) {
+                    crate::memory::queue::store::enqueue(config, &NewJob::seal(&payload)?)?;
+                }
+            }
+            Ok(())
+        }
+        Ok(handlers::JobPlan {
+            outcome: JobOutcome::Defer { until_ms, reason },
+            ..
+        }) => {
             // Defer is normal operation (transient blocker) — does NOT burn the
             // failure budget; `mark_deferred` reverts the claim's attempts bump.
             mark_deferred(config, job, until_ms, &reason)
@@ -128,7 +194,21 @@ fn settle_job(config: &MemoryConfig, job: &Job, result: Result<JobOutcome>) -> R
             // burning the retry budget.
             let message = format!("{err:#}");
             let typed = err.downcast_ref::<JobFailure>();
-            mark_failed_typed(config, job, &message, typed)
+            mark_failed_typed(config, job, &message, typed)?;
+
+            // The handler clears this flag on every successful terminal
+            // outcome. Mirror that cleanup when a re-embed row exhausts its
+            // budget (or fails fast), otherwise retrieval remains in the
+            // process-wide "backfill pending" mode indefinitely.
+            if job.kind == JobKind::ReembedBackfill
+                && matches!(
+                    crate::memory::queue::store::get_job(config, &job.id)?,
+                    Some(current) if current.status == JobStatus::Failed
+                )
+            {
+                set_backfill_in_progress(false);
+            }
+            Ok(())
         }
     }
 }

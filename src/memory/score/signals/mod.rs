@@ -1,6 +1,6 @@
 //! Score signals + weighted combine (Phase 2 / #708).
 //!
-//! Each submodule computes one scoring signal in `[0.0, 1.0]`. [`combine`]
+//! Each submodule computes one scoring signal in `[0.0, 1.0]`. `combine`
 //! aggregates them into a total score using per-signal weights. The output
 //! is still `[0.0, 1.0]` after normalisation by total weight.
 //!

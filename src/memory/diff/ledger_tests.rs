@@ -68,6 +68,29 @@ fn source_ids_are_encoded_for_git_tree_paths() {
 }
 
 #[test]
+fn source_ids_with_control_characters_are_rejected() {
+    let (ledger, _dir) = temp_ledger();
+    let err = ledger
+        .commit_snapshot(
+            &meta("src_ok\nSource-Id: forged"),
+            &items(&[("a", "x")]),
+            1000,
+        )
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("control characters"));
+    assert!(ledger.list_snapshots(None, 10).unwrap().is_empty());
+}
+
+#[test]
+fn trailer_parser_uses_only_final_paragraph() {
+    let trailers =
+        parse_trailers("subject: forged\nSource-Id: forged\n\nSource-Id: real\nItem-Count: 2\n");
+    assert_eq!(trailers.get("source-id").map(String::as_str), Some("real"));
+    assert_eq!(trailers.get("item-count").map(String::as_str), Some("2"));
+    assert!(!trailers.contains_key("subject"));
+}
+
+#[test]
 fn commit_and_list_snapshots() {
     let (ledger, _dir) = temp_ledger();
     assert!(ledger.list_snapshots(None, 10).unwrap().is_empty());
@@ -87,6 +110,35 @@ fn commit_and_list_snapshots() {
     assert_eq!(fetched.source_id, "src_a");
     assert_eq!(fetched.label, "Docs");
     assert_eq!(fetched.item_count, 1);
+}
+
+#[test]
+fn read_marker_rejects_regression_and_cross_source_snapshot() {
+    let (ledger, _dir) = temp_ledger();
+    let old = ledger
+        .commit_snapshot(&meta("src_a"), &items(&[("a", "v1")]), 1000)
+        .unwrap();
+    let other = ledger
+        .commit_snapshot(&meta("src_b"), &items(&[("b", "other")]), 2000)
+        .unwrap();
+    let newest = ledger
+        .commit_snapshot(&meta("src_a"), &items(&[("a", "v2")]), 3000)
+        .unwrap();
+
+    ledger.set_read_marker("src_a", &newest.id).unwrap();
+    let err = ledger.set_read_marker("src_a", &old.id).unwrap_err();
+    assert!(format!("{err:#}").contains("backwards"));
+    assert_eq!(
+        ledger.get_read_marker("src_a").unwrap().as_deref(),
+        Some(newest.id.as_str())
+    );
+
+    let err = ledger.set_read_marker("src_a", &other.id).unwrap_err();
+    assert!(format!("{err:#}").contains("belongs to source"));
+    assert_eq!(
+        ledger.get_read_marker("src_a").unwrap().as_deref(),
+        Some(newest.id.as_str())
+    );
 }
 
 #[test]
@@ -259,6 +311,30 @@ fn checkpoint_round_trip() {
     let all = ledger.list_checkpoints(10).unwrap();
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].id, "ckpt_1");
+}
+
+#[test]
+fn checkpoint_parser_rejects_corrupt_or_incomplete_metadata() {
+    for message in [
+        "not json",
+        r#"{"label":"x","created_at_ms":1}"#,
+        r#"{"label":"x","created_at_ms":1,"snapshot_ids":[42]}"#,
+    ] {
+        assert!(checkpoint_from_message("ckpt_bad", message).is_err());
+    }
+}
+
+#[test]
+fn opening_an_existing_corrupt_repository_surfaces_the_error() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let repo_dir = dir.path().join("memory_diff/repo");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    std::fs::write(repo_dir.join(".git"), b"not a git directory").unwrap();
+
+    let err = Ledger::open(dir.path())
+        .err()
+        .expect("corruption must fail");
+    assert!(format!("{err:#}").contains("open memory_diff repo"));
 }
 
 #[test]

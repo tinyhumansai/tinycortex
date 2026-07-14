@@ -5,6 +5,7 @@
 //! embedding assertions are dropped (those features are deferred).
 
 use super::*;
+use crate::memory::tree::SummaryInput;
 use tempfile::TempDir;
 
 use crate::memory::chunks::upsert_chunks;
@@ -100,6 +101,57 @@ async fn append_below_budget_does_not_seal() {
     let buf = store::get_buffer(&cfg, &tree.id, 0).unwrap();
     assert_eq!(buf.item_ids, vec!["leaf-1".to_string()]);
     assert_eq!(buf.token_sum, 100);
+    assert_eq!(store::count_summaries(&cfg, &tree.id).unwrap(), 0);
+}
+
+#[tokio::test]
+async fn archived_tree_rejects_new_leaf() {
+    let (_tmp, cfg) = test_config();
+    let tree = get_or_create_tree(&cfg, TreeKind::Source, "slack:#archived").unwrap();
+    store::archive_tree(&cfg, &tree.id).unwrap();
+    let summariser = ConcatSummariser::new();
+
+    let err = append_leaf(
+        &cfg,
+        &tree,
+        &mk_leaf("leaf-archived", 100, 1_700_000_000_000),
+        &summariser,
+        &LabelStrategy::Empty,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(format!("{err:#}").contains("archived"));
+    assert!(store::get_buffer(&cfg, &tree.id, 0).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn archived_tree_rejects_seal_of_existing_buffer() {
+    let (_tmp, cfg) = test_config();
+    let tree = get_or_create_tree(&cfg, TreeKind::Source, "slack:#archived").unwrap();
+    let chunk = seed_chunk(&cfg, 0, "buffered before archive", 100, vec![]);
+    append_to_buffer(
+        &cfg,
+        &tree.id,
+        0,
+        &chunk.id,
+        chunk.token_count as i64,
+        chunk.created_at,
+    )
+    .unwrap();
+    store::archive_tree(&cfg, &tree.id).unwrap();
+
+    let err = cascade_all_from(
+        &cfg,
+        &tree,
+        0,
+        true,
+        &ConcatSummariser::new(),
+        &LabelStrategy::Empty,
+    )
+    .await
+    .unwrap_err();
+    assert!(format!("{err:#}").contains("archived"));
     assert_eq!(store::count_summaries(&cfg, &tree.id).unwrap(), 0);
 }
 

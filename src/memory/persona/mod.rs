@@ -3,13 +3,18 @@
 //! memory layer** — personality, communication style, coding style, and
 //! tool/stack preferences compiled into a small, prompt-ready context pack.
 //!
-//! The surface is organised around the canonical evidence model in [`types`]:
-//! readers ([`readers`]) emit redacted [`PersonaEvidence`], the map step
-//! ([`distill`]) turns batches of evidence into [`SessionDigest`]s via a
+//! The surface is organised around the canonical evidence model in
+//! [`types`](crate::memory::persona::types): readers
+//! ([`readers`](crate::memory::persona::readers)) emit redacted
+//! [`PersonaEvidence`](crate::memory::persona::types::PersonaEvidence), the map
+//! step ([`distill`](crate::memory::persona::distill)) turns batches of evidence
+//! into [`SessionDigest`](crate::memory::persona::types::SessionDigest)s via a
 //! [`ChatProvider`](crate::memory::score::extract::ChatProvider), the reduce
-//! step folds digests into seven facet flavoured trees, and the [`compile`]
-//! step assembles `persona/PERSONA.md`. [`state`] makes runs incremental and
-//! resumable; [`pipeline`] wires it all together for the CLI harness.
+//! step folds digests into seven facet flavoured trees, and the
+//! [`compile`](crate::memory::persona::compile) step assembles
+//! `persona/PERSONA.md`. [`state`](crate::memory::persona::state) makes runs
+//! incremental and resumable; [`pipeline`](crate::memory::persona::pipeline)
+//! wires it all together for the CLI harness.
 //!
 //! Everything is local-first and depends only on the crate's `ChatProvider` /
 //! `Summariser` / `EmbeddingBackend` trait seams — nothing here names a

@@ -9,24 +9,19 @@
 //!
 //! ## Concurrency / atomicity contract
 //!
-//! [`EntityIndex::open`] runs `PRAGMA journal_mode = WAL` unconditionally on
-//! whatever `db_path` it is given. The chunk store (`crate::memory::chunks`)
-//! declares this same `mem_tree_entity_index` table in its own schema and
-//! deliberately enforces `TRUNCATE` journal mode on its database file. Callers
-//! must therefore either (a) point `EntityIndex` at a dedicated database file
-//! distinct from the chunk store's — accepting that the two copies of the
-//! table are then independent and cascade-deletes / coverage counts on one
-//! side won't see the other's rows — or (b) share the chunk store's
-//! connection/path deliberately and accept that the WAL pragma here will flip
-//! that database out of `TRUNCATE` mode. Neither option is handled
-//! automatically by this module; picking one and documenting it is the
-//! caller's responsibility.
+//! Use [`EntityIndex::for_memory_config`] for engine data. It wraps the chunk
+//! store's shared connection, so scoring, retrieval, cascades, and this typed
+//! facade all observe the same table without changing owner-managed pragmas.
+//! [`EntityIndex::open`] remains available for a deliberately independent
+//! standalone index.
 
 pub mod store;
+mod transaction;
 pub mod types;
 
-pub use store::{
+pub use store::{EntityIndex, NoSelfIdentity, SelfIdentity};
+pub use transaction::{
     clear_entity_index_for_node_tx, index_entities_tx, index_entities_tx_with_identity,
-    index_summary_entity_ids_tx_with_identity, EntityIndex, NoSelfIdentity, SelfIdentity,
+    index_summary_entity_ids_tx_with_identity,
 };
 pub use types::{CanonicalEntity, EntityHit, EntityKind};

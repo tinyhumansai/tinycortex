@@ -3,12 +3,11 @@
 //! embedding / delete / migration accessors against a tempdir-backed SQLite
 //! store.
 //!
-//! Because the connection cache is a process-level singleton, tests that
-//! exercise cache behaviour call `clear_connection_cache()` at the start, or
-//! use unique tempdirs that cannot collide with other tests.
+//! Tests use unique tempdirs so parallel cache checks cannot collide. Tests
+//! that must force a reopen reset only their own workspace path.
 
 use super::connection::{
-    clear_connection_cache, get_or_init_connection, invalidate_connection,
+    clear_connection_cache_for, get_or_init_connection, invalidate_connection,
     schema_apply_count_for_path_for_tests, with_connection, CB_THRESHOLD,
 };
 use super::embeddings::{active_embedding_dims, embedding_to_blob};

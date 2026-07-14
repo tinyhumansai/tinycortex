@@ -300,3 +300,29 @@ async fn llm_consulted_reports_full_total() {
         expected
     );
 }
+
+#[tokio::test]
+async fn kept_to_dropped_rescore_clears_entity_index() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = MemoryConfig::new(temp.path());
+    let chunk = test_chunk("Contact alice@example.com about the Phoenix launch decision.");
+    let scoring = ScoringConfig::default_regex_only();
+    let mut result = score_chunk(&chunk, &scoring).await.unwrap();
+    assert!(!result.canonical_entities.is_empty());
+    result.kept = true;
+    result.drop_reason = None;
+    persist_score(&config, &result, 1, None).unwrap();
+    assert!(store::count_entity_index(&config).unwrap() > 0);
+
+    result.kept = false;
+    result.drop_reason = Some("rescored below threshold".into());
+    persist_score(&config, &result, 2, None).unwrap();
+
+    assert_eq!(store::count_entity_index(&config).unwrap(), 0);
+    assert!(
+        store::get_score(&config, &chunk.id)
+            .unwrap()
+            .unwrap()
+            .dropped
+    );
+}

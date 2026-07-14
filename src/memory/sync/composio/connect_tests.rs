@@ -3,6 +3,8 @@
 
 use super::*;
 use serde_json::json;
+use wiremock::matchers::{body_partial_json, header, method, path, query_param};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[test]
 fn generated_entity_id_is_prefixed_and_unique() {
@@ -145,4 +147,159 @@ fn entity_store_load_tolerates_missing_and_corrupt_files() {
     let corrupt = dir.path().join("corrupt.json");
     std::fs::write(&corrupt, "{ not json ").unwrap();
     assert_eq!(EntityStore::load(&corrupt).get("gmail"), None);
+}
+
+#[tokio::test]
+async fn list_auth_configs_sends_filter_and_decodes_success() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v3/auth_configs"))
+        .and(query_param("toolkit_slug", "gmail"))
+        .and(header("x-api-key", "secret"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{"id": "ac_gmail", "toolkit": {"slug": "gmail"}}]
+        })))
+        .mount(&server)
+        .await;
+
+    let value = list_auth_configs(
+        &reqwest::Client::new(),
+        &format!("{}/api/v3/", server.uri()),
+        "secret",
+        Some("gmail"),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        resolve_auth_config_id(&value, "gmail").as_deref(),
+        Some("ac_gmail")
+    );
+}
+
+#[tokio::test]
+async fn list_auth_configs_redacts_error_body_and_rejects_invalid_json() {
+    let failure = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/auth_configs"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("echoed-secret"))
+        .mount(&failure)
+        .await;
+    let error = list_auth_configs(
+        &reqwest::Client::new(),
+        &failure.uri(),
+        "echoed-secret",
+        None,
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("HTTP 401"));
+    assert!(!error.contains("echoed-secret"));
+
+    let malformed = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/auth_configs"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
+        .mount(&malformed)
+        .await;
+    assert!(
+        list_auth_configs(&reqwest::Client::new(), &malformed.uri(), "key", None)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("decode failed")
+    );
+}
+
+#[tokio::test]
+async fn create_connection_link_sends_trimmed_callback_and_extracts_fields() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/connected_accounts/link"))
+        .and(header("x-api-key", "secret"))
+        .and(body_partial_json(json!({
+            "auth_config_id": "ac_1",
+            "user_id": "user_1",
+            "callback_url": "https://callback"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "connected_account_id": "ca_1",
+            "redirect_url": "https://oauth"
+        })))
+        .mount(&server)
+        .await;
+
+    let link = create_connection_link(
+        &reqwest::Client::new(),
+        &server.uri(),
+        "secret",
+        "ac_1",
+        "user_1",
+        Some(" https://callback "),
+    )
+    .await
+    .unwrap();
+    assert_eq!(link.connected_account_id, "ca_1");
+    assert_eq!(link.redirect_url.as_deref(), Some("https://oauth"));
+}
+
+#[tokio::test]
+async fn create_connection_link_rejects_http_decode_and_missing_id_failures() {
+    for (status, body, expected) in [
+        (500, "server error", "HTTP 500"),
+        (200, "not-json", "decode failed"),
+        (200, "{}", "missing a connected account id"),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/connected_accounts/link"))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
+            .mount(&server)
+            .await;
+        let error = create_connection_link(
+            &reqwest::Client::new(),
+            &server.uri(),
+            "key",
+            "ac",
+            "user",
+            Some("  "),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains(expected), "unexpected error: {error}");
+    }
+}
+
+#[tokio::test]
+async fn get_connection_status_handles_success_and_safe_failures() {
+    let active = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/connected_accounts/ca_1"))
+        .and(header("x-api-key", "key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ACTIVE"})))
+        .mount(&active)
+        .await;
+    assert_eq!(
+        get_connection_status(&reqwest::Client::new(), &active.uri(), "key", "ca_1")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("ACTIVE")
+    );
+
+    for (status, body, expected) in [(403, "key", "HTTP 403"), (200, "invalid", "decode failed")] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/connected_accounts/ca_2"))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
+            .mount(&server)
+            .await;
+        let error = get_connection_status(&reqwest::Client::new(), &server.uri(), "key", "ca_2")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected));
+    }
 }

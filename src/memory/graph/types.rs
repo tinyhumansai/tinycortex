@@ -42,6 +42,19 @@ pub struct GraphEdge {
 /// [`nodes_for_entity`]: EntityOccurrenceIndex::nodes_for_entity
 /// [`entities_on_node`]: EntityOccurrenceIndex::entities_on_node
 pub trait EntityOccurrenceIndex {
+    /// Optional backend-native co-occurrence query.
+    ///
+    /// Persistent adapters should implement this as one set-based query;
+    /// lightweight test indexes may return `Ok(None)` to use the portable
+    /// `nodes_for_entity` + `entities_on_node` derivation.
+    fn co_occurring_entities(
+        &self,
+        _subject_entity: &str,
+        _limit: usize,
+    ) -> Result<Option<Vec<GraphEdge>>> {
+        Ok(None)
+    }
+
     /// Distinct node ids on which `entity_id` has been indexed.
     ///
     /// An entity with no occurrences yields an empty vector (not an error).

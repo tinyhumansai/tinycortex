@@ -15,21 +15,22 @@
 //! - **Diff**       → `git diff <from-tree>..<to-tree>` scoped to the source path
 //!
 //! Item identity is the file name: each item is one flat blob whose name is the
-//! item id encoded into a git-safe path component ([`encode_item_id`]). A
+//! item id encoded into a git-safe path component. A
 //! content change keeps the same name → `Modified`; renaming the item id is
 //! `Removed` + `Added`, matching the id-keyed semantics.
 //!
 //! Snapshot metadata that has no natural git home (source kind/label, trigger,
 //! item count, millisecond timestamp) rides in the commit message as trailers.
-//! All mutations serialise through a process-global [`WRITE_LOCK`] because the
+//! All mutations serialise through a process-global write lock because the
 //! repository's parent/HEAD bookkeeping is not safe to interleave.
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
-use git2::{Delta, DiffOptions, Object, ObjectType, Oid, Repository, Signature, Time};
+use git2::{Delta, DiffOptions, Object, ObjectType, Oid, Repository};
+
+use super::ledger_helpers::*;
 
 use super::types::{ChangeKind, Checkpoint, DiffSummary, ItemChange, Snapshot, SnapshotTrigger};
 
@@ -40,13 +41,13 @@ static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 const BLOB_MODE: i32 = 0o100644;
 const TREE_MODE: i32 = 0o040000;
-const SIG_NAME: &str = "TinyCortex Memory";
-const SIG_EMAIL: &str = "memory-diff@tinycortex.local";
-const READ_MARKER_PREFIX: &str = "refs/openhuman/read/";
+pub(super) const SIG_NAME: &str = "TinyCortex Memory";
+pub(super) const SIG_EMAIL: &str = "memory-diff@tinycortex.local";
+pub(super) const READ_MARKER_PREFIX: &str = "refs/openhuman/read/";
 const CHECKPOINT_PREFIX: &str = "ckpt_";
 
 /// Upper bound on a single modified-item unified diff embedded in `text_diff`.
-const MAX_TEXT_DIFF_CHARS: usize = 2000;
+pub(super) const MAX_TEXT_DIFF_CHARS: usize = 2000;
 
 // ── Repository handle ──────────────────────────────────────────────────
 
@@ -57,7 +58,7 @@ pub struct Ledger {
 }
 
 /// Metadata describing the snapshot a commit represents. Persisted as commit
-/// trailers and reconstructed by [`Ledger::snapshot_from_commit`].
+/// trailers and reconstructed by the ledger's commit parser.
 pub struct SnapshotMeta {
     /// Logical source id.
     pub source_id: String,
@@ -72,18 +73,18 @@ pub struct SnapshotMeta {
 impl Ledger {
     /// Open the ledger, initialising the repository on first use.
     ///
-    /// NOTE: any `Repository::open` failure — not only "repo doesn't exist
-    /// yet" — falls through to `Repository::init` on the same path. A
-    /// transiently-locked or genuinely corrupt repository is therefore
-    /// silently re-initialised rather than surfaced as an error, which can
-    /// discard ledger history instead of reporting the real problem.
     pub fn open(workspace_dir: &Path) -> Result<Self> {
         let repo_path = workspace_dir.join("memory_diff").join("repo");
         std::fs::create_dir_all(&repo_path)
             .with_context(|| format!("create memory_diff repo dir: {}", repo_path.display()))?;
 
+        let git_marker = repo_path.join(".git");
         let repo = match Repository::open(&repo_path) {
             Ok(repo) => repo,
+            Err(err) if git_marker.exists() => {
+                return Err(err)
+                    .with_context(|| format!("open memory_diff repo: {}", repo_path.display()));
+            }
             Err(_) => Repository::init(&repo_path)
                 .with_context(|| format!("init memory_diff repo: {}", repo_path.display()))?,
         };
@@ -102,6 +103,7 @@ impl Ledger {
         taken_at_ms: i64,
     ) -> Result<Snapshot> {
         let _guard = WRITE_LOCK.lock().expect("memory_diff write lock poisoned");
+        validate_source_id(&meta.source_id)?;
 
         // Build the source subtree from scratch: one blob per item.
         let source_tree_oid = {
@@ -328,6 +330,28 @@ impl Ledger {
         let oid = Oid::from_str(snapshot_id)
             .with_context(|| format!("bad read-marker snapshot id: {snapshot_id}"))?;
         let name = read_marker_ref(source_id);
+        let commit = self
+            .repo
+            .find_commit(oid)
+            .with_context(|| format!("read-marker snapshot not found: {snapshot_id}"))?;
+        let snapshot = self.snapshot_from_commit(&commit);
+        anyhow::ensure!(
+            snapshot.source_id == source_id,
+            "snapshot {snapshot_id} belongs to source '{}', not '{source_id}'",
+            snapshot.source_id
+        );
+
+        if let Ok(current) = self.repo.find_reference(&name) {
+            if let Some(current_oid) = current.target() {
+                if current_oid == oid {
+                    return Ok(());
+                }
+                anyhow::ensure!(
+                    self.repo.graph_descendant_of(oid, current_oid)?,
+                    "refusing to move read marker for '{source_id}' backwards"
+                );
+            }
+        }
         self.repo
             .reference(&name, oid, true, "advance memory_diff read marker")
             .with_context(|| format!("set read marker ref: {name}"))?;
@@ -375,7 +399,7 @@ impl Ledger {
             // git2 0.21: Tag::message() is Result<Option<&str>, _>; a non-UTF8
             // or missing message degrades to an empty checkpoint body.
             tag.message().ok().flatten().unwrap_or(""),
-        )))
+        )?))
     }
 
     /// List checkpoints newest-first, up to `limit`.
@@ -455,183 +479,6 @@ impl Ledger {
             }
             Err(_) => item_id.to_string(),
         }
-    }
-}
-
-// ── Free helpers ───────────────────────────────────────────────────────
-
-fn signature(at_ms: i64) -> Result<Signature<'static>> {
-    let time = Time::new(at_ms / 1000, 0);
-    Signature::new(SIG_NAME, SIG_EMAIL, &time).context("build git signature")
-}
-
-fn read_marker_ref(source_id: &str) -> String {
-    format!("{READ_MARKER_PREFIX}{}", encode_source_id(source_id))
-}
-
-fn build_commit_message(meta: &SnapshotMeta, item_count: u32, taken_at_ms: i64) -> String {
-    format!(
-        "snapshot: {source} ({count} item(s))\n\n\
-         Source-Id: {source}\n\
-         Source-Kind: {kind}\n\
-         Source-Label: {label}\n\
-         Trigger: {trigger}\n\
-         Item-Count: {count}\n\
-         Taken-At-Ms: {taken}\n",
-        source = meta.source_id,
-        kind = meta.source_kind,
-        label = sanitize_trailer(&meta.label),
-        trigger = meta.trigger.as_str(),
-        count = item_count,
-        taken = taken_at_ms,
-    )
-}
-
-/// Trailer values are single-line; collapse newlines so a multi-line label
-/// can't corrupt the trailer block.
-fn sanitize_trailer(s: &str) -> String {
-    s.replace(['\n', '\r'], " ")
-}
-
-/// Parse `Key: value` trailer lines from a commit message into a
-/// lowercase-keyed map.
-fn parse_trailers(message: &str) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    for line in message.lines() {
-        if let Some((k, v)) = line.split_once(':') {
-            let key = k.trim().to_ascii_lowercase();
-            if !key.is_empty() && !key.contains(' ') {
-                map.insert(key, v.trim().to_string());
-            }
-        }
-    }
-    map
-}
-
-fn checkpoint_message(label: &str, snapshot_ids: &[String], created_at_ms: i64) -> String {
-    let payload = serde_json::json!({
-        "label": label,
-        "snapshot_ids": snapshot_ids,
-        "created_at_ms": created_at_ms,
-    });
-    payload.to_string()
-}
-
-fn checkpoint_from_message(id: &str, message: &str) -> Checkpoint {
-    let value: serde_json::Value = serde_json::from_str(message.trim()).unwrap_or_default();
-    Checkpoint {
-        id: id.to_string(),
-        label: value
-            .get("label")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        created_at_ms: value
-            .get("created_at_ms")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0),
-        snapshot_ids: value
-            .get("snapshot_ids")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default(),
-    }
-}
-
-/// A git blob oid as a content hash, or `None` for the zero oid (absent side).
-fn oid_hash(oid: Oid) -> Option<String> {
-    if oid.is_zero() {
-        None
-    } else {
-        Some(oid.to_string())
-    }
-}
-
-/// Render a single delta's unified patch, truncated to [`MAX_TEXT_DIFF_CHARS`].
-fn patch_text(diff: &git2::Diff, delta_idx: usize) -> Option<String> {
-    let mut patch = git2::Patch::from_diff(diff, delta_idx).ok().flatten()?;
-    let buf = patch.to_buf().ok()?;
-    // git2 0.21: Buf::as_str() returns Result<&str, Utf8Error>.
-    let text = buf.as_str().ok()?;
-    if text.trim().is_empty() {
-        None
-    } else {
-        Some(truncate(text, MAX_TEXT_DIFF_CHARS))
-    }
-}
-
-/// Encode an item id into a single git-safe path component. Bytes outside
-/// `[A-Za-z0-9._-]` become `%XX`; an `i_` prefix keeps the result clear of the
-/// reserved names `.`/`..`/empty. Reversible via [`decode_item_id`].
-pub(crate) fn encode_item_id(item_id: &str) -> String {
-    let mut out = String::with_capacity(item_id.len() + 2);
-    out.push_str("i_");
-    for &b in item_id.as_bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-') {
-            out.push(b as char);
-        } else {
-            out.push('%');
-            out.push_str(&format!("{b:02X}"));
-        }
-    }
-    out
-}
-
-/// Encode a source id for use as a top-level git tree entry and read-marker
-/// ref component. Same reversible encoding as item ids; kept as a named helper
-/// so call sites make the source-vs-item boundary explicit.
-pub(crate) fn encode_source_id(source_id: &str) -> String {
-    encode_item_id(source_id)
-}
-
-/// Inverse of [`encode_item_id`].
-pub(crate) fn decode_item_id(encoded: &str) -> String {
-    let body = encoded.strip_prefix("i_").unwrap_or(encoded);
-    let bytes = body.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
-            if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                out.push(byte);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn truncate(s: &str, max_chars: usize) -> String {
-    if s.len() <= max_chars {
-        s.to_string()
-    } else {
-        let mut end = max_chars;
-        while !s.is_char_boundary(end) && end > 0 {
-            end -= 1;
-        }
-        format!("{}…(truncated)", &s[..end])
-    }
-}
-
-/// Derive a human-readable title from item content: the first non-empty line
-/// (Markdown heading markers stripped), bounded. Falls back to the item id.
-fn derive_title(item_id: &str, content: &str) -> String {
-    let first_line = content
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .map(|l| l.trim_start_matches('#').trim());
-    match first_line {
-        Some(l) if !l.is_empty() => truncate(l, 120),
-        _ => item_id.to_string(),
     }
 }
 

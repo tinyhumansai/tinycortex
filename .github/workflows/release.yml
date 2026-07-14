@@ -45,10 +45,13 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Run tests
-        run: cargo test
+        run: cargo test --all-features
+
+      - name: Build documentation
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
 
       - name: Compute next version
         id: version

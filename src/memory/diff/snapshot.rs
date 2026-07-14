@@ -1,7 +1,7 @@
 //! Snapshot capture for the diff engine.
 //!
 //! Snapshots are built from already-ingested data supplied by the injected
-//! [`SnapshotItemSource`](super::source::SnapshotItemSource) — never by
+//! [`SnapshotItemSource`] — never by
 //! re-calling source readers — and committed to the git ledger. The chunk
 //! store (whatever backs the item source) remains authoritative; the ledger is
 //! a derived, rebuildable view used purely for change tracking.

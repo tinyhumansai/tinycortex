@@ -11,7 +11,6 @@ exclude = [
     ".vscode/",
     "benchmarks/",
     "docs/",
-    "examples/",
     "gitbooks/",
     "paper/",
     "requirements.txt",
@@ -35,19 +34,12 @@ tokio = ["dep:tokio"]
 git-diff = ["dep:git2"]
 
 # reqwest-based embedding / LLM HTTP providers (`memory::providers`). Pulls in
-# the reqwest stack and needs an async runtime, so it implies `tokio`. The
-# concrete providers land with goals C3/M3; this feature reserves the seam and
-# gates the dependency.
+# the reqwest stack and needs an async runtime, so it implies `tokio`.
 providers-http = ["dep:reqwest", "tokio"]
 
 # Live source synchronization (Composio HTTP pipelines and workspace scans).
 # Host schedulers, credentials, RPC, and event buses remain outside the crate.
 sync = ["dep:reqwest", "dep:tracing", "tokio"]
-
-# serde schema / envelope surface for the RPC boundary (`memory::rpc`). Reserved
-# for goal C5; gates the wire-facing surface without adding heavy dependencies
-# (serde is already a core dependency).
-rpc = []
 
 # Persona distillation surface (`memory::persona`): ingests local coding-agent
 # history, instruction files, and git commits into a durable persona memory
@@ -57,7 +49,6 @@ rpc = []
 # the OpenRouter reference provider, but the pipeline depends only on the
 # `ChatProvider` / `Summariser` / `EmbeddingBackend` traits.
 persona = []
-
 [dependencies]
 anyhow = "1"
 log = "0.4"
@@ -88,7 +79,7 @@ walkdir = "2"
 git2 = { version = "0.21", default-features = false, features = [
     "vendored-libgit2",
 ], optional = true }
-# reqwest pulls a large async HTTP stack — only for the `providers-http` feature.
+# reqwest pulls a large async HTTP stack — only for live synchronization.
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "rustls-tls",

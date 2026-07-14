@@ -15,7 +15,7 @@
 //!
 //! - **Explicitly** — via the [`store`] operations (`list` / `add` / `edit` /
 //!   `delete`), which back both RPC handlers and agent tools in OpenHuman.
-//! - **By reflection** — a turn-based pass ([`reflect`]) that reads the current
+//! - **By reflection** — a turn-based pass ([`reflect()`]) that reads the current
 //!   list plus a context nudge and applies add/edit/delete. On an empty list
 //!   (first run) it populates an initial set; otherwise it makes minimal
 //!   changes. The LLM step is abstracted behind [`reflect::GoalsGenerator`];

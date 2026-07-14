@@ -9,6 +9,8 @@
 //! behind [`engine::Summariser`]; the RPC/CLI/bus/schema surfaces are not ported.
 
 pub mod engine;
+mod fold;
+mod rebuild_fs;
 pub mod store;
 pub mod types;
 

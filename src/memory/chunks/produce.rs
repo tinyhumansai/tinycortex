@@ -67,26 +67,15 @@ pub struct ChunkerInput {
 ///
 /// ## Dispatch by source kind
 ///
-/// - **Chat / Email**: split at message/email boundaries, then greedy-pack
-///   consecutive units into a single chunk until adding the next unit would
-///   exceed `max_tokens`. Oversize units (a single message > `max_tokens`)
-///   fall back to [`split_by_token_budget`] and emit each piece with
-///   `partial_message = true`.
-/// - **Document**: split by [`split_by_token_budget`] — sized by the
+/// - **Chat / Email**: one chunk per message/email boundary. Oversize units
+///   fall back to the bounded splitter and emit each piece with
+///   `partial_message = true`. IDs derive from the complete logical unit plus
+///   the piece index, so overlapping deliveries are stable regardless of batch
+///   position.
+/// - **Document**: split by the bounded token-budget helper — sized by the
 ///   conservative token estimate (paragraph → sentence → whitespace →
 ///   hard-char) with ~12% overlap between adjacent chunks.
 ///
-/// # NOTE — re-ingest of a grown source can leave stale rows (audit SC-8)
-/// Chunk ids are deterministic in `(source_kind, source_id, seq, content)`, so
-/// re-chunking byte-identical input reproduces the exact same ids — an
-/// idempotent no-op against the store. But greedy packing means *appending*
-/// new messages/emails to a source changes the content of what used to be the
-/// last packed chunk at a given `seq`, so re-chunking a grown source produces
-/// a **new** id at that `seq` rather than replacing the old row. This
-/// function itself has no store access and cannot dedupe across calls; the
-/// caller ([`super::store::upsert_chunks`]) only adds/replaces by id, so the
-/// old row from the pre-growth chunking is never removed unless the caller
-/// explicitly reconciles by source.
 pub fn chunk_markdown(input: &ChunkerInput, opts: &ChunkerOptions) -> Vec<Chunk> {
     let now = chrono::Utc::now();
     let max_tokens = opts.max_tokens.max(1);
@@ -121,47 +110,21 @@ pub fn chunk_markdown(input: &ChunkerInput, opts: &ChunkerOptions) -> Vec<Chunk>
             .collect();
     }
 
-    // For Chat and Email: greedy-pack consecutive units into chunks.
-    let unit_separator = "\n\n";
-    let sep_chars = unit_separator.chars().count();
-
+    // Chat/email IDs are tied to each complete logical unit, not its batch-local
+    // sequence. This makes overlapping redelivery idempotent.
     let mut out: Vec<Chunk> = Vec::new();
-    let mut acc: Vec<String> = Vec::new();
-    let mut acc_chars = 0usize;
-
-    // Flush accumulated units as one packed chunk.
-    let flush = |acc: &mut Vec<String>, acc_chars: &mut usize, out: &mut Vec<Chunk>| {
-        if acc.is_empty() {
-            return;
-        }
-        let content = acc.join(unit_separator);
-        let seq = out.len() as u32;
-        let tc = approx_token_count(&content);
-        let id = chunk_id(input.source_kind, &input.source_id, seq, &content);
-        out.push(Chunk {
-            id,
-            content,
-            metadata: input.metadata.clone(),
-            token_count: tc,
-            seq_in_source: seq,
-            created_at: now,
-            partial_message: false,
-        });
-        acc.clear();
-        *acc_chars = 0;
-    };
-
     for unit in units {
         let unit_chars = unit.chars().count();
 
         if unit_chars > max_chars {
-            // Oversize: flush any pending accumulator first, then sub-split.
-            flush(&mut acc, &mut acc_chars, &mut out);
             let sub_pieces = split_by_token_budget(&unit, max_tokens);
-            for piece in sub_pieces {
+            for (part, piece) in sub_pieces.into_iter().enumerate() {
                 let seq = out.len() as u32;
                 let tc = approx_token_count(&piece);
-                let id = chunk_id(input.source_kind, &input.source_id, seq, &piece);
+                // Include the emitted piece in the identity. If the split
+                // boundary changes, a body must not silently reuse the old
+                // embedding/score identity for the same part number.
+                let id = chunk_id(input.source_kind, &input.source_id, part as u32, &piece);
                 out.push(Chunk {
                     id,
                     content: piece,
@@ -174,28 +137,19 @@ pub fn chunk_markdown(input: &ChunkerInput, opts: &ChunkerOptions) -> Vec<Chunk>
             }
             continue;
         }
-
-        // Compute projected size if we add this unit to the accumulator.
-        let projected = if acc.is_empty() {
-            unit_chars
-        } else {
-            acc_chars + sep_chars + unit_chars
-        };
-
-        if projected > max_chars {
-            // Adding this unit would overflow — flush the accumulator first.
-            flush(&mut acc, &mut acc_chars, &mut out);
-        }
-
-        if !acc.is_empty() {
-            acc_chars += sep_chars;
-        }
-        acc_chars += unit_chars;
-        acc.push(unit);
+        let seq = out.len() as u32;
+        let token_count = approx_token_count(&unit);
+        let id = chunk_id(input.source_kind, &input.source_id, 0, &unit);
+        out.push(Chunk {
+            id,
+            content: unit,
+            metadata: input.metadata.clone(),
+            token_count,
+            seq_in_source: seq,
+            created_at: now,
+            partial_message: false,
+        });
     }
-
-    // Flush any remaining accumulated units.
-    flush(&mut acc, &mut acc_chars, &mut out);
 
     if out.is_empty() {
         // Degenerate: empty input → one empty chunk, matching original behaviour.

@@ -39,14 +39,32 @@ pub const GLOBAL_NAMESPACE: &str = "global";
 /// Sync paths that ingest text from third-party services (Gmail / Slack /
 /// Notion / Composio / MCP / …) MUST set this to [`MemoryTaint::ExternalSync`]
 /// at write time so callers can refuse external-effect tools on tainted context.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MemoryTaint {
     /// User-driven memory (chat, manual remember, internal heuristics).
     #[default]
     Internal,
     /// Content ingested from an external sync source.
     ExternalSync,
+}
+
+impl Serialize for MemoryTaint {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_db_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for MemoryTaint {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Ok(Self::from_db_str(&raw))
+    }
 }
 
 impl MemoryTaint {
@@ -96,8 +114,7 @@ impl MemoryTaint {
 }
 
 /// Categories used to organize and filter memories by nature and lifecycle.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemoryCategory {
     /// Long-term foundational facts, user preferences, permanent decisions.
     Core,
@@ -109,23 +126,54 @@ pub enum MemoryCategory {
     Custom(String),
 }
 
-/// Renders the wire label for the built-in variants (`"core"`, `"daily"`,
-/// `"conversation"`) and the raw inner name for [`MemoryCategory::Custom`].
-///
-/// This is a human-readable rendering only and is **not** the same as the
-/// `serde` wire format: `Custom(name)` serializes to JSON as
-/// `{"custom": name}` (serde's default externally-tagged representation for a
-/// newtype variant), whereas [`Display`](std::fmt::Display) renders it as bare
-/// `name` with no `"custom"` wrapper. Do not round-trip through `Display` for
-/// persistence or RPC — use `serde_json` (de)serialization instead.
+/// The stable wire/display representation uses the built-in labels directly
+/// and prefixes custom values with `custom:`. The prefix keeps
+/// `Custom("core")` distinct from [`MemoryCategory::Core`] and makes Display,
+/// serde, and [`std::str::FromStr`] true inverses.
 impl std::fmt::Display for MemoryCategory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Core => write!(f, "core"),
             Self::Daily => write!(f, "daily"),
             Self::Conversation => write!(f, "conversation"),
-            Self::Custom(name) => write!(f, "{name}"),
+            Self::Custom(name) => write!(f, "custom:{name}"),
         }
+    }
+}
+
+impl std::str::FromStr for MemoryCategory {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "core" => Ok(Self::Core),
+            "daily" => Ok(Self::Daily),
+            "conversation" => Ok(Self::Conversation),
+            value if value.starts_with("custom:") && value.len() > "custom:".len() => {
+                Ok(Self::Custom(value["custom:".len()..].to_string()))
+            }
+            value if !value.is_empty() => Ok(Self::Custom(value.to_string())),
+            _ => Err(format!("unknown memory category: {value}")),
+        }
+    }
+}
+
+impl Serialize for MemoryCategory {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for MemoryCategory {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        value.parse().map_err(serde::de::Error::custom)
     }
 }
 

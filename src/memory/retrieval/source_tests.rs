@@ -184,7 +184,7 @@ async fn sidecar_embeddings_hydrate_for_rerank() {
 
     // collect_source_hits must surface the sidecar vector even though the
     // in-row embedding column is NULL.
-    let scored = collect_source_hits(&cfg, None, Some(SourceKind::Chat)).unwrap();
+    let scored = collect_source_hits(&cfg, None, Some(SourceKind::Chat), None).unwrap();
     assert_eq!(scored.len(), 1);
     assert_eq!(scored[0].1.as_deref(), Some(unit_vec(0).as_slice()));
 }

@@ -61,12 +61,26 @@ const SCHEMA_SQL: &str = "
 const OWNED_CONNECTION_PRAGMAS: &str = "
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
+    PRAGMA busy_timeout = 15000;
 ";
 
-const UPSERT_SQL: &str = "INSERT OR REPLACE INTO mem_tree_entity_index (
+pub(super) const UPSERT_SQL: &str = "INSERT OR REPLACE INTO mem_tree_entity_index (
     entity_id, node_id, node_kind, entity_kind, surface,
     score, timestamp_ms, tree_id, is_user
  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)";
+
+pub(super) const UPSERT_PRESERVE_USER_SQL: &str = "INSERT INTO mem_tree_entity_index (
+    entity_id, node_id, node_kind, entity_kind, surface,
+    score, timestamp_ms, tree_id, is_user
+ ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+ ON CONFLICT(entity_id, node_id) DO UPDATE SET
+    node_kind = excluded.node_kind,
+    entity_kind = excluded.entity_kind,
+    surface = excluded.surface,
+    score = excluded.score,
+    timestamp_ms = excluded.timestamp_ms,
+    tree_id = excluded.tree_id,
+    is_user = MAX(mem_tree_entity_index.is_user, excluded.is_user)";
 
 /// SQLite-backed entity occurrence index.
 ///
@@ -77,6 +91,21 @@ pub struct EntityIndex {
 }
 
 impl EntityIndex {
+    /// Wrap the engine's shared chunk-database connection with the default
+    /// no-op identity resolver.
+    pub fn for_memory_config(config: &crate::memory::config::MemoryConfig) -> anyhow::Result<Self> {
+        Self::for_memory_config_with_identity(config, Arc::new(NoSelfIdentity))
+    }
+
+    /// Wrap the engine's shared chunk-database connection with a host-provided
+    /// identity resolver.
+    pub fn for_memory_config_with_identity(
+        config: &crate::memory::config::MemoryConfig,
+        identity: Arc<dyn SelfIdentity>,
+    ) -> anyhow::Result<Self> {
+        Self::from_shared_connection(crate::memory::chunks::shared_connection(config)?, identity)
+    }
+
     /// Open (or create) an index at `db_path` with the default no-op identity.
     pub fn open(db_path: &Path) -> anyhow::Result<Self> {
         Self::open_with_identity(db_path, Arc::new(NoSelfIdentity))
@@ -332,7 +361,8 @@ impl EntityIndex {
 
     /// Run a closure with the raw transaction, for callers that need to fold
     /// entity indexing into a larger atomic write. The closure receives a
-    /// [`Transaction`] and may call [`index_entities_tx`].
+    /// [`Transaction`] and may call
+    /// [`crate::memory::store::entity_index::index_entities_tx`].
     pub fn with_transaction<T>(
         &self,
         f: impl FnOnce(&Transaction<'_>) -> anyhow::Result<T>,
@@ -347,7 +377,7 @@ impl EntityIndex {
 
 /// Resolve `is_user` for a summary canonical id (`"<kind>:<value>"`), returning
 /// `false` for malformed ids or non-matchable kinds.
-fn canonical_id_is_user(identity: &dyn SelfIdentity, canonical_id: &str) -> bool {
+pub(super) fn canonical_id_is_user(identity: &dyn SelfIdentity, canonical_id: &str) -> bool {
     let Some((kind_str, value)) = canonical_id.split_once(':') else {
         return false;
     };
@@ -355,110 +385,6 @@ fn canonical_id_is_user(identity: &dyn SelfIdentity, canonical_id: &str) -> bool
         return false;
     };
     identity.is_self(kind, value)
-}
-
-/// Transaction-scoped batch index, for folding into a larger atomic write via
-/// [`EntityIndex::with_transaction`]. `is_user` defaults to `false` here since
-/// the identity resolver is not in scope on a bare transaction.
-///
-/// NOTE: because the upsert is keyed on `(entity_id, node_id)` and always
-/// writes `is_user = 0`, re-indexing a node through this path clobbers a row
-/// that a prior [`EntityIndex::index_entity`]/[`EntityIndex::index_entities`]
-/// call had correctly marked `is_user = 1` — there is no read-before-write to
-/// preserve the existing flag. Callers that need `is_user` preserved across
-/// re-indexing should not mix this entry point with the identity-aware ones
-/// for the same node.
-pub fn index_entities_tx(
-    tx: &Transaction<'_>,
-    entities: &[CanonicalEntity],
-    node_id: &str,
-    node_kind: &str,
-    timestamp_ms: i64,
-    tree_id: Option<&str>,
-) -> anyhow::Result<usize> {
-    index_entities_tx_with_identity(
-        tx,
-        entities,
-        node_id,
-        node_kind,
-        timestamp_ms,
-        tree_id,
-        &NoSelfIdentity,
-    )
-}
-
-/// Identity-aware transaction-scoped batch index.
-pub fn index_entities_tx_with_identity(
-    tx: &Transaction<'_>,
-    entities: &[CanonicalEntity],
-    node_id: &str,
-    node_kind: &str,
-    timestamp_ms: i64,
-    tree_id: Option<&str>,
-    identity: &dyn SelfIdentity,
-) -> anyhow::Result<usize> {
-    if entities.is_empty() {
-        return Ok(0);
-    }
-    let mut stmt = tx.prepare(UPSERT_SQL)?;
-    for e in entities {
-        stmt.execute(params![
-            e.canonical_id,
-            node_id,
-            node_kind,
-            e.kind.as_str(),
-            e.surface,
-            e.score,
-            timestamp_ms,
-            tree_id,
-            identity.is_self(e.kind, &e.surface) as i32,
-        ])?;
-    }
-    Ok(entities.len())
-}
-
-/// Remove a node's entity rows inside a caller-owned transaction.
-pub fn clear_entity_index_for_node_tx(
-    tx: &Transaction<'_>,
-    node_id: &str,
-) -> anyhow::Result<usize> {
-    Ok(tx.execute(
-        "DELETE FROM mem_tree_entity_index WHERE node_id = ?1",
-        params![node_id],
-    )?)
-}
-
-/// Index summary entity ids inside a caller-owned transaction.
-pub fn index_summary_entity_ids_tx_with_identity(
-    tx: &Transaction<'_>,
-    entity_ids: &[String],
-    node_id: &str,
-    score: f32,
-    timestamp_ms: i64,
-    tree_id: Option<&str>,
-    identity: &dyn SelfIdentity,
-) -> anyhow::Result<usize> {
-    if entity_ids.is_empty() {
-        return Ok(0);
-    }
-    let mut stmt = tx.prepare(UPSERT_SQL)?;
-    for canonical_id in entity_ids {
-        let entity_kind = canonical_id
-            .split_once(':')
-            .map_or(canonical_id.as_str(), |(kind, _)| kind);
-        stmt.execute(params![
-            canonical_id,
-            node_id,
-            "summary",
-            entity_kind,
-            canonical_id,
-            score,
-            timestamp_ms,
-            tree_id,
-            canonical_id_is_user(identity, canonical_id) as i32,
-        ])?;
-    }
-    Ok(entity_ids.len())
 }
 
 #[cfg(test)]

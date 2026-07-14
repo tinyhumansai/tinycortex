@@ -178,6 +178,31 @@ pub fn list_summaries_in_window(
     })
 }
 
+/// List non-deleted summaries whose time envelope overlaps the inclusive
+/// `[since_ms, until_ms]` window, across every summary level in one tree.
+///
+/// Unlike [`list_summaries_in_window`], which requires full containment for
+/// cover construction, this overlap query is intended for retrieval.
+pub fn list_summaries_overlapping_window(
+    config: &MemoryConfig,
+    tree_id: &str,
+    since_ms: i64,
+    until_ms: i64,
+) -> Result<Vec<SummaryNode>> {
+    with_connection(config, |conn| {
+        let mut stmt = conn.prepare(&format!(
+            "{SELECT_SUMMARY_BASE} WHERE tree_id = ?1 AND deleted = 0 AND level >= 1 \
+               AND time_range_end_ms >= ?2 AND time_range_start_ms <= ?3 \
+             ORDER BY level ASC, time_range_start_ms ASC"
+        ))?;
+        let rows = stmt
+            .query_map(params![tree_id, since_ms, until_ms], row_to_summary)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("Failed to collect overlapping summaries")?;
+        Ok(rows)
+    })
+}
+
 /// List non-deleted summaries whose `parent_id` is `parent` (its direct
 /// children). Ordered by `sealed_at` ASC. Used by the tree-walk read path.
 pub fn list_children_of_summary(

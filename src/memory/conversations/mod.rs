@@ -14,12 +14,12 @@
 //!
 //! ## Layout
 //!
-//! - [`types`] — the on-disk wire types (threads, messages, patches, hits).
-//! - [`tokenize`] — multilingual normalization + character n-gram tokenizer.
-//! - [`inverted_index`] — in-memory trigram/bigram index over message content.
-//! - [`store`] — the JSONL [`ConversationStore`] (append/read/update/delete,
+//! - `types` — the on-disk wire types (threads, messages, patches, hits).
+//! - `tokenize` — multilingual normalization + character n-gram tokenizer.
+//! - `inverted_index` — in-memory trigram/bigram index over message content.
+//! - `store` — the JSONL [`ConversationStore`] (append/read/update/delete,
 //!   process-wide write serialization, warm-index cache, cross-thread search).
-//! - [`bus`] — a channel-persistence subscriber that mirrors inbound/processed
+//! - `bus` — a channel-persistence subscriber that mirrors inbound/processed
 //!   channel turns into the store.
 //!
 //! ## Ported-from-OpenHuman notes

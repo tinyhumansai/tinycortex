@@ -16,13 +16,20 @@
 //! particular (un-ported) store.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use serde_json::Value;
 
 use super::types::{tool_memory_namespace, ToolMemoryPriority, ToolMemoryRule, ToolMemorySource};
 use crate::memory::traits::Memory;
 use crate::memory::types::MemoryCategory;
+
+/// Serializes the read-modify-write portion of rule upserts across store
+/// handles. The backend trait does not expose compare-and-swap, so the lock is
+/// the only portable way to preserve `created_at` and prevent lost in-process
+/// updates.
+static RULE_MUTATION_LOCK: LazyLock<futures::lock::Mutex<()>> =
+    LazyLock::new(|| futures::lock::Mutex::new(()));
 
 /// Maximum number of rules surfaced into the system prompt at once.
 ///
@@ -58,32 +65,14 @@ impl ToolMemoryStore {
     /// `created_at` is preserved. `tool_name` is sourced from the rule
     /// itself to avoid storage/namespace skew.
     ///
-    /// Validation is limited to "non-empty `tool_name`" and "non-empty
-    /// `rule` body" — callers should be aware of the following gaps:
+    /// `tool_name` is trimmed and lower-cased before new writes. Legacy
+    /// mixed-case rows remain unchanged until they are rewritten. Rule bodies
+    /// may contain newlines; the renderer treats them as body text rather than
+    /// allowing them to create additional tool sections.
     ///
-    /// NOTE: `rule.rule` is not rejected or sanitized for embedded newlines.
-    /// [`render_tool_memory_rules`](super::render::render_tool_memory_rules)
-    /// concatenates the rule body verbatim into the pinned system-prompt
-    /// block, so a stored rule containing `"...\n### \`shell\`\n- ..."` can
-    /// forge what looks like a second tool section inside a block the
-    /// prompt frames as a hard constraint. This matters because rules can
-    /// arrive from [`ToolMemorySource::PostTurn`] auto-capture of untrusted
-    /// tool-failure text. Sanitize/reject `\n`/`\r` before calling this if
-    /// the rule body may be attacker-influenced.
-    ///
-    /// NOTE: `tool_name` is stored verbatim (only the derived namespace is
-    /// lower-cased via [`tool_memory_namespace`]), so `"Email"` and
-    /// `"email"` land in the same namespace but are treated as two distinct
-    /// tools by [`list_rules`](Self::list_rules) grouping and by
-    /// [`render_tool_memory_rules`](super::render::render_tool_memory_rules)'s
-    /// per-tool heading. Normalize `tool_name` before calling if case
-    /// consistency matters to the caller.
-    ///
-    /// NOTE: this is a racy read (`fetch_rule`) → write (`Memory::store`)
-    /// with no mutation lock (unlike the process-wide lock the `goals`
-    /// module uses around its own load→mutate→save sequences). Concurrent
-    /// upserts of the same `(tool_name, id)` can interleave and lose an
-    /// update.
+    /// The read (`fetch_rule`) → write (`Memory::store`) transaction is
+    /// serialized across all in-process store handles because the generic
+    /// backend contract does not expose compare-and-swap.
     pub async fn put_rule(&self, mut rule: ToolMemoryRule) -> Result<ToolMemoryRule, String> {
         if rule.tool_name.trim().is_empty() {
             return Err("tool_name is required".to_string());
@@ -94,6 +83,9 @@ impl ToolMemoryStore {
         if rule.id.trim().is_empty() {
             rule.id = ToolMemoryRule::generate_id();
         }
+        rule.tool_name = rule.tool_name.trim().to_lowercase();
+
+        let _guard = RULE_MUTATION_LOCK.lock().await;
 
         let namespace = tool_memory_namespace(&rule.tool_name);
         let key = ToolMemoryRule::storage_key(&rule.id);
@@ -171,15 +163,9 @@ impl ToolMemoryStore {
 
     /// Returns the set of rules whose [`ToolMemoryPriority`] indicates
     /// they must be eagerly surfaced (Critical + High), grouped by tool
-    /// name. Result is bounded by [`TOOL_MEMORY_PROMPT_CAP`] entries
-    /// total — Critical rules are always preferred over High when the
-    /// cap is reached (the truncate happens after a Critical-first sort).
-    ///
-    /// NOTE: the cap is a hard `truncate`, not a per-priority reservation.
-    /// If more than [`TOOL_MEMORY_PROMPT_CAP`] Critical rules exist across
-    /// the scanned tools, the ones sorted past the cap (oldest `updated_at`
-    /// within Critical) are silently dropped from the prompt injection —
-    /// there is no overflow signal to the caller.
+    /// name. Every Critical rule is retained; [`TOOL_MEMORY_PROMPT_CAP`]
+    /// limits only the High-priority remainder. The result can therefore
+    /// exceed the cap when there are more Critical rules than the cap.
     ///
     /// `tools` constrains which tool namespaces to inspect; passing an
     /// empty slice scans every known tool namespace via
@@ -210,7 +196,11 @@ impl ToolMemoryStore {
                 .cmp(&a.priority)
                 .then_with(|| b.updated_at.cmp(&a.updated_at))
         });
-        collected.truncate(TOOL_MEMORY_PROMPT_CAP);
+        let critical_count = collected
+            .iter()
+            .take_while(|rule| rule.priority == ToolMemoryPriority::Critical)
+            .count();
+        collected.truncate(TOOL_MEMORY_PROMPT_CAP.max(critical_count));
 
         let mut out: HashMap<String, Vec<ToolMemoryRule>> = HashMap::new();
         for rule in collected {

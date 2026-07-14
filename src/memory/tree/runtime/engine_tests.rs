@@ -65,6 +65,26 @@ struct FailAtLevelSummariser {
     fail_level: &'static str,
     reply: String,
 }
+
+#[derive(Default)]
+struct ReceiptRetrySummariser {
+    hour_inputs: Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl Summariser for ReceiptRetrySummariser {
+    async fn summarise(&self, system: Option<&str>, content: &str) -> anyhow::Result<String> {
+        let system = system.unwrap_or("");
+        if system.contains("at the hour level") {
+            self.hour_inputs.lock().unwrap().push(content.to_string());
+            return Ok("word ".repeat(5_000));
+        }
+        if system.contains("at the day level") {
+            anyhow::bail!("simulated day failure");
+        }
+        Ok("ok".to_string())
+    }
+}
 #[async_trait]
 impl Summariser for FailAtLevelSummariser {
     async fn summarise(&self, system: Option<&str>, _content: &str) -> anyhow::Result<String> {
@@ -287,6 +307,39 @@ async fn run_summarization_multi_hour_groups_produce_multiple_leaves() {
         .unwrap()
         .is_some());
     assert!(store::buffer_read(&cfg, ns).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn retry_after_propagation_failure_does_not_double_fold_buffer() {
+    let tmp = TempDir::new().unwrap();
+    let cfg = test_config(&tmp);
+    let ns = "receipt-retry";
+    let ts = Utc.with_ymd_and_hms(2024, 3, 15, 8, 0, 0).unwrap();
+    store::buffer_write(&cfg, ns, "only once", &ts, None).unwrap();
+    store::buffer_write(
+        &cfg,
+        ns,
+        "also once",
+        &(ts + chrono::Duration::hours(1)),
+        None,
+    )
+    .unwrap();
+    let failing = ReceiptRetrySummariser::default();
+
+    run_summarization(&cfg, &failing, ns, ts).await.unwrap();
+    run_summarization(&cfg, &failing, ns, ts).await.unwrap();
+
+    assert_eq!(failing.hour_inputs.lock().unwrap().len(), 2);
+    assert_eq!(store::buffer_read(&cfg, ns).unwrap().len(), 2);
+
+    run_summarization(&cfg, &StubSummariser::with_reply("recovered"), ns, ts)
+        .await
+        .unwrap();
+    assert!(store::buffer_read(&cfg, ns).unwrap().is_empty());
+    let hour = store::read_node(&cfg, ns, "2024/03/15/08")
+        .unwrap()
+        .unwrap();
+    assert!(hour.metadata.is_none(), "internal receipt must be cleared");
 }
 
 #[tokio::test]

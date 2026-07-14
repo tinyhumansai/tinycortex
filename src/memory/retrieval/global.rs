@@ -19,7 +19,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use crate::memory::chunks::{get_chunk_embeddings_batch, get_chunks_batch, SourceKind};
 use crate::memory::config::MemoryConfig;
 use crate::memory::score::embed::Embedder;
-use crate::memory::score::store::lookup_entity;
+use crate::memory::score::store::{get_dropped_chunk_ids_batch, lookup_entity_in_window};
 use crate::memory::tree::store::{
     get_summaries_batch, get_summary_embeddings_batch, get_trees_batch,
 };
@@ -29,14 +29,6 @@ use super::types::{hit_from_chunk, hit_from_summary, QueryResponse};
 
 /// Default result cap applied by both primitives when the caller passes
 /// `limit = 0`.
-const DEFAULT_LIMIT: usize = 10;
-
-/// Per-entity node cap for the topic projection: `resolve_topic_hits` reads
-/// at most this many newest entity-index rows for a given `entity_id` before
-/// any window filter is applied (see the gotcha documented on
-/// [`query_topic`]).
-const TOPIC_LOOKUP_CAP: usize = 200;
-
 /// Cross-source digest over `[since_ms, until_ms]`.
 ///
 /// Gathers summaries from every source tree (optionally narrowed by
@@ -46,11 +38,8 @@ const TOPIC_LOOKUP_CAP: usize = 200;
 ///
 /// Returns an error if `until_ms < since_ms`.
 ///
-/// Cost note: the window filter is applied in Rust, after
-/// `collect_source_hits` has materialized every non-deleted summary across
-/// every selected source tree (embeddings included) — see
-/// `collect_source_hits`'s docs for why this does not scale with store
-/// size.
+/// The window predicate is applied in SQLite per selected tree before summary
+/// embeddings are hydrated.
 pub async fn query_global(
     config: &MemoryConfig,
     since_ms: i64,
@@ -60,17 +49,18 @@ pub async fn query_global(
     embedder: &dyn Embedder,
     limit: usize,
 ) -> Result<QueryResponse> {
-    let limit = if limit == 0 { DEFAULT_LIMIT } else { limit };
+    let limits = &config.retrieval.limits;
+    let limit = if limit == 0 {
+        limits.default_limit
+    } else {
+        limit.min(limits.max_limit)
+    };
     if until_ms < since_ms {
         return Err(anyhow::anyhow!(
             "query_global: until_ms ({until_ms}) precedes since_ms ({since_ms})"
         ));
     }
-    let since = ms_to_utc(since_ms);
-    let until = ms_to_utc(until_ms);
-
-    let mut scored = collect_source_hits(config, None, source_kind)?;
-    scored.retain(|(h, _)| h.time_range_end >= since && h.time_range_start <= until);
+    let scored = collect_source_hits(config, None, source_kind, Some((since_ms, until_ms)))?;
     let total = scored.len();
 
     let mut hits = order_hits(scored, query, embedder).await;
@@ -85,15 +75,10 @@ pub async fn query_global(
 /// hit (summaries hydrated with their tree scope, leaves with their source id),
 /// optionally restricted to `[since_ms, until_ms]` and reranked by `query`.
 ///
-/// # Gotcha: the window filter runs after a hard row cap
-///
-/// `resolve_topic_hits` caps the entity-index lookup at `TOPIC_LOOKUP_CAP`
-/// newest rows *before* the `since_ms`/`until_ms` window is applied here. For
-/// an entity with more mentions than the cap, a window reaching further back
-/// than the cap's newest rows can return zero or partial hits even though
-/// matching rows exist further back in the index, and the returned `total`
-/// under-reports the true match count for that window. Callers should not
-/// assume completeness for a high-mention entity queried with an old window.
+/// The entity-index timestamp window is pushed into SQLite before the
+/// configured topic lookup cap, so historical windows are not crowded
+/// out by newer mentions. A window containing more than the cap remains
+/// intentionally bounded.
 pub async fn query_topic(
     config: &MemoryConfig,
     entity_id: &str,
@@ -103,13 +88,18 @@ pub async fn query_topic(
     embedder: &dyn Embedder,
     limit: usize,
 ) -> Result<QueryResponse> {
-    let limit = if limit == 0 { DEFAULT_LIMIT } else { limit };
+    let limits = &config.retrieval.limits;
+    let limit = if limit == 0 {
+        limits.default_limit
+    } else {
+        limit.min(limits.max_limit)
+    };
     let entity_id = entity_id.trim();
     if entity_id.is_empty() {
         return Ok(QueryResponse::empty());
     }
 
-    let mut scored = resolve_topic_hits(config, entity_id)?;
+    let mut scored = resolve_topic_hits(config, entity_id, since_ms, until_ms)?;
 
     if since_ms.is_some() || until_ms.is_some() {
         let since = since_ms.map(ms_to_utc);
@@ -130,14 +120,24 @@ pub async fn query_topic(
 /// preserving the entity index's newest-first order and hydrating embeddings
 /// (summary sidecar / chunk sidecar) for the optional rerank pass.
 ///
-/// Caps the lookup at `TOPIC_LOOKUP_CAP` rows (see the caller-facing gotcha
-/// on [`query_topic`]). Soft-deleted summaries are excluded (`node.deleted`
-/// check below); leaf chunks have no equivalent tombstone check here, so a
-/// dropped chunk that is still indexed can still surface in topic results.
-/// An entity-index row whose `node_id` resolves to neither a summary nor a
-/// chunk (a stale index entry) is silently skipped.
-fn resolve_topic_hits(config: &MemoryConfig, entity_id: &str) -> Result<Vec<ScoredHit>> {
-    let entity_hits = lookup_entity(config, entity_id, Some(TOPIC_LOOKUP_CAP))?;
+/// Caps the already-windowed lookup at the configured topic limit. Soft-deleted
+/// summaries are excluded via `node.deleted`; leaf chunks are filtered against
+/// the fetched `dropped_chunk_ids` tombstone set. An entity-index row whose
+/// `node_id` resolves to neither a summary nor a chunk (a stale index entry) is
+/// silently skipped.
+fn resolve_topic_hits(
+    config: &MemoryConfig,
+    entity_id: &str,
+    since_ms: Option<i64>,
+    until_ms: Option<i64>,
+) -> Result<Vec<ScoredHit>> {
+    let entity_hits = lookup_entity_in_window(
+        config,
+        entity_id,
+        since_ms,
+        until_ms,
+        Some(config.retrieval.limits.topic_lookup_limit),
+    )?;
     if entity_hits.is_empty() {
         return Ok(Vec::new());
     }
@@ -155,6 +155,7 @@ fn resolve_topic_hits(config: &MemoryConfig, entity_id: &str) -> Result<Vec<Scor
 
     let summaries = get_summaries_batch(config, &summary_ids)?;
     let summary_embs = get_summary_embeddings_batch(config, &summary_ids)?;
+    let dropped_chunk_ids = get_dropped_chunk_ids_batch(config, &leaf_ids)?;
     let chunks = get_chunks_batch(config, &leaf_ids)?;
     let chunk_embs = get_chunk_embeddings_batch(config, &leaf_ids)?;
 
@@ -184,7 +185,10 @@ fn resolve_topic_hits(config: &MemoryConfig, entity_id: &str) -> Result<Vec<Scor
                 .clone()
                 .or_else(|| summary_embs.get(&node.id).cloned());
             out.push((hit_from_summary(node, &scope), emb));
-        } else if let Some(chunk) = chunks.get(&eh.node_id) {
+        } else if let Some(chunk) = chunks
+            .get(&eh.node_id)
+            .filter(|chunk| !dropped_chunk_ids.contains(&chunk.id))
+        {
             let emb = chunk_embs.get(&chunk.id).cloned();
             out.push((
                 hit_from_chunk(chunk, "", &chunk.metadata.source_id, 0.0),
@@ -197,16 +201,12 @@ fn resolve_topic_hits(config: &MemoryConfig, entity_id: &str) -> Result<Vec<Scor
 
 /// Epoch-milliseconds → UTC.
 ///
-/// NOTE: despite the name suggesting a saturating conversion, out-of-range
-/// input (e.g. `i64::MIN`/`i64::MAX` sentinels, or any `ms` outside
-/// `chrono`'s representable range) does NOT saturate to `DateTime::<Utc>::MIN_UTC`
-/// / `MAX_UTC` — it falls back to `Utc::now()`. A caller passing a sentinel
-/// meant to mean "no lower/upper bound" for `since_ms`/`until_ms` will
-/// instead get "now", silently narrowing the intended window.
 fn ms_to_utc(ms: i64) -> DateTime<Utc> {
-    Utc.timestamp_millis_opt(ms)
-        .single()
-        .unwrap_or_else(Utc::now)
+    Utc.timestamp_millis_opt(ms).single().unwrap_or(if ms < 0 {
+        DateTime::<Utc>::MIN_UTC
+    } else {
+        DateTime::<Utc>::MAX_UTC
+    })
 }
 
 #[cfg(test)]

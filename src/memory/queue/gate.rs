@@ -6,8 +6,9 @@
 //! the async runtime (`tokio`) is a dev-only dependency here, so this is a
 //! self-contained, runtime-agnostic re-implementation built on `parking_lot`.
 //!
-//! [`acquire`] blocks until a permit is free and returns an RAII [`Permit`]
-//! that returns the slot on drop. The deterministic [`try_acquire`] never
+//! [`LlmGate::acquire`] blocks until a permit is free and returns an RAII
+//! [`Permit`] that returns the slot on drop. The deterministic
+//! [`LlmGate::try_acquire`] never
 //! blocks — it is the seam tests use to assert the gate actually limits
 //! concurrency. The worker holds a permit for the duration of an LLM-bound
 //! handler (see [`JobKind::is_llm_bound`](crate::memory::queue::types::JobKind::is_llm_bound))

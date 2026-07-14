@@ -11,15 +11,12 @@ use crate::memory::score::embed::Embedder;
 use crate::memory::score::store::lookup_entity;
 use crate::memory::tree::store::{get_summaries_batch, get_tree};
 
-use super::fetch::{fetch_leaves, MAX_BATCH};
+use super::fetch::fetch_leaves;
 use super::source::query_source;
 use super::types::{hydrated_summary_hit, QueryResponse};
 
-const LOOKUP_LIMIT: usize = 500;
 const DEFAULT_LIMIT: usize = 10;
-const MAX_RETRIEVE_LIMIT: usize = 100;
 const DEFAULT_MAX_HOPS: u32 = 2;
-const MAX_GRAPH_HOPS: u32 = 4;
 
 #[derive(Clone, Debug)]
 pub struct FastRetrieveOptions {
@@ -46,15 +43,16 @@ pub async fn fast_retrieve(
     source_scope: Option<&HashSet<String>>,
     options: FastRetrieveOptions,
 ) -> Result<QueryResponse> {
+    let limits = &config.retrieval.limits;
     let limit = if options.limit == 0 {
-        DEFAULT_LIMIT
+        limits.default_limit
     } else {
-        options.limit.min(MAX_RETRIEVE_LIMIT)
+        options.limit.min(limits.max_limit)
     };
     let max_hops = if options.max_hops == 0 {
-        DEFAULT_MAX_HOPS
+        limits.default_graph_hops
     } else {
-        options.max_hops.min(MAX_GRAPH_HOPS)
+        options.max_hops.min(limits.max_graph_hops)
     };
     let query = query.trim();
     if query.is_empty() {
@@ -134,8 +132,9 @@ fn local_candidates(
 ) -> Result<HashMap<String, Candidate>> {
     let mut output = HashMap::new();
     for pair in pairs {
-        let left = lookup_entity(config, &pair.a, Some(LOOKUP_LIMIT))?;
-        let right = lookup_entity(config, &pair.b, Some(LOOKUP_LIMIT))?;
+        let occurrence_limit = config.retrieval.limits.occurrence_lookup_limit;
+        let left = lookup_entity(config, &pair.a, Some(occurrence_limit))?;
+        let right = lookup_entity(config, &pair.b, Some(occurrence_limit))?;
         let right_nodes: HashMap<_, _> = right
             .iter()
             .map(|hit| (hit.node_id.as_str(), hit.timestamp_ms))
@@ -186,7 +185,7 @@ fn resolve_local(
         .map(|(id, _)| id.clone())
         .collect();
     let mut by_id = HashMap::new();
-    for ids in leaf_ids.chunks(MAX_BATCH) {
+    for ids in leaf_ids.chunks(config.retrieval.limits.fetch_batch_limit) {
         for hit in fetch_leaves(config, ids)? {
             by_id.insert(hit.node_id.clone(), hit);
         }
@@ -284,77 +283,5 @@ fn dedup_ids(ids: impl Iterator<Item = String>) -> Vec<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::memory::graph::{pairs_from_entities, upsert_edges};
-    use crate::memory::retrieval::test_support::{
-        fixed_ts, index_entity_occurrence, insert_summary, insert_tree_row, source_tree,
-        summary_node, test_config,
-    };
-    use crate::memory::score::embed::InertEmbedder;
-    use crate::memory::score::extract::EntityKind;
-
-    #[test]
-    fn options_and_ids_are_bounded_deterministically() {
-        assert_eq!(FastRetrieveOptions::default().limit, 10);
-        assert_eq!(
-            dedup_ids(vec!["a".into(), "a".into(), "b".into()].into_iter()),
-            vec!["a", "b"]
-        );
-    }
-
-    #[tokio::test]
-    async fn local_branch_intersects_entities_and_applies_scope_before_limit() {
-        let (_temp, config) = test_config();
-        let allowed_tree = source_tree("allowed-tree", "slack:#allowed", Some("allowed"), 1);
-        let denied_tree = source_tree("denied-tree", "slack:#denied", Some("denied"), 1);
-        insert_tree_row(&config, &allowed_tree);
-        insert_tree_row(&config, &denied_tree);
-        for (id, tree_id) in [("allowed", "allowed-tree"), ("denied", "denied-tree")] {
-            insert_summary(
-                &config,
-                &summary_node(id, tree_id, 1, None, &[], id, fixed_ts()),
-            );
-            for (entity, kind) in [
-                ("person:alice", EntityKind::Person),
-                ("topic:launch", EntityKind::Topic),
-            ] {
-                index_entity_occurrence(
-                    &config,
-                    entity,
-                    kind,
-                    entity,
-                    id,
-                    "summary",
-                    fixed_ts().timestamp_millis(),
-                    Some(tree_id),
-                );
-            }
-        }
-        upsert_edges(
-            &config,
-            &pairs_from_entities(&["person:alice".into(), "topic:launch".into()]),
-            fixed_ts().timestamp_millis(),
-        )
-        .unwrap();
-        let scope = HashSet::from(["slack:#allowed".to_string()]);
-
-        let response = fast_retrieve(
-            &config,
-            "alice launch",
-            &["person:alice".into(), "topic:launch".into()],
-            &InertEmbedder,
-            Some(&scope),
-            FastRetrieveOptions {
-                limit: 1,
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(response.total, 1);
-        assert_eq!(response.hits[0].node_id, "allowed");
-        assert_eq!(response.hits[0].score, 2.0);
-    }
-}
+#[path = "fast_tests.rs"]
+mod tests;

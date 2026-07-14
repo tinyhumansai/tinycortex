@@ -49,4 +49,4 @@ pub use pipeline::{
     ingest_canonical, ingest_chat, ingest_document, ingest_document_versioned,
     ingest_document_with_scope, ingest_email, ingest_email_with_raw_refs,
 };
-pub use types::{IngestOptions, IngestSummary, NullJobSink, TreeJobSink};
+pub use types::{IngestOptions, IngestSummary, NullJobSink, QueueJobSink, TreeJobSink};

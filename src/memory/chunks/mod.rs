@@ -3,13 +3,13 @@
 //! One module for the full chunk lifecycle, ported faithfully from
 //! OpenHuman's `memory_store/chunks`:
 //!
-//! - [`types`]    — [`Chunk`], [`Metadata`], [`SourceKind`], [`DataSource`],
+//! - `types` — [`Chunk`], [`Metadata`], [`SourceKind`], [`DataSource`],
 //!   [`SourceRef`], [`StagedChunk`] and the deterministic
 //!   [`chunk_id`] / token-estimate functions. The persisted shape.
-//! - [`produce`]  — source-kind-dispatch chunker (chat / email / document).
+//! - `produce` — source-kind-dispatch chunker (chat / email / document).
 //!   Splits canonical Markdown into bounded chunks with stable per-source
 //!   sequence numbers.
-//! - [`semantic`] — heading- and paragraph-aware chunker used to split large
+//! - `semantic` — heading- and paragraph-aware chunker used to split large
 //!   documents into LLM-context-sized pieces while preserving heading context.
 //!   Exported as [`chunk_semantic`].
 //! - `store` / `connection` / `migrations` / `raw_refs` / `embeddings` —
@@ -26,7 +26,6 @@
 //! one-shot SQLite migrations; everything else is left to the modules that
 //! own those tables.
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -36,6 +35,7 @@ mod schema;
 
 #[path = "connection.rs"]
 mod connection;
+mod connection_breaker;
 #[path = "recovery.rs"]
 mod recovery;
 
@@ -55,6 +55,7 @@ mod semantic;
 mod store;
 #[path = "store_delete.rs"]
 mod store_delete;
+mod store_list;
 #[path = "store_sources.rs"]
 mod store_sources;
 #[path = "types.rs"]
@@ -101,16 +102,18 @@ pub use store::{
     claim_source_ingest_tx, count_chunks, count_chunks_by_lifecycle_status,
     count_raw_paths_ingested_with_prefix, delete_source_ingest, extraction_coverage,
     filter_raw_paths_not_ingested, get_chunk, get_chunk_lifecycle_status, get_chunks_batch,
-    is_source_ingested, list_chunks, list_source_ids_with_prefix, mark_raw_paths_ingested,
+    is_source_ingested, list_source_ids_with_prefix, mark_raw_paths_ingested,
     set_chunk_lifecycle_status, update_chunk_content_sha256, update_summary_content_sha256,
-    upsert_chunks, upsert_chunks_tx, upsert_staged_chunks_tx, ListChunksQuery,
-    CHUNK_STATUS_ADMITTED, CHUNK_STATUS_BUFFERED, CHUNK_STATUS_DROPPED,
-    CHUNK_STATUS_PENDING_EXTRACTION, CHUNK_STATUS_SEALED, RAW_FILE_GATE_KIND,
+    upsert_chunks, upsert_chunks_tx, upsert_staged_chunks_tx, CHUNK_STATUS_ADMITTED,
+    CHUNK_STATUS_BUFFERED, CHUNK_STATUS_DROPPED, CHUNK_STATUS_PENDING_EXTRACTION,
+    CHUNK_STATUS_SEALED, RAW_FILE_GATE_KIND,
 };
+pub(crate) use store_delete::remove_unreferenced_content_files;
 pub use store_delete::{
     delete_chunks_by_owner, delete_chunks_by_source, delete_chunks_by_source_prefix,
     delete_orphaned_source_tree,
 };
+pub use store_list::{list_chunks, ListChunksQuery};
 pub use store_sources::{get_chunk_lifecycle_status_tx, set_chunk_lifecycle_status_tx};
 
 // ── Shared internal constants / helpers ─────────────────────────────────────
@@ -153,38 +156,4 @@ pub(crate) fn redact(s: &str) -> String {
     h.update(s.as_bytes());
     let d = h.finalize();
     format!("{:08x}", u32::from_be_bytes([d[0], d[1], d[2], d[3]]))
-}
-
-/// Tag marking a chunk as belonging to a configurable "memory source".
-const MEMORY_SOURCE_TAG: &str = "memory_sources";
-
-/// Extract the memory-source id from a composite `mem_src:<id>:<item>` source
-/// id, or `None` when the id is not in that format. Mirrors OpenHuman's
-/// `memory::sync::extract_mem_src_id`.
-fn extract_mem_src_id(composite_source_id: &str) -> Option<&str> {
-    let rest = composite_source_id.strip_prefix("mem_src:")?;
-    let colon_pos = rest.find(':')?;
-    let source_id = &rest[..colon_pos];
-    if colon_pos + 1 >= rest.len() {
-        return None;
-    }
-    Some(source_id)
-}
-
-/// Whether a chunk is allowed under a per-profile memory-source allowlist.
-/// Non-memory-source chunks always pass; memory-source chunks pass only when
-/// their (possibly composite) source id resolves into `set`.
-pub(crate) fn chunk_source_allowed_in(
-    set: &HashSet<String>,
-    tags: &[String],
-    source_id: &str,
-) -> bool {
-    let is_memory_source = tags.iter().any(|t| t == MEMORY_SOURCE_TAG);
-    if !is_memory_source {
-        return true;
-    }
-    if set.contains(source_id) {
-        return true;
-    }
-    extract_mem_src_id(source_id).is_some_and(|id| set.contains(id))
 }

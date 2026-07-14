@@ -54,6 +54,34 @@ fn append_increments_seq() {
 }
 
 #[test]
+fn concurrent_record_turn_retries_sequence_collisions_without_loss() {
+    let (_tmp, cfg) = test_config();
+    let writers = 24;
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(writers));
+    let mut threads = Vec::new();
+    for index in 0..writers {
+        let cfg = cfg.clone();
+        let barrier = barrier.clone();
+        threads.push(std::thread::spawn(move || {
+            barrier.wait();
+            record_turn(&cfg, turn("shared", "user", &format!("turn-{index}"))).unwrap()
+        }));
+    }
+    let mut assigned = Vec::new();
+    for thread in threads {
+        assigned.push(thread.join().unwrap().seq);
+    }
+    assigned.sort_unstable();
+    assert_eq!(assigned, (0..writers as u32).collect::<Vec<_>>());
+
+    let entries = session_entries(&cfg, "shared").unwrap();
+    assert_eq!(entries.len(), writers);
+    let contents: std::collections::HashSet<_> =
+        entries.into_iter().map(|entry| entry.content).collect();
+    assert_eq!(contents.len(), writers);
+}
+
+#[test]
 fn missing_session_returns_empty() {
     let (_tmp, cfg) = test_config();
     assert!(session_entries(&cfg, "never").unwrap().is_empty());
@@ -77,6 +105,31 @@ fn preserves_lesson_and_tool_calls() {
         Some(r#"[{"name":"bash","args":{"cmd":"ls"}}]"#)
     );
     assert_eq!(read[0].cost_microdollars, 1234);
+}
+
+#[test]
+fn front_matter_round_trips_multiline_and_delimiter_like_scalars() {
+    let (_tmp, cfg) = test_config();
+    let mut t = turn("session:one", "assistant\nadmin", "body stays separate");
+    t.lesson = Some("first line\n---\nsecond: line\\tail".into());
+    record_turn(&cfg, t.clone()).unwrap();
+
+    let read = session_entries(&cfg, &t.session_id).unwrap();
+    assert_eq!(read.len(), 1);
+    assert_eq!(read[0].session_id, t.session_id);
+    assert_eq!(read[0].role, t.role);
+    assert_eq!(read[0].lesson, t.lesson);
+    assert_eq!(read[0].content, t.content);
+}
+
+#[test]
+fn unsafe_session_ids_have_collision_resistant_directories() {
+    let (_tmp, cfg) = test_config();
+    record_turn(&cfg, turn("a/b", "user", "slash")).unwrap();
+    record_turn(&cfg, turn("a?b", "user", "question")).unwrap();
+
+    assert_eq!(session_entries(&cfg, "a/b").unwrap()[0].content, "slash");
+    assert_eq!(session_entries(&cfg, "a?b").unwrap()[0].content, "question");
 }
 
 #[test]

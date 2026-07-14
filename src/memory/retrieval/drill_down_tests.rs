@@ -277,3 +277,59 @@ async fn drill_down_surfaces_only_latest_doc_version() {
         "superseded chunk filtered"
     );
 }
+
+#[tokio::test]
+async fn drill_down_falls_back_when_latest_doc_revision_is_deleted() {
+    let (_tmp, cfg) = test_config();
+    let ts = fixed_ts();
+    let old_chunk = leaf_chunk("notion:pageA", 0, "surviving old body", ts);
+    let deleted_chunk = leaf_chunk("notion:pageA", 1, "deleted new body", ts);
+    insert_chunks(&cfg, &[old_chunk.clone(), deleted_chunk.clone()]);
+
+    let tree = source_tree("tree:notion", "notion:conn1", Some("s:merge"), 1000);
+    insert_tree_row(&cfg, &tree);
+    let mut old = summary_node(
+        "s:v1",
+        "tree:notion",
+        1,
+        Some("s:merge"),
+        &[&old_chunk.id],
+        "old",
+        ts,
+    );
+    old.doc_id = Some("notion:conn1:pageA".into());
+    old.version_ms = Some(100);
+    let mut deleted = summary_node(
+        "s:v2",
+        "tree:notion",
+        1,
+        Some("s:merge"),
+        &[&deleted_chunk.id],
+        "new",
+        ts,
+    );
+    deleted.doc_id = old.doc_id.clone();
+    deleted.version_ms = Some(200);
+    deleted.deleted = true;
+    let merge = summary_node(
+        "s:merge",
+        "tree:notion",
+        1000,
+        None,
+        &["s:v1", "s:v2"],
+        "merge",
+        ts,
+    );
+    insert_summary(&cfg, &old);
+    insert_summary(&cfg, &deleted);
+    insert_summary(&cfg, &merge);
+
+    let out = drill_down(&cfg, "s:merge", 3, None, &inert(), None)
+        .await
+        .unwrap();
+    let ids: Vec<_> = out.iter().map(|hit| hit.node_id.as_str()).collect();
+    assert!(ids.contains(&"s:v1"));
+    assert!(ids.contains(&old_chunk.id.as_str()));
+    assert!(!ids.contains(&"s:v2"));
+    assert!(!ids.contains(&deleted_chunk.id.as_str()));
+}

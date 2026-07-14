@@ -42,7 +42,7 @@
 //!   [`types::MemoryTaint::ExternalSync`] — the more restrictive setting — so
 //!   policy gates never under-trust content of unknown provenance.
 //! - **Feature-gated modules add no default-build cost.** `diff`, `providers`,
-//!   and `rpc` are compiled out entirely unless their feature is enabled (see
+//!   and `persona` are compiled out entirely unless their feature is enabled (see
 //!   the crate-level feature-flag docs in `lib.rs`); code in this module must
 //!   not assume they are present.
 
@@ -90,13 +90,6 @@ pub mod tree;
 #[cfg(feature = "providers-http")]
 pub mod providers;
 
-/// serde schema / envelope surface for the RPC boundary.
-///
-/// Gated behind the `rpc` feature. Reserves the wire-facing surface for goal
-/// C5 without adding heavy dependencies.
-#[cfg(feature = "rpc")]
-pub mod rpc;
-
 /// Persona distillation: turns local coding-agent history, instruction files,
 /// and git commits into a durable persona memory layer (doc 06).
 ///
@@ -104,7 +97,6 @@ pub mod rpc;
 /// the git-history reader additionally requires `git-diff`.
 #[cfg(feature = "persona")]
 pub mod persona;
-
 // ── Re-exports ──────────────────────────────────────────────────────────────
 pub use config::{MemoryConfig, WeightProfile};
 pub use error::{MemoryEngineResult, MemoryError as MemoryEngineError};
@@ -118,6 +110,6 @@ pub use types::{
 // Starter in-memory store API (kept stable for the smoke test and as a simple
 // reference backend while richer backends are ported under `store`).
 pub use store::types::{
-    MemoryError, MemoryId, MemoryInput, MemoryQuery, MemoryRecord, MemoryResult, SearchHit,
+    MemoryId, MemoryInput, MemoryQuery, MemoryRecord, MemoryResult, SearchHit, StoreError,
 };
 pub use store::{InMemoryMemoryStore, MemoryStore};

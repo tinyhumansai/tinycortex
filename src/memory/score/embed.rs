@@ -2,12 +2,12 @@
 //!
 //! Produces a fixed-dimension vector per chunk / summary so retrieval can
 //! rerank candidates by semantic similarity. The backend is abstracted behind
-//! the [`Embedder`] trait; the crate ships only the deterministic
-//! [`InertEmbedder`] (zero vectors) used by tests. Real network-backed backends
+//! the `Embedder` trait; the crate ships only the deterministic
+//! `InertEmbedder` (zero vectors) used by tests. Real network-backed backends
 //! (Ollama / OpenAI-compatible / cloud) are wired in by a host adapter that
-//! implements [`Embedder`] — TinyCortex never makes a network call.
+//! implements `Embedder` — TinyCortex never makes a network call.
 //!
-//! Dimension is fixed at [`EMBEDDING_DIM`] (768, from
+//! Dimension is fixed at `EMBEDDING_DIM` (768, from
 //! [`crate::memory::config::DEFAULT_EMBEDDING_DIM`]) — mixing dimensions
 //! mid-run would corrupt cosine comparisons, so we catch that at the trait
 //! level rather than deferring to retrieval-time diagnostics.

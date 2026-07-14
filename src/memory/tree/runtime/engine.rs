@@ -7,17 +7,15 @@
 //! through); event-bus progress events and the background hourly loop are not
 //! ported.
 
-use std::collections::BTreeMap;
-
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
-use super::store;
-use super::types::{
-    derive_node_ids, derive_parent_id, estimate_tokens, level_from_node_id, NodeLevel, TreeNode,
-    TreeStatus,
+use super::fold::{
+    clear_pending_fold_receipts, group_by_hour, pending_fold_receipt, PendingFoldReceipt,
 };
+use super::store;
+use super::types::{derive_parent_id, estimate_tokens, NodeLevel, TreeNode, TreeStatus};
 use crate::memory::config::MemoryConfig;
 
 /// Maximum characters for a summary response (hard cap after the summariser call).
@@ -58,13 +56,9 @@ impl RuntimeObserver for NoopObserver {}
 /// step succeeds, so a transient failure leaves the raw entries in place for
 /// the next run to retry.
 ///
-/// # NOTE: retry after a partial failure can double-fold entries (`TR-11`)
-/// Hour leaves are always written unconditionally before propagation runs; if
-/// only an upper-level propagation fails (`_e` below is discarded, so the
-/// specific failure is not surfaced to the caller), the next call re-reads the
-/// buffer (not yet deleted), re-appends its content onto the *already updated*
-/// hour leaf (`to_summarize` prepends `existing_summary`), and folds it a
-/// second time. See `docs/spec/audit/03-tree-archivist-conversations.md`.
+/// Hour leaves carry an internal receipt for the buffer filenames already
+/// folded into them. If upper-level propagation fails, a retry skips those
+/// entries while still incorporating entries appended after the failed run.
 ///
 /// `_ts` is currently unused — hour bucketing is derived from each buffer
 /// entry's own filename timestamp, not from this parameter.
@@ -84,6 +78,7 @@ pub async fn run_summarization_observed(
     _ts: DateTime<Utc>,
     observer: &dyn RuntimeObserver,
 ) -> Result<Option<TreeNode>> {
+    super::rebuild_fs::recover_interrupted_swap(config, namespace)?;
     let buffered = store::buffer_read(config, namespace)?;
     if buffered.is_empty() {
         return Ok(None);
@@ -93,42 +88,78 @@ pub async fn run_summarization_observed(
 
     let mut all_propagation_ids: Vec<(String, NodeLevel)> = Vec::new();
     let mut last_hour_node: Option<TreeNode> = None;
+    let mut pending_hour_ids = Vec::new();
 
-    for (hour_id, entries) in &hour_groups {
-        let combined = entries.join("\n\n---\n\n");
-        let (existing_summary, existing_created_at) =
-            match store::read_node(config, namespace, hour_id)? {
-                Some(existing) => (Some(existing.summary), Some(existing.created_at)),
-                None => (None, None),
+    for (hour_id, group) in &hour_groups {
+        let existing = store::read_node(config, namespace, hour_id)?;
+        let receipt = existing
+            .as_ref()
+            .and_then(|node| pending_fold_receipt(node.metadata.as_deref()));
+        let already_applied: std::collections::HashSet<&str> = receipt
+            .as_ref()
+            .map(|receipt| {
+                receipt
+                    .buffer_filenames
+                    .iter()
+                    .map(String::as_str)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let new_entries = group
+            .entries
+            .iter()
+            .filter(|(filename, _)| !already_applied.contains(filename.as_str()))
+            .collect::<Vec<_>>();
+        let new_content = new_entries
+            .iter()
+            .map(|(_, content)| content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n---\n\n");
+
+        let hour_node = if new_entries.is_empty() {
+            existing.context("pending hour receipt exists without an hour node")?
+        } else {
+            let to_summarize = match existing.as_ref() {
+                Some(previous) => format!("{}\n\n---\n\n{new_content}", previous.summary),
+                None => new_content,
             };
-        let to_summarize = match existing_summary {
-            Some(prev) => format!("{prev}\n\n---\n\n{combined}"),
-            None => combined,
+            let hour_summary = summarize_to_limit(
+                summariser,
+                &to_summarize,
+                NodeLevel::Hour.max_tokens(),
+                "hour",
+                hour_id,
+            )
+            .await
+            .context("summarize hour leaf")?;
+            let now = Utc::now();
+            let previous_metadata = receipt
+                .as_ref()
+                .and_then(|receipt| receipt.previous_metadata.clone())
+                .or_else(|| existing.as_ref().and_then(|node| node.metadata.clone()));
+            let metadata = serde_json::to_string(&PendingFoldReceipt {
+                buffer_filenames: group
+                    .entries
+                    .iter()
+                    .map(|(filename, _)| filename.clone())
+                    .collect(),
+                previous_metadata,
+            })?;
+            let node = TreeNode {
+                node_id: hour_id.clone(),
+                namespace: namespace.to_string(),
+                level: NodeLevel::Hour,
+                parent_id: derive_parent_id(hour_id),
+                summary: hour_summary.clone(),
+                token_count: estimate_tokens(&hour_summary),
+                child_count: 0,
+                created_at: existing.as_ref().map(|node| node.created_at).unwrap_or(now),
+                updated_at: now,
+                metadata: Some(metadata),
+            };
+            store::write_node(config, &node)?;
+            node
         };
-        let hour_summary = summarize_to_limit(
-            summariser,
-            &to_summarize,
-            NodeLevel::Hour.max_tokens(),
-            "hour",
-            hour_id,
-        )
-        .await
-        .context("summarize hour leaf")?;
-
-        let now = Utc::now();
-        let hour_node = TreeNode {
-            node_id: hour_id.clone(),
-            namespace: namespace.to_string(),
-            level: NodeLevel::Hour,
-            parent_id: derive_parent_id(hour_id),
-            summary: hour_summary.clone(),
-            token_count: estimate_tokens(&hour_summary),
-            child_count: 0,
-            created_at: existing_created_at.unwrap_or(now),
-            updated_at: now,
-            metadata: None,
-        };
-        store::write_node(config, &hour_node)?;
         observer.hour_completed(namespace, hour_id, hour_node.token_count);
 
         let (_, day_id, month_id, year_id, root_id) = derive_node_ids_from_hour_id(hour_id);
@@ -137,6 +168,7 @@ pub async fn run_summarization_observed(
         all_propagation_ids.push((year_id, NodeLevel::Year));
         all_propagation_ids.push((root_id, NodeLevel::Root));
         last_hour_node = Some(hour_node);
+        pending_hour_ids.push(hour_id.clone());
     }
 
     // Propagate bottom-up; a single node's failure does not void the whole run.
@@ -164,23 +196,15 @@ pub async fn run_summarization_observed(
     if failed.is_empty() {
         store::buffer_delete(config, namespace, &buffer_filenames)
             .context("delete buffer entries after successful summarization")?;
+        clear_pending_fold_receipts(config, namespace, &pending_hour_ids)?;
     }
     Ok(last_hour_node)
 }
 
 /// Rebuild the entire tree from hour leaves upward, preserving unsummarised
-/// buffer content.
-///
-/// # NOTE: not crash-safe (`TR-2`)
-/// This deletes the whole on-disk tree directory ([`store::delete_tree`]) and
-/// then rewrites every hour leaf from the in-memory `hour_leaves` vec. A crash
-/// between the delete and the full rewrite permanently loses every summary in
-/// the namespace — there is no atomic swap (rebuild-into-temp + rename). The
-/// buffer-preservation dance around it has the same gap: if the process
-/// crashes after the rename to `tree_buffer_backup` but before the restore
-/// rename back, the backup directory is left orphaned — no code path on a
-/// later run adopts it, so buffered (unsummarised) content is stranded outside
-/// the active buffer dir. See `docs/spec/audit/03-tree-archivist-conversations.md`.
+/// buffer content. The replacement is built in a staging workspace and then
+/// published with a recoverable directory swap, so a process crash cannot
+/// expose a partially rebuilt tree or strand the live ingestion buffer.
 ///
 /// # Errors
 /// Propagates any filesystem error from the delete/rename/rewrite steps.
@@ -201,6 +225,7 @@ pub async fn rebuild_tree_observed(
     namespace: &str,
     observer: &dyn RuntimeObserver,
 ) -> Result<TreeStatus> {
+    super::rebuild_fs::recover_interrupted_swap(config, namespace)?;
     let status = store::get_tree_status(config, namespace)?;
     if status.total_nodes == 0 {
         return Ok(status);
@@ -208,36 +233,15 @@ pub async fn rebuild_tree_observed(
 
     let base = store::tree_dir(config, namespace);
     let mut hour_leaves: Vec<TreeNode> = Vec::new();
-    collect_hour_leaves_recursive(&base, namespace, "", &mut hour_leaves)?;
+    super::rebuild_fs::collect_hour_leaves(&base, namespace, "", &mut hour_leaves)?;
     if hour_leaves.is_empty() {
         return store::get_tree_status(config, namespace);
     }
 
-    // Preserve the buffer outside the tree dir while we delete + rebuild.
-    let buffer_path = store::buffer_dir(config, namespace);
-    let tree_base = store::tree_dir(config, namespace);
-    let buffer_backup = tree_base
-        .parent()
-        .unwrap_or(&tree_base)
-        .join("tree_buffer_backup");
-    let buffer_existed = buffer_path.exists();
-    if buffer_existed {
-        if buffer_backup.exists() {
-            std::fs::remove_dir_all(&buffer_backup)?;
-        }
-        std::fs::rename(&buffer_path, &buffer_backup).context("backup buffer before rebuild")?;
-    }
-    store::delete_tree(config, namespace)?;
-    if buffer_existed && buffer_backup.exists() {
-        let restored = store::buffer_dir(config, namespace);
-        if let Some(parent) = restored.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::rename(&buffer_backup, &restored).context("restore buffer after rebuild")?;
-    }
+    let staged = super::rebuild_fs::prepare(config, namespace)?;
 
     for leaf in &hour_leaves {
-        store::write_node(config, leaf)?;
+        store::write_node(&staged.config, leaf)?;
     }
 
     let mut day_ids = std::collections::BTreeSet::new();
@@ -259,7 +263,7 @@ pub async fn rebuild_tree_observed(
     // rebuild (the hour leaves are already re-written above).
     for day_id in &day_ids {
         let _ = propagate_node_observed(
-            config,
+            &staged.config,
             summariser,
             namespace,
             day_id,
@@ -270,7 +274,7 @@ pub async fn rebuild_tree_observed(
     }
     for month_id in &month_ids {
         let _ = propagate_node_observed(
-            config,
+            &staged.config,
             summariser,
             namespace,
             month_id,
@@ -281,7 +285,7 @@ pub async fn rebuild_tree_observed(
     }
     for year_id in &year_ids {
         let _ = propagate_node_observed(
-            config,
+            &staged.config,
             summariser,
             namespace,
             year_id,
@@ -291,7 +295,7 @@ pub async fn rebuild_tree_observed(
         .await;
     }
     let _ = propagate_node_observed(
-        config,
+        &staged.config,
         summariser,
         namespace,
         "root",
@@ -300,6 +304,7 @@ pub async fn rebuild_tree_observed(
     )
     .await;
 
+    super::rebuild_fs::publish(staged)?;
     let status = store::get_tree_status(config, namespace)?;
     observer.rebuild_completed(namespace, status.total_nodes);
     Ok(status)
@@ -399,28 +404,6 @@ async fn summarize_to_limit(
     Ok(response)
 }
 
-/// Group buffer entries by hour from their filename timestamps.
-pub(crate) fn group_by_hour(entries: &[(String, String)]) -> BTreeMap<String, Vec<String>> {
-    let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (filename, content) in entries {
-        let hour_id = hour_id_from_buffer_filename(filename).unwrap_or_else(|| {
-            let (hour, _, _, _, _) = derive_node_ids(&Utc::now());
-            hour
-        });
-        groups.entry(hour_id).or_default().push(content.clone());
-    }
-    groups
-}
-
-/// Extract the hour node ID from a buffer filename like `1711972800000_abc.md`.
-fn hour_id_from_buffer_filename(filename: &str) -> Option<String> {
-    let ts_str = filename.split('_').next()?;
-    let millis: i64 = ts_str.parse().ok()?;
-    let dt = DateTime::from_timestamp_millis(millis)?;
-    let (hour_id, _, _, _, _) = derive_node_ids(&dt);
-    Some(hour_id)
-}
-
 /// Derive propagation IDs from an hour node_id like "2024/03/15/14".
 fn derive_node_ids_from_hour_id(hour_id: &str) -> (String, String, String, String, String) {
     let parts: Vec<&str> = hour_id.split('/').collect();
@@ -438,49 +421,6 @@ fn derive_node_ids_from_hour_id(hour_id: &str) -> (String, String, String, Strin
             "root".to_string(),
         )
     }
-}
-
-/// Recursively collect all hour leaf nodes from the tree directory.
-fn collect_hour_leaves_recursive(
-    dir: &std::path::Path,
-    namespace: &str,
-    prefix: &str,
-    leaves: &mut Vec<TreeNode>,
-) -> Result<()> {
-    if !dir.exists() {
-        return Ok(());
-    }
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().to_string();
-        let ft = entry.file_type()?;
-        if ft.is_dir() {
-            if name == "buffer" || name == "buffer_backup" {
-                continue;
-            }
-            let child_prefix = if prefix.is_empty() {
-                name.clone()
-            } else {
-                format!("{prefix}/{name}")
-            };
-            collect_hour_leaves_recursive(&entry.path(), namespace, &child_prefix, leaves)?;
-        } else if ft.is_file() && name.ends_with(".md") && name != "summary.md" && name != "root.md"
-        {
-            let hour_part = name.trim_end_matches(".md");
-            let node_id = if prefix.is_empty() {
-                hour_part.to_string()
-            } else {
-                format!("{prefix}/{hour_part}")
-            };
-            if level_from_node_id(&node_id) == NodeLevel::Hour {
-                let raw = std::fs::read_to_string(entry.path())?;
-                let node = store::parse_node_markdown_pub(&raw, namespace, &node_id)
-                    .with_context(|| format!("failed to parse hour leaf '{node_id}'"))?;
-                leaves.push(node);
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Discover namespaces that have pending buffer data.

@@ -12,7 +12,7 @@ use std::sync::{Arc, RwLock};
 use async_trait::async_trait;
 
 use super::types::{
-    MemoryError, MemoryId, MemoryInput, MemoryQuery, MemoryRecord, MemoryResult, SearchHit,
+    MemoryId, MemoryInput, MemoryQuery, MemoryRecord, MemoryResult, SearchHit, StoreError,
 };
 
 /// Storage backend contract for memory records.
@@ -25,9 +25,9 @@ pub trait MemoryStore: Send + Sync {
     /// Materialize a record from `input` and persist it, returning the stored
     /// record (with its assigned [`MemoryId`] and timestamps).
     async fn insert(&self, input: MemoryInput) -> MemoryResult<MemoryRecord>;
-    /// Fetch the record for `id`, or [`MemoryError::NotFound`] if absent.
+    /// Fetch the record for `id`, or [`StoreError::NotFound`] if absent.
     async fn get(&self, id: MemoryId) -> MemoryResult<MemoryRecord>;
-    /// Remove and return the record for `id`, or [`MemoryError::NotFound`] if absent.
+    /// Remove and return the record for `id`, or [`StoreError::NotFound`] if absent.
     async fn delete(&self, id: MemoryId) -> MemoryResult<MemoryRecord>;
     /// Return scored [`SearchHit`]s matching `query`, ordered most relevant first.
     async fn search(&self, query: MemoryQuery) -> MemoryResult<Vec<SearchHit>>;
@@ -42,7 +42,7 @@ pub trait MemoryStore: Send + Sync {
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryMemoryStore {
     /// Records indexed by [`MemoryId`]; the `BTreeMap` keeps a stable key order.
-    records: Arc<RwLock<BTreeMap<MemoryId, MemoryRecord>>>,
+    pub(super) records: Arc<RwLock<BTreeMap<MemoryId, MemoryRecord>>>,
 }
 
 impl InMemoryMemoryStore {
@@ -69,7 +69,7 @@ impl MemoryStore for InMemoryMemoryStore {
             .expect("memory store lock poisoned")
             .get(&id)
             .cloned()
-            .ok_or(MemoryError::NotFound(id))
+            .ok_or(StoreError::NotFound(id))
     }
 
     async fn delete(&self, id: MemoryId) -> MemoryResult<MemoryRecord> {
@@ -77,11 +77,11 @@ impl MemoryStore for InMemoryMemoryStore {
             .write()
             .expect("memory store lock poisoned")
             .remove(&id)
-            .ok_or(MemoryError::NotFound(id))
+            .ok_or(StoreError::NotFound(id))
     }
 
     async fn search(&self, query: MemoryQuery) -> MemoryResult<Vec<SearchHit>> {
-        let needle = query.text.as_deref().map(str::to_lowercase);
+        let query_text = query.text.as_deref().unwrap_or_default();
         let limit = query.limit.unwrap_or(20);
 
         let mut hits = self
@@ -96,19 +96,7 @@ impl MemoryStore for InMemoryMemoryStore {
                     .is_none_or(|namespace| record.namespace == namespace)
             })
             .filter_map(|record| {
-                let score = match needle.as_deref() {
-                    Some(text) if !text.is_empty() => {
-                        let content = record.content.to_lowercase();
-                        if !content.contains(text) {
-                            return None;
-                        }
-                        text.split_whitespace()
-                            .filter(|term| content.contains(term))
-                            .count()
-                            .max(1) as f32
-                    }
-                    _ => 1.0,
-                };
+                let score = super::query_match_score(&record.content, query_text)?;
 
                 Some(SearchHit {
                     record: record.clone(),
@@ -130,48 +118,5 @@ impl MemoryStore for InMemoryMemoryStore {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn inserts_and_retrieves_memory() {
-        let store = InMemoryMemoryStore::new();
-        let inserted = store
-            .insert(MemoryInput::new("profile", "User prefers dark mode"))
-            .await
-            .expect("insert memory");
-
-        let fetched = store.get(inserted.id).await.expect("get memory");
-
-        assert_eq!(fetched.namespace, "profile");
-        assert_eq!(fetched.content, "User prefers dark mode");
-    }
-
-    #[tokio::test]
-    async fn searches_by_namespace_and_text() {
-        let store = InMemoryMemoryStore::new();
-        store
-            .insert(MemoryInput::new("profile", "User prefers dark mode"))
-            .await
-            .expect("insert profile memory");
-        store
-            .insert(MemoryInput::new(
-                "project",
-                "TinyCortex stores durable memories",
-            ))
-            .await
-            .expect("insert project memory");
-
-        let hits = store
-            .search(MemoryQuery {
-                namespace: Some("project".to_owned()),
-                text: Some("durable".to_owned()),
-                limit: Some(10),
-            })
-            .await
-            .expect("search memory");
-
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].record.namespace, "project");
-    }
-}
+#[path = "store_tests.rs"]
+mod tests;

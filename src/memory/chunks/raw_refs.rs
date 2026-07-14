@@ -9,9 +9,8 @@
 //! *only* copy of the message body — the SQLite `content` column holds just
 //! the preview. This module only reads/writes the pointers; it does not
 //! delete the archive files themselves. Chunk deletion
-//! ([`super::store_delete`]) currently never parses `raw_refs_json` to remove
-//! the files it points at, so deleting an email chunk leaves its raw body on
-//! disk indefinitely (audit finding SC-7).
+//! ([`super::store_delete`]) owns reachability-based cleanup of unreferenced
+//! raw files and their ingest-gate rows.
 
 use anyhow::{Context, Result};
 use rusqlite::{params, OptionalExtension, Transaction};
@@ -142,14 +141,10 @@ pub fn list_chunk_raw_ref_paths_with_prefix(
 /// Return both `content_path` and `content_sha256` stored in SQLite for
 /// `chunk_id`.
 ///
-/// # Gotcha (audit finding SC-18)
-/// Returns `None` only when the row is missing or either column is SQL NULL.
-/// Some chunk kinds (email — see the module doc) store `content_path` /
-/// `content_sha256` as an **empty string**, not NULL, because their body
-/// lives entirely in the raw archive rather than an MD content file. For
-/// those rows this function returns `Some(("", ""))`, not `None` — callers
-/// that treat `Some(_)` as "there is a readable content file at this path"
-/// will mis-handle that case; check for a non-empty path before using it.
+/// Returns `None` when the row is missing, either column is SQL NULL, or the
+/// path is empty. Email chunks intentionally use empty pointer strings because
+/// their bodies live in the raw archive; those are not readable content-file
+/// pointers.
 ///
 /// # Errors
 /// Returns `Err` only if the underlying query fails.
@@ -169,15 +164,14 @@ pub fn get_chunk_content_pointers(
                 },
             )
             .optional()?;
-        Ok(row.and_then(|(p, s)| p.zip(s)))
+        Ok(row.and_then(|(p, s)| p.zip(s).filter(|(path, _)| !path.is_empty())))
     })
 }
 
 /// Return the `content_path` stored in SQLite for `chunk_id`, if any.
 ///
-/// Same empty-string-vs-NULL gotcha as [`get_chunk_content_pointers`]: a
-/// `Some(String::new())` result means the column is set to `""`, not that a
-/// content file exists at that path.
+/// Empty strings are normalised to `None`, matching
+/// [`get_chunk_content_pointers`].
 ///
 /// # Errors
 /// Returns `Err` only if the underlying query fails.
@@ -191,14 +185,13 @@ pub fn get_chunk_content_path(config: &MemoryConfig, chunk_id: &str) -> Result<O
             )
             .optional()?
             .flatten();
-        Ok(row)
+        Ok(row.filter(|path| !path.is_empty()))
     })
 }
 
 /// Return both `content_path` and `content_sha256` stored in SQLite for
 /// `summary_id`. `None` means either column is SQL NULL; see
-/// [`get_chunk_content_pointers`] for the empty-string-vs-NULL distinction
-/// this module's chunk accessors need to account for.
+/// [`get_chunk_content_pointers`] for chunk-pointer semantics.
 ///
 /// # Errors
 /// Returns `Err` only if the underlying query fails.

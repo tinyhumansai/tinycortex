@@ -47,6 +47,7 @@ pub mod resolver;
 pub mod signals;
 /// Persistence for score rows and the entity occurrence index.
 pub mod store;
+mod store_query;
 
 use std::sync::Arc;
 
@@ -136,6 +137,19 @@ pub struct ScoringConfig {
 }
 
 impl ScoringConfig {
+    /// Construct the default regex extractor with policy values from the
+    /// engine's declarative configuration.
+    pub fn from_memory_config(config: &MemoryConfig) -> Self {
+        Self {
+            extractor: Arc::new(extract::CompositeExtractor::regex_only()),
+            weights: config.scoring.weights.clone(),
+            drop_threshold: config.scoring.drop_threshold,
+            llm_extractor: None,
+            definite_keep_threshold: config.scoring.definite_keep_threshold,
+            definite_drop_threshold: config.scoring.definite_drop_threshold,
+        }
+    }
+
     /// Default: regex-only extractor, default weights, default threshold.
     pub fn default_regex_only() -> Self {
         Self {
@@ -354,49 +368,26 @@ pub async fn score_chunks_fast(chunks: &[Chunk], cfg: &ScoringConfig) -> Result<
 /// written here: TinyCortex's `memory::graph` module is not yet ported, so this
 /// helper persists the score row and the entity index only.
 ///
-/// NOTE (RS-13): the entity index is only cleared/re-indexed when
-/// `result.kept` is `true`. If a chunk is scored a second time (e.g. a
-/// re-score after content edit) and flips from kept to dropped, this function
-/// takes the `!result.kept` branch and never calls
-/// [`store::clear_entity_index_for_node`] — the entity-index rows from the
-/// earlier, kept scoring are left behind as phantom rows pointing at a
-/// now-dropped chunk. Callers that need drop-time cleanup must clear the
-/// entity index themselves before calling this function.
+/// Existing entity rows are always cleared before the new result is applied;
+/// a kept-to-dropped re-score therefore cannot leave phantom topic/graph hits.
 pub fn persist_score(
     config: &MemoryConfig,
     result: &ScoreResult,
     timestamp_ms: i64,
     tree_id: Option<&str>,
 ) -> Result<()> {
-    let row = score_row(result);
-    store::upsert_score(config, &row)?;
-
-    if result.kept {
-        // Clear any stale entity-index rows for this chunk before re-indexing.
-        // INSERT OR REPLACE never deletes rows whose entity_id is no longer
-        // present in the new extraction — so a re-score that drops an entity
-        // would otherwise leave a phantom index row.
-        store::clear_entity_index_for_node(config, &result.chunk_id)?;
-        if !result.canonical_entities.is_empty() {
-            store::index_entities(
-                config,
-                &result.canonical_entities,
-                &result.chunk_id,
-                "leaf",
-                timestamp_ms,
-                tree_id,
-            )?;
-        }
-    }
-
-    Ok(())
+    crate::memory::chunks::with_connection(config, |connection| {
+        let transaction = connection.unchecked_transaction()?;
+        persist_score_tx(&transaction, result, timestamp_ms, tree_id)?;
+        transaction.commit()?;
+        Ok(())
+    })
 }
 
 /// Transactional variant of [`persist_score`] — writes the score row and
 /// entity-index rows on the caller's open [`Transaction`] so the persistence
-/// is atomic with the surrounding ingest write. Same kept/clear-before-reindex
-/// semantics as [`persist_score`], including the same phantom-row gotcha on a
-/// kept→dropped re-score (see the RS-13 note there).
+/// is atomic with the surrounding ingest write. It has the same unconditional
+/// clear-before-optional-reindex semantics as [`persist_score`].
 pub fn persist_score_tx(
     tx: &Transaction<'_>,
     result: &ScoreResult,
@@ -406,19 +397,16 @@ pub fn persist_score_tx(
     let row = score_row(result);
     store::upsert_score_tx(tx, &row)?;
 
-    if result.kept {
-        // See persist_score for why we clear before re-indexing.
-        store::clear_entity_index_for_node_tx(tx, &result.chunk_id)?;
-        if !result.canonical_entities.is_empty() {
-            store::index_entities_tx(
-                tx,
-                &result.canonical_entities,
-                &result.chunk_id,
-                "leaf",
-                timestamp_ms,
-                tree_id,
-            )?;
-        }
+    store::clear_entity_index_for_node_tx(tx, &result.chunk_id)?;
+    if result.kept && !result.canonical_entities.is_empty() {
+        store::index_entities_tx(
+            tx,
+            &result.canonical_entities,
+            &result.chunk_id,
+            "leaf",
+            timestamp_ms,
+            tree_id,
+        )?;
     }
 
     Ok(())

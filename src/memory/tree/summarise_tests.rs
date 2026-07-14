@@ -50,6 +50,8 @@ async fn concat_summariser_matches_fallback() {
         tree_kind: TreeKind::Source,
         target_level: 1,
         token_budget: 10_000,
+        input_token_budget: 50_000,
+        overhead_reserve_tokens: 2_048,
         ask: None,
     };
     let out = ConcatSummariser::new()
@@ -72,11 +74,13 @@ fn provider_prompt_is_priority_ordered_language_aware_and_budgeted() {
         tree_kind: TreeKind::Source,
         target_level: 1,
         token_budget: 9_000,
+        input_token_budget: 50_000,
+        overhead_reserve_tokens: 2_048,
         ask: None,
     };
     let prompt = prepare_summary_prompt(&[low, high], &context, Some("French")).unwrap();
     assert!(prompt.user.starts_with("[high]"));
     assert!(prompt.system.contains("Write the summary in French"));
-    assert_eq!(prompt.effective_budget, 5_000);
+    assert_eq!(prompt.effective_budget, 9_000);
     assert!(prepare_summary_prompt(&[], &context, None).is_none());
 }

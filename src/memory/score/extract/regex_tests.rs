@@ -46,6 +46,18 @@ fn handle_vs_email_boundary() {
 }
 
 #[test]
+fn handle_stops_before_trailing_sentence_punctuation() {
+    let output = extract("ping @alice. then ask @bob- and @carol_b");
+    let handles: Vec<_> = output
+        .entities
+        .iter()
+        .filter(|entity| entity.kind == EntityKind::Handle)
+        .map(|entity| entity.text.as_str())
+        .collect();
+    assert_eq!(handles, vec!["alice", "bob", "carol_b"]);
+}
+
+#[test]
 fn discord_style_handle() {
     let o = extract("ping alice#1234");
     let h: Vec<_> = o

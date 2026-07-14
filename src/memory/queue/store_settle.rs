@@ -13,17 +13,29 @@ use rusqlite::params;
 
 use crate::memory::chunks::with_connection;
 use crate::memory::config::MemoryConfig;
-use crate::memory::queue::store::backoff_ms;
-use crate::memory::queue::types::{Job, JobFailure};
+use crate::memory::queue::store::backoff_ms_with_policy;
+use crate::memory::queue::types::{Job, JobFailure, NewJob};
 
 /// Mark a claimed job as `done`. Clears the lock and stamps `completed_at_ms`.
 pub fn mark_done(config: &MemoryConfig, job: &Job) -> Result<()> {
+    mark_done_with_followups(config, job, &[]).map(|_| ())
+}
+
+/// Mark a claimed job done and enqueue all of its follow-up jobs in the same
+/// SQLite transaction. A crash therefore exposes either neither transition or
+/// both, never a completed parent with a missing child edge.
+pub(crate) fn mark_done_with_followups(
+    config: &MemoryConfig,
+    job: &Job,
+    follow_ups: &[NewJob],
+) -> Result<bool> {
     let job_id = &job.id;
     let claim_attempts = job.attempts as i64;
     let claim_started_at = job.started_at_ms;
     with_connection(config, |conn| {
         let now_ms = Utc::now().timestamp_millis();
-        conn.execute(
+        let tx = conn.unchecked_transaction()?;
+        let updated = tx.execute(
             "UPDATE mem_tree_jobs
                 SET status = 'done',
                     completed_at_ms = ?1,
@@ -34,7 +46,17 @@ pub fn mark_done(config: &MemoryConfig, job: &Job) -> Result<()> {
                 AND started_at_ms IS ?4",
             params![now_ms, job_id, claim_attempts, claim_started_at],
         )?;
-        Ok(())
+        if updated != 0 {
+            for follow_up in follow_ups {
+                crate::memory::queue::store::enqueue_tx_with_default(
+                    &tx,
+                    follow_up,
+                    config.queue.max_attempts,
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(updated != 0)
     })
 }
 
@@ -93,7 +115,11 @@ pub fn mark_failed_typed(
                 ],
             )?;
         } else {
-            let next_at = now_ms.saturating_add(backoff_ms(attempts as u32));
+            let next_at = now_ms.saturating_add(backoff_ms_with_policy(
+                attempts as u32,
+                config.queue.retry_base_ms,
+                config.queue.retry_cap_ms,
+            ));
             conn.execute(
                 "UPDATE mem_tree_jobs
                     SET status = 'ready',
@@ -119,32 +145,35 @@ pub fn mark_failed_typed(
 /// `reason` is recorded in `last_error` for visibility and `started_at_ms` is
 /// cleared so the next claim stamps a fresh start time.
 ///
-/// There is no cap on how many times a row may be deferred, and deferring
-/// never advances toward `max_attempts`. A handler that repeatedly makes no
-/// progress and always returns `JobOutcome::Defer` (rather than eventually
-/// erroring) re-defers the same row forever at zero budget cost — this
-/// function has no way to distinguish that from legitimate rate-limit
-/// backoff. Callers that need a bound should track defer count or job age in
-/// the payload and translate it to an `Err` (burning the retry budget) once a
-/// cap is hit.
+/// Deferral remains free of the attempt budget, but a row that has spent seven
+/// days in the defer cycle is parked as an unrecoverable failure. This bounds
+/// permanently non-progressing handlers without penalising ordinary
+/// rate-limit or multi-batch backfill deferrals.
 pub fn mark_deferred(config: &MemoryConfig, job: &Job, until_ms: i64, reason: &str) -> Result<()> {
     let job_id = &job.id;
     let claim_attempts = job.attempts as i64;
     let pre_claim_attempts = claim_attempts.saturating_sub(1);
     let claim_started_at = job.started_at_ms;
     with_connection(config, |conn| {
+        let now_ms = Utc::now().timestamp_millis();
+        let oldest_allowed_ms = now_ms.saturating_sub(config.queue.max_defer_age_ms);
         conn.execute(
             "UPDATE mem_tree_jobs
-                SET status = 'ready',
-                    attempts = ?1,
-                    available_at_ms = ?2,
+                SET status = CASE WHEN created_at_ms <= ?2 THEN 'failed' ELSE 'ready' END,
+                    attempts = ?3,
+                    available_at_ms = ?4,
                     locked_until_ms = NULL,
                     started_at_ms = NULL,
-                    last_error = ?3
-              WHERE id = ?4
-                AND attempts = ?5
-                AND started_at_ms IS ?6",
+                    completed_at_ms = CASE WHEN created_at_ms <= ?2 THEN ?1 ELSE NULL END,
+                    last_error = ?5,
+                    failure_reason = CASE WHEN created_at_ms <= ?2 THEN 'defer_age_exceeded' ELSE NULL END,
+                    failure_class = CASE WHEN created_at_ms <= ?2 THEN 'unrecoverable' ELSE NULL END
+              WHERE id = ?6
+                AND attempts = ?7
+                AND started_at_ms IS ?8",
             params![
+                now_ms,
+                oldest_allowed_ms,
                 pre_claim_attempts,
                 until_ms,
                 reason,
@@ -182,20 +211,17 @@ pub fn recover_stale_locks(config: &MemoryConfig) -> Result<usize> {
 /// worker pool, so any `running` row at clean-shutdown time was claimed by us.
 /// Returns the number of rows released.
 ///
-/// Unlike [`mark_deferred`], this does **not** revert the `attempts` bump
-/// [`claim_next`](super::store::claim_next) applied when the row was claimed
-/// — released rows keep the attempt they were charged for. A process that is
-/// restarted repeatedly mid-job (e.g. five graceful shutdowns while the same
-/// job is running) burns through `max_attempts` purely from the
-/// release/re-claim cycle, with no actual handler failure involved, and the
-/// row can end up settled `failed` without ever having been given a real
-/// chance to complete.
+/// This reverts the `attempts` bump applied by
+/// [`claim_next`](super::store::claim_next): a graceful interruption is not a
+/// handler failure and must not consume the job's retry budget.
 pub fn release_running_locks(config: &MemoryConfig) -> Result<usize> {
     with_connection(config, |conn| {
         let n = conn.execute(
             "UPDATE mem_tree_jobs
                 SET status = 'ready',
-                    locked_until_ms = NULL
+                    attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
+                    locked_until_ms = NULL,
+                    started_at_ms = NULL
               WHERE status = 'running'",
             [],
         )?;

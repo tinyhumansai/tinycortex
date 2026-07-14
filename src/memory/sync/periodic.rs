@@ -13,7 +13,7 @@ pub const DEFAULT_SYNC_INTERVAL_SECS: u64 = 24 * 60 * 60;
 pub fn effective_interval_secs(configured: Option<u64>) -> Option<u64> {
     match configured {
         Some(0) => None,
-        Some(seconds) => Some(seconds.max(DEFAULT_SYNC_INTERVAL_SECS)),
+        Some(seconds) => Some(seconds),
         None => Some(DEFAULT_SYNC_INTERVAL_SECS),
     }
 }
@@ -121,10 +121,7 @@ mod tests {
     #[test]
     fn cadence_handles_manual_minimum_and_persisted_success() {
         assert_eq!(effective_interval_secs(Some(0)), None);
-        assert_eq!(
-            effective_interval_secs(Some(60)),
-            Some(DEFAULT_SYNC_INTERVAL_SECS)
-        );
+        assert_eq!(effective_interval_secs(Some(60)), Some(60));
         let now = Utc::now();
         let sources = vec![
             source("new", SourceKind::Folder, true),

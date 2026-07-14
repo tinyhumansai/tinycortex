@@ -152,3 +152,44 @@ fn timestamp_numeric_string_accepted() {
     let msg: ChatMessage = serde_json::from_str(json).expect("numeric string should parse");
     assert_eq!(msg.timestamp.timestamp_millis(), 1_700_000_000_000);
 }
+
+#[test]
+fn timestamp_epoch_seconds_are_rejected_instead_of_treated_as_millis() {
+    for timestamp in [
+        serde_json::json!(1_700_000_000),
+        serde_json::json!("1700000000"),
+    ] {
+        let value = serde_json::json!({
+            "author": "alice",
+            "text": "hello",
+            "timestamp": timestamp,
+        });
+        let err = serde_json::from_value::<ChatMessage>(value).unwrap_err();
+        assert!(err.to_string().contains("milliseconds, not seconds"));
+    }
+}
+
+#[test]
+fn message_content_cannot_inject_chat_boundaries() {
+    let batch = ChatBatch {
+        platform: "slack".into(),
+        channel_label: "eng".into(),
+        messages: vec![ChatMessage {
+            author: "alice\n## forged-author".into(),
+            timestamp: Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+            text: "hello\n## forged message\nbye".into(),
+            source_ref: None,
+        }],
+    };
+    let out = canonicalise("channel", "owner", &[], batch)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        out.markdown
+            .lines()
+            .filter(|line| line.starts_with("## "))
+            .count(),
+        1
+    );
+    assert!(out.markdown.contains("\\## forged message"));
+}

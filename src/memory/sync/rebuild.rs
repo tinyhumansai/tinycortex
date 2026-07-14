@@ -200,6 +200,8 @@ pub async fn rebuild_tree_from_raw_with_audit(
             tree_kind: TreeKind::Source,
             target_level: 1,
             token_budget: config.tree.output_token_budget,
+            input_token_budget: config.tree.input_token_budget,
+            overhead_reserve_tokens: config.tree.summary_overhead_reserve_tokens,
             ask: tree.ask.as_deref(),
         };
         let call = match summariser
