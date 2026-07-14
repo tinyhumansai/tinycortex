@@ -174,6 +174,10 @@ struct Connection {
     toolkit: String,
     connection_id: String,
     status: Option<String>,
+    /// The account's Composio `user_id`. Composio v3 requires it alongside
+    /// `connected_account_id` on every tool execution, so it is captured here
+    /// during discovery and passed through to the sync transport.
+    user_id: Option<String>,
 }
 
 fn env_opt(name: &str) -> Option<String> {
@@ -263,6 +267,12 @@ async fn discover_connections(
                 .get("status")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
+            user_id: record
+                .get("user_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned),
         });
     }
     Ok(connections)
@@ -337,6 +347,8 @@ async fn connect_toolkit(
                     toolkit: toolkit.to_owned(),
                     connection_id: link.connected_account_id,
                     status: Some(status),
+                    // The connection was minted for exactly this entity id.
+                    user_id: Some(entity_id.to_owned()),
                 });
             }
             Ok(Some(status)) if status_is_terminal(&status) => {
@@ -622,6 +634,8 @@ async fn run() -> anyhow::Result<()> {
                 toolkit: (*toolkit).to_owned(),
                 connection_id,
                 status: Some("env-override".into()),
+                // Unknown for a pinned id; Phase 2 falls back to COMPOSIO_ENTITY_ID.
+                user_id: None,
             });
         }
     }
@@ -715,13 +729,7 @@ async fn run() -> anyhow::Result<()> {
 
     // ── Phase 2: memory sync ────────────────────────────────────────────────
     println!("\n── Phase 2: memory sync ({max_items} item cap/toolkit) ───────");
-    let transport = ComposioSyncConfig {
-        mode: ComposioMode::Direct,
-        base_url,
-        api_key: Some(SecretString::new(api_key)),
-        bearer_token: None,
-        entity_id,
-    };
+    let api_secret = SecretString::new(api_key);
     let tmp = std::env::temp_dir().join("tinycortex-composio-harness");
     let mut config = MemoryConfig::new(tmp.to_string_lossy().into_owned());
     config.sync.budget.max_items = Some(max_items);
@@ -729,9 +737,28 @@ async fn run() -> anyhow::Result<()> {
     let captures = Arc::new(Captures::default());
     let mut reports = Vec::new();
     for connection in &selected {
+        // Composio v3 requires the account's user_id alongside its
+        // connected_account_id, so scope each toolkit's transport to that
+        // account's user_id (falling back to a global COMPOSIO_ENTITY_ID).
+        let conn_entity = connection.user_id.clone().or_else(|| entity_id.clone());
+        if conn_entity.is_none() {
+            println!(
+                "  ! no user_id for {} — set COMPOSIO_ENTITY_ID; execution will 400",
+                connection.toolkit
+            );
+        }
+        let transport = ComposioSyncConfig {
+            mode: ComposioMode::Direct,
+            base_url: base_url.clone(),
+            api_key: Some(api_secret.clone()),
+            bearer_token: None,
+            entity_id: conn_entity.clone(),
+        };
         println!(
-            "→ syncing {} ({})",
-            connection.toolkit, connection.connection_id
+            "→ syncing {} ({}, user_id={})",
+            connection.toolkit,
+            connection.connection_id,
+            conn_entity.as_deref().unwrap_or("(none)")
         );
         let report = run_toolkit(
             &connection.toolkit,
