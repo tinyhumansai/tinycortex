@@ -14,7 +14,7 @@ use crate::memory::config::MemoryConfig;
 use crate::memory::score::extract::CompositeExtractor;
 use crate::memory::tree::bucket_seal::{append_leaf, LabelStrategy, LeafRef};
 use crate::memory::tree::flush::force_flush_tree;
-use crate::memory::tree::registry::get_or_create_tree;
+use crate::memory::tree::registry::get_or_create_tree_with_ask;
 use crate::memory::tree::store::{archive_tree, Tree, TreeKind};
 use crate::memory::tree::summarise::Summariser;
 
@@ -30,6 +30,10 @@ pub enum TreeProfile {
     Topic,
     /// Singleton cross-source tree; scope is always [`GLOBAL_SCOPE`].
     Global,
+    /// Ask-driven flavoured tree: scope is the ask slug; every seal is steered
+    /// by the tree's persisted `ask` and the root compiles into a prompt-ready
+    /// markdown profile. See [`TreeFactory::flavoured`].
+    Flavoured,
 }
 
 /// Factory/config object for one tree instance.
@@ -37,6 +41,9 @@ pub enum TreeProfile {
 pub struct TreeFactory<'a> {
     profile: TreeProfile,
     scope: Cow<'a, str>,
+    /// Natural-language ask stamped on a freshly-created [`TreeProfile::Flavoured`]
+    /// tree. `None` for every other profile.
+    ask: Option<Cow<'a, str>>,
 }
 
 impl<'a> TreeFactory<'a> {
@@ -45,6 +52,7 @@ impl<'a> TreeFactory<'a> {
         Self {
             profile: TreeProfile::Source,
             scope: scope.into(),
+            ask: None,
         }
     }
 
@@ -53,6 +61,7 @@ impl<'a> TreeFactory<'a> {
         Self {
             profile: TreeProfile::Topic,
             scope: scope.into(),
+            ask: None,
         }
     }
 
@@ -62,16 +71,40 @@ impl<'a> TreeFactory<'a> {
         Self {
             profile: TreeProfile::Global,
             scope: Cow::Borrowed(GLOBAL_SCOPE),
+            ask: None,
+        }
+    }
+
+    /// Build a [`TreeProfile::Flavoured`] factory scoped to the ask slug `scope`
+    /// (e.g. `"tweet-style"`), carrying the full natural-language `ask` that
+    /// steers every summarisation step (e.g. "Distill the author's tweet-writing
+    /// style: voice, tone, structure, vocabulary, punctuation habits, dos and
+    /// don'ts.").
+    ///
+    /// The ask is persisted on the tree row the first time the tree is created;
+    /// re-instantiating a factory for a `(Flavoured, scope)` that already exists
+    /// returns the live row and leaves its stored ask untouched.
+    pub fn flavoured(scope: impl Into<Cow<'a, str>>, ask: impl Into<Cow<'a, str>>) -> Self {
+        Self {
+            profile: TreeProfile::Flavoured,
+            scope: scope.into(),
+            ask: Some(ask.into()),
         }
     }
 
     /// Reconstruct the factory matching an existing [`Tree`] row, deriving the
-    /// profile from its [`TreeKind`] and reusing its scope.
+    /// profile from its [`TreeKind`] and reusing its scope. For flavoured trees
+    /// the row's persisted `ask` is carried back onto the factory.
     pub fn from_tree(tree: &'a Tree) -> Self {
         match tree.kind {
             TreeKind::Source => Self::source(tree.scope.as_str()),
             TreeKind::Topic => Self::topic(tree.scope.as_str()),
             TreeKind::Global => Self::global(),
+            TreeKind::Flavoured => Self {
+                profile: TreeProfile::Flavoured,
+                scope: Cow::Borrowed(tree.scope.as_str()),
+                ask: tree.ask.as_deref().map(Cow::Borrowed),
+            },
         }
     }
 
@@ -86,12 +119,19 @@ impl<'a> TreeFactory<'a> {
             TreeProfile::Source => TreeKind::Source,
             TreeProfile::Topic => TreeKind::Topic,
             TreeProfile::Global => TreeKind::Global,
+            TreeProfile::Flavoured => TreeKind::Flavoured,
         }
     }
 
     /// The canonical scope string identifying this tree within its kind.
     pub fn scope(&self) -> &str {
         self.scope.as_ref()
+    }
+
+    /// The natural-language ask carried by a flavoured factory, or `None` for
+    /// every other profile.
+    pub fn ask(&self) -> Option<&str> {
+        self.ask.as_deref()
     }
 
     /// Default seal-time label strategy. Source trees re-extract entities/topics
@@ -102,13 +142,14 @@ impl<'a> TreeFactory<'a> {
             TreeKind::Source => {
                 LabelStrategy::ExtractFromContent(Arc::new(CompositeExtractor::regex_only()))
             }
-            TreeKind::Topic | TreeKind::Global => LabelStrategy::Empty,
+            TreeKind::Topic | TreeKind::Global | TreeKind::Flavoured => LabelStrategy::Empty,
         }
     }
 
-    /// Look up or create the tree row in the database.
+    /// Look up or create the tree row in the database. For a flavoured factory
+    /// the [`ask`](Self::ask) is stamped on the row the first time it is created.
     pub fn get_or_create(&self, config: &MemoryConfig) -> Result<Tree> {
-        get_or_create_tree(config, self.kind(), self.scope())
+        get_or_create_tree_with_ask(config, self.kind(), self.scope(), self.ask())
     }
 
     /// Append one leaf using this profile's default labeling policy.

@@ -289,6 +289,21 @@ pub async fn cascade_all_from_with_services(
         .await?;
         sealed_ids.push(summary_id);
     }
+
+    // Flavoured trees carry a first-class compiled root artifact; refresh it
+    // whenever a seal in this cascade may have moved the root. `tree` here is a
+    // pre-seal snapshot, so `compile_flavoured_root` re-reads the live row to
+    // pick up the new `root_id`. Best-effort: a stale artifact must never fail
+    // an otherwise-successful seal.
+    if !sealed_ids.is_empty() && tree.kind == crate::memory::tree::TreeKind::Flavoured {
+        if let Err(err) = crate::memory::tree::flavoured::compile_flavoured_root(config, &tree.id) {
+            log::warn!(
+                "[memory_tree:flavoured] compile root failed tree_id={}: {err:#}",
+                tree.id
+            );
+        }
+    }
+
     Ok(sealed_ids)
 }
 
@@ -359,6 +374,7 @@ pub async fn seal_one_level_with_services(
         tree_kind: tree.kind,
         target_level,
         token_budget: budget,
+        ask: tree.ask.as_deref(),
     };
     // Treat a blank summary the same as a hard error — fall back to the
     // deterministic concat so we never persist `content = ""`.
@@ -418,6 +434,7 @@ pub async fn seal_one_level_with_services(
         crate::memory::tree::TreeKind::Source => SummaryTreeKind::Source,
         crate::memory::tree::TreeKind::Topic => SummaryTreeKind::Topic,
         crate::memory::tree::TreeKind::Global => SummaryTreeKind::Global,
+        crate::memory::tree::TreeKind::Flavoured => SummaryTreeKind::Flavoured,
     };
     let child_basenames = if target_level == 1 {
         Some(
@@ -717,6 +734,7 @@ async fn seal_explicit_children(
             tree_kind: tree.kind,
             target_level,
             token_budget: config.tree.output_token_budget,
+            ask: tree.ask.as_deref(),
         };
         match services.summariser.summarise(&inputs, &context).await {
             Ok(output) if !output.content.trim().is_empty() => output,
@@ -761,6 +779,7 @@ async fn seal_explicit_children(
         crate::memory::tree::TreeKind::Source => SummaryTreeKind::Source,
         crate::memory::tree::TreeKind::Topic => SummaryTreeKind::Topic,
         crate::memory::tree::TreeKind::Global => SummaryTreeKind::Global,
+        crate::memory::tree::TreeKind::Flavoured => SummaryTreeKind::Flavoured,
     };
     let doc_slug = slugify_source_id(doc_id);
     let staged = stage_summary_with_layout(

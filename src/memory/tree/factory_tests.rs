@@ -80,6 +80,7 @@ fn from_tree_round_trips_kind() {
         status: crate::memory::tree::store::TreeStatus::Active,
         created_at: chrono::Utc::now(),
         last_sealed_at: None,
+        ask: None,
     };
     let f = TreeFactory::from_tree(&tree);
     assert_eq!(f.kind(), TreeKind::Topic);

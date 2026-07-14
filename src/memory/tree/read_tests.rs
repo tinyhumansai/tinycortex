@@ -74,6 +74,7 @@ fn seed_tree(cfg: &MemoryConfig) {
         status: TreeStatus::Active,
         created_at: ts(),
         last_sealed_at: Some(ts()),
+        ask: None,
     };
     store::insert_tree(cfg, &tree).unwrap();
     upsert_chunks(

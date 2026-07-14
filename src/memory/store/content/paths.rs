@@ -25,6 +25,9 @@ pub enum SummaryTreeKind {
     Global,
     /// Per-topic (entity) tree. Layout: `wiki/summaries/topic-<scope_slug>/L<level>/<id>.md`
     Topic,
+    /// Ask-driven flavoured tree. Layout:
+    /// `wiki/summaries/flavoured-<scope_slug>/L<level>/<id>.md`.
+    Flavoured,
 }
 
 /// Top-level directory for derived/wiki content (summaries, etc.).
@@ -51,6 +54,9 @@ pub fn summary_rel_path(
         }
         SummaryTreeKind::Topic => {
             format!("{WIKI_PREFIX}/summaries/topic-{scope_slug}/L{level}/{filename}.md")
+        }
+        SummaryTreeKind::Flavoured => {
+            format!("{WIKI_PREFIX}/summaries/flavoured-{scope_slug}/L{level}/{filename}.md")
         }
     }
 }

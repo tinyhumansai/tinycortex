@@ -74,6 +74,7 @@ fn get_or_create_recovers_from_unique_race() {
         status: TreeStatus::Active,
         created_at: Utc::now(),
         last_sealed_at: None,
+        ask: None,
     };
     store::insert_tree(&cfg, &pre_existing).unwrap();
     let got = get_or_create_tree(&cfg, TreeKind::Source, "slack:#eng").unwrap();

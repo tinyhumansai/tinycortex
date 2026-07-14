@@ -27,6 +27,7 @@ pub mod store;
 pub mod bucket_seal;
 mod direct_ingest;
 pub mod factory;
+pub mod flavoured;
 pub mod flush;
 mod hydrate;
 pub mod io;
@@ -45,6 +46,7 @@ pub use bucket_seal::{
 };
 pub use direct_ingest::{ingest_summary, SummaryIngestInput, SummaryIngestOutcome};
 pub use factory::{TreeFactory, TreeProfile, GLOBAL_SCOPE};
+pub use flavoured::{compile_flavoured_root, flavoured_root_abs_path, flavoured_root_rel_path};
 pub use flush::{
     flush_stale_buffers, flush_stale_buffers_default, flush_stale_buffers_with_services,
     force_flush_tree,
@@ -55,7 +57,10 @@ pub use io::{
     TreeWriteOutcome, TreeWriteRequest,
 };
 pub use read::read_tree;
-pub use registry::{get_or_create_tree, is_unique_violation, new_summary_id, new_tree_id};
+pub use registry::{
+    get_or_create_tree, get_or_create_tree_with_ask, is_unique_violation, new_summary_id,
+    new_tree_id,
+};
 pub use store::{
     Buffer, SummaryNode, Tree, TreeKind, TreeStatus, INPUT_TOKEN_BUDGET, OUTPUT_TOKEN_BUDGET,
     SUMMARY_FANOUT,

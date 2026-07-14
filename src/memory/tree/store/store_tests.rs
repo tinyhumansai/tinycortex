@@ -29,6 +29,7 @@ fn sample_tree(id: &str, scope: &str) -> Tree {
         status: TreeStatus::Active,
         created_at: Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
         last_sealed_at: None,
+        ask: None,
     }
 }
 

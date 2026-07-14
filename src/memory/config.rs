@@ -17,6 +17,10 @@ pub const OUTPUT_TOKEN_BUDGET: u32 = 5_000;
 pub const SUMMARY_FANOUT: u32 = 10;
 /// Default flush age for stale buffers (7 days, in seconds).
 pub const DEFAULT_FLUSH_AGE_SECS: u64 = 7 * 24 * 60 * 60;
+/// Default token budget for a flavoured tree's compiled root markdown artifact.
+/// The compiled profile is clamped to this so it can be dropped verbatim into a
+/// prompt as a small, always-fresh style/preference guide (issue #68).
+pub const FLAVOUR_ROOT_TOKEN_BUDGET: u32 = 1_000;
 /// Fixed embedding dimension used by OpenHuman.
 pub const DEFAULT_EMBEDDING_DIM: usize = 768;
 /// Folder reader per-file size cap (10 MB).
@@ -119,6 +123,18 @@ pub struct TreeConfig {
     /// Age, in seconds, after which an unsealed buffer is force-flushed
     /// (see [`DEFAULT_FLUSH_AGE_SECS`]).
     pub flush_age_secs: u64,
+    /// Token budget for a [`TreeKind::Flavoured`](crate::memory::tree::TreeKind::Flavoured)
+    /// tree's compiled root markdown artifact (see [`FLAVOUR_ROOT_TOKEN_BUDGET`]).
+    /// The compiled profile body is clamped to this before it is staged.
+    #[serde(default = "default_flavour_root_token_budget")]
+    pub flavour_root_token_budget: u32,
+}
+
+/// Serde default for [`TreeConfig::flavour_root_token_budget`] so configs
+/// deserialised from older payloads (without the field) keep the 1000-token
+/// default instead of `0`.
+fn default_flavour_root_token_budget() -> u32 {
+    FLAVOUR_ROOT_TOKEN_BUDGET
 }
 
 impl Default for TreeConfig {
@@ -128,6 +144,7 @@ impl Default for TreeConfig {
             output_token_budget: OUTPUT_TOKEN_BUDGET,
             summary_fanout: SUMMARY_FANOUT,
             flush_age_secs: DEFAULT_FLUSH_AGE_SECS,
+            flavour_root_token_budget: FLAVOUR_ROOT_TOKEN_BUDGET,
         }
     }
 }

@@ -97,6 +97,7 @@ fn summary_reembed_tombstone_roundtrips_and_clears() {
             status: TreeStatus::Active,
             created_at: now,
             last_sealed_at: None,
+            ask: None,
         },
     )
     .unwrap();

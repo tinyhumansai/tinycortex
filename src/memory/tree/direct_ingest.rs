@@ -69,6 +69,7 @@ pub async fn ingest_summary(
         crate::memory::tree::TreeKind::Source => SummaryTreeKind::Source,
         crate::memory::tree::TreeKind::Topic => SummaryTreeKind::Topic,
         crate::memory::tree::TreeKind::Global => SummaryTreeKind::Global,
+        crate::memory::tree::TreeKind::Flavoured => SummaryTreeKind::Flavoured,
     };
     let staged = stage_summary(
         &content_root,

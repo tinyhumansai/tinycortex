@@ -13,6 +13,7 @@ fn sample_tree() -> Tree {
         status: TreeStatus::Active,
         created_at: Utc::now(),
         last_sealed_at: None,
+        ask: None,
     }
 }
 

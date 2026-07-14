@@ -251,6 +251,7 @@ async fn topic_tree_seal_persists_topic_kind_not_source() {
         status: TreeStatus::Active,
         created_at: Utc::now(),
         last_sealed_at: None,
+        ask: None,
     };
     store::insert_tree(&cfg, &tree).unwrap();
     let s = ConcatSummariser::new();
@@ -323,6 +324,7 @@ async fn hydrate_summary_inputs_preserves_order_and_skips_missing() {
         status: TreeStatus::Active,
         created_at: ts,
         last_sealed_at: None,
+        ask: None,
     };
     store::insert_tree(&cfg, &tree).unwrap();
 

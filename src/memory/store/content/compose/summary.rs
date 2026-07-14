@@ -66,6 +66,7 @@ fn build_summary_front_matter(r: &SummaryComposeInput<'_>) -> String {
         SummaryTreeKind::Source => "source",
         SummaryTreeKind::Global => "global",
         SummaryTreeKind::Topic => "topic",
+        SummaryTreeKind::Flavoured => "flavoured",
     };
 
     let trs = r.time_range_start.to_rfc3339();
@@ -154,6 +155,13 @@ fn build_summary_alias(r: &SummaryComposeInput<'_>) -> String {
             format!(
                 "L{} \u{00b7} topic {} \u{00b7} {} children",
                 r.level, entity, r.child_count
+            )
+        }
+        SummaryTreeKind::Flavoured => {
+            let flavour = scope_short_label(r.tree_scope);
+            format!(
+                "L{} \u{00b7} flavour {} \u{00b7} {} children \u{00b7} {}",
+                r.level, flavour, r.child_count, date_range
             )
         }
     }

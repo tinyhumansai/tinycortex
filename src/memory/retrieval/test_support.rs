@@ -143,6 +143,7 @@ pub fn source_tree(id: &str, scope: &str, root_id: Option<&str>, max_level: u32)
         status: TreeStatus::Active,
         created_at: ts,
         last_sealed_at: Some(ts),
+        ask: None,
     }
 }
 

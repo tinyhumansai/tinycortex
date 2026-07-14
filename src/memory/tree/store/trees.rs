@@ -21,8 +21,8 @@ pub fn insert_tree_conn(conn: &Connection, tree: &Tree) -> Result<()> {
     conn.execute(
         "INSERT INTO mem_tree_trees (
             id, kind, scope, root_id, max_level, status,
-            created_at_ms, last_sealed_at_ms
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            created_at_ms, last_sealed_at_ms, ask
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             tree.id,
             tree.kind.as_str(),
@@ -32,6 +32,7 @@ pub fn insert_tree_conn(conn: &Connection, tree: &Tree) -> Result<()> {
             tree.status.as_str(),
             tree.created_at.timestamp_millis(),
             tree.last_sealed_at.map(|t| t.timestamp_millis()),
+            tree.ask,
         ],
     )
     .with_context(|| format!("Failed to insert tree id={}", tree.id))?;
@@ -96,7 +97,7 @@ pub fn get_tree_by_scope_conn(
 ) -> Result<Option<Tree>> {
     let mut stmt = conn.prepare(
         "SELECT id, kind, scope, root_id, max_level, status,
-                created_at_ms, last_sealed_at_ms
+                created_at_ms, last_sealed_at_ms, ask
            FROM mem_tree_trees WHERE kind = ?1 AND scope = ?2",
     )?;
     let row = stmt
@@ -111,7 +112,7 @@ pub fn get_tree(config: &MemoryConfig, id: &str) -> Result<Option<Tree>> {
     with_connection(config, |conn| {
         let mut stmt = conn.prepare(
             "SELECT id, kind, scope, root_id, max_level, status,
-                    created_at_ms, last_sealed_at_ms
+                    created_at_ms, last_sealed_at_ms, ask
                FROM mem_tree_trees WHERE id = ?1",
         )?;
         let row = stmt
@@ -145,7 +146,7 @@ pub fn get_trees_batch(
                 .join(",");
             let sql = format!(
                 "SELECT id, kind, scope, root_id, max_level, status,
-                        created_at_ms, last_sealed_at_ms
+                        created_at_ms, last_sealed_at_ms, ask
                    FROM mem_tree_trees
                   WHERE id IN ({placeholders})"
             );
@@ -169,7 +170,7 @@ pub fn list_trees_by_kind(config: &MemoryConfig, kind: TreeKind) -> Result<Vec<T
     with_connection(config, |conn| {
         let mut stmt = conn.prepare(
             "SELECT id, kind, scope, root_id, max_level, status,
-                    created_at_ms, last_sealed_at_ms
+                    created_at_ms, last_sealed_at_ms, ask
                FROM mem_tree_trees
               WHERE kind = ?1
               ORDER BY created_at_ms ASC",
@@ -237,6 +238,7 @@ pub(crate) fn row_to_tree(row: &rusqlite::Row<'_>) -> rusqlite::Result<Tree> {
     let status_s: String = row.get(5)?;
     let created_ms: i64 = row.get(6)?;
     let last_sealed_ms: Option<i64> = row.get(7)?;
+    let ask: Option<String> = row.get(8)?;
 
     let kind = TreeKind::parse(&kind_s).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, e.into())
@@ -253,5 +255,6 @@ pub(crate) fn row_to_tree(row: &rusqlite::Row<'_>) -> rusqlite::Result<Tree> {
         status,
         created_at: ms_to_utc(created_ms)?,
         last_sealed_at: last_sealed_ms.map(ms_to_utc).transpose()?,
+        ask,
     })
 }
