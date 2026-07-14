@@ -125,7 +125,7 @@ impl EvidenceTier {
 
 /// The seven distillation lenses (§6.3). Each maps to one flavoured tree with a
 /// purpose-written `ask` and one section of the compiled pack.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PersonaFacet {
     /// Tone, verbosity, directness, phrasing quirks, how they give feedback.
