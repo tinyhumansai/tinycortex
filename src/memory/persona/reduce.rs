@@ -16,9 +16,9 @@ use chrono::{DateTime, Utc};
 use super::types::{DigestObservation, EvidenceTier, PersonaEvidence, PersonaFacet, SessionDigest};
 use crate::memory::chunks::{chunk_id, upsert_chunks, Chunk, Metadata, SourceKind};
 use crate::memory::config::MemoryConfig;
+use crate::memory::tree::bucket_seal::LeafRef;
 use crate::memory::tree::flavoured::compile_flavoured_root;
 use crate::memory::tree::{Summariser, TreeFactory};
-use crate::memory::tree::bucket_seal::LeafRef;
 
 /// Per-facet natural-language asks, defaulting to [`PersonaFacet::default_ask`]
 /// and overridable via config.
@@ -138,7 +138,12 @@ fn render_observations(obs: &[&DigestObservation]) -> String {
             if o.quote.trim().is_empty() {
                 format!("- {} [{}]", o.observation, o.tier.as_str())
             } else {
-                format!("- {} (\"{}\") [{}]", o.observation, o.quote, o.tier.as_str())
+                format!(
+                    "- {} (\"{}\") [{}]",
+                    o.observation,
+                    o.quote,
+                    o.tier.as_str()
+                )
             }
         })
         .collect::<Vec<_>>()

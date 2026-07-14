@@ -315,7 +315,10 @@ pub fn evidence_id(source_id: &str, excerpt: &str) -> String {
     hasher.update(b"\x1f"); // unit separator, keeps the two halves unambiguous
     hasher.update(excerpt.as_bytes());
     let digest = hasher.finalize();
-    let hex = digest.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let hex = digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
     hex[..32].to_string()
 }
 

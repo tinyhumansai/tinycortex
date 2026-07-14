@@ -153,7 +153,9 @@ fn strength_annotation(inputs: &PackInputs, facet: PersonaFacet) -> Option<Strin
     }
     let m = inputs.scopes.get(&facet).copied().unwrap_or(0);
     if m > 1 {
-        Some(format!("distilled from {n} observations across {m} projects"))
+        Some(format!(
+            "distilled from {n} observations across {m} projects"
+        ))
     } else {
         Some(format!("distilled from {n} observations"))
     }
@@ -195,7 +197,11 @@ pub fn write_directives(config: &MemoryConfig, directives: &[String]) -> Result<
 /// Read the persisted verbatim directives (empty if none).
 pub fn read_directives(config: &MemoryConfig) -> Vec<String> {
     match std::fs::read_to_string(directives_path(config)) {
-        Ok(s) => s.lines().filter(|l| !l.trim().is_empty()).map(str::to_string).collect(),
+        Ok(s) => s
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(str::to_string)
+            .collect(),
         Err(_) => Vec::new(),
     }
 }

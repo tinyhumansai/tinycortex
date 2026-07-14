@@ -45,7 +45,9 @@ fn env_path(key: &str) -> Option<PathBuf> {
 }
 
 fn home() -> PathBuf {
-    std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."))
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
 
 fn build_persona_config() -> PersonaConfig {
@@ -64,7 +66,11 @@ fn build_persona_config() -> PersonaConfig {
         cfg.project_roots = roots.split(',').map(|s| PathBuf::from(s.trim())).collect();
     }
     if let Ok(emails) = std::env::var("PERSONA_AUTHOR_EMAILS") {
-        cfg.author_emails = emails.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        cfg.author_emails = emails
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
     }
     if let Ok(model) = std::env::var("TINYCORTEX_LLM_MODEL") {
         cfg.chat_model = model;
@@ -86,8 +92,9 @@ fn build_persona_config() -> PersonaConfig {
 }
 
 fn build_provider(persona: &PersonaConfig) -> anyhow::Result<Arc<OpenRouterProvider>> {
-    let key = std::env::var("OPENROUTER_API_KEY")
-        .map_err(|_| anyhow::anyhow!("OPENROUTER_API_KEY not set (needed for backfill/incremental)"))?;
+    let key = std::env::var("OPENROUTER_API_KEY").map_err(|_| {
+        anyhow::anyhow!("OPENROUTER_API_KEY not set (needed for backfill/incremental)")
+    })?;
     let provider = OpenRouterProvider::new(OpenRouterConfig {
         api_key: SecretString::new(key),
         chat_model: persona.chat_model.clone(),
@@ -102,10 +109,12 @@ fn build_provider(persona: &PersonaConfig) -> anyhow::Result<Arc<OpenRouterProvi
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> anyhow::Result<()> {
     let _ = dotenvy::dotenv();
-    let mode = std::env::args().nth(1).unwrap_or_else(|| "status".to_string());
+    let mode = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "status".to_string());
 
-    let workspace = env_path("TINYCORTEX_WORKSPACE")
-        .unwrap_or_else(|| PathBuf::from("./persona-workspace"));
+    let workspace =
+        env_path("TINYCORTEX_WORKSPACE").unwrap_or_else(|| PathBuf::from("./persona-workspace"));
     std::fs::create_dir_all(&workspace)?;
     let config = MemoryConfig::new(&workspace);
     let persona = build_persona_config();
@@ -114,7 +123,10 @@ async fn main() -> anyhow::Result<()> {
     println!("persona harness: mode={mode}");
     println!("  workspace: {}", workspace.display());
     println!("  identity:  {}", persona.identity);
-    println!("  chat model: {}  embed model: {}", persona.chat_model, persona.embed_model);
+    println!(
+        "  chat model: {}  embed model: {}",
+        persona.chat_model, persona.embed_model
+    );
     println!(
         "  roots: claude={:?} codex={:?} projects={:?}",
         persona.claude_code_root, persona.codex_root, persona.project_roots

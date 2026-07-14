@@ -12,8 +12,20 @@ fn evidence_ids_are_content_addressed_and_deterministic() {
     let src = EvidenceSource::new(PersonaSourceKind::ClaudeCode)
         .with_scope("proj")
         .with_session("sess-1");
-    let a = PersonaEvidence::new(src.clone(), ts(), EvidenceTier::T2, "commit small and often", vec![]);
-    let b = PersonaEvidence::new(src.clone(), ts(), EvidenceTier::T2, "commit small and often", vec![]);
+    let a = PersonaEvidence::new(
+        src.clone(),
+        ts(),
+        EvidenceTier::T2,
+        "commit small and often",
+        vec![],
+    );
+    let b = PersonaEvidence::new(
+        src.clone(),
+        ts(),
+        EvidenceTier::T2,
+        "commit small and often",
+        vec![],
+    );
     // Same source + same excerpt → same id (re-runs dedupe naturally).
     assert_eq!(a.id, b.id);
     assert_eq!(a.id.len(), 32);

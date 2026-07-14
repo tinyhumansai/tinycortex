@@ -12,9 +12,7 @@ use anyhow::Result;
 use serde::Deserialize;
 
 use super::readers::RawSession;
-use super::types::{
-    DigestObservation, EvidenceTier, PersonaFacet, SessionDigest,
-};
+use super::types::{DigestObservation, EvidenceTier, PersonaFacet, SessionDigest};
 use crate::memory::score::extract::{ChatPrompt, ChatProvider};
 use crate::memory::store::safety::sanitize_text;
 
@@ -92,10 +90,7 @@ fn windows(session: &RawSession) -> Vec<String> {
 
 /// Digest one session into a [`SessionDigest`] via the chat provider. Soft-falls
 /// back to an empty digest on any failure so the pipeline never aborts.
-pub async fn digest_session(
-    provider: &dyn ChatProvider,
-    session: &RawSession,
-) -> SessionDigest {
+pub async fn digest_session(provider: &dyn ChatProvider, session: &RawSession) -> SessionDigest {
     if session.is_empty() {
         return SessionDigest::empty(session.source.clone());
     }
@@ -154,7 +149,10 @@ fn parse_digest(raw: &str) -> Result<RawDigest> {
             return Ok(serde_json::from_str::<RawDigest>(&raw[s..=e])?);
         }
     }
-    Err(anyhow::anyhow!("digest response was not JSON: {}", raw.chars().take(120).collect::<String>()))
+    Err(anyhow::anyhow!(
+        "digest response was not JSON: {}",
+        raw.chars().take(120).collect::<String>()
+    ))
 }
 
 #[derive(Debug, Deserialize)]

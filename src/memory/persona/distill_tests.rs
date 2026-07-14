@@ -43,7 +43,9 @@ async fn parses_observations_from_json() {
         {"facet":"workflow","observation":"Commits small and often","quote":"commit small","tier":"t2"},
         {"facet":"coding-style","observation":"Wants regression tests","quote":"add a test","tier":"t1"}
     ]}"#;
-    let provider = MockChat { body: Ok(body.into()) };
+    let provider = MockChat {
+        body: Ok(body.into()),
+    };
     let session = session_with(&[("commit small and often", EvidenceTier::T2)]);
     let digest = digest_session(&provider, &session).await;
     assert_eq!(digest.observations.len(), 2);
@@ -55,7 +57,9 @@ async fn parses_observations_from_json() {
 #[tokio::test]
 async fn tolerates_prose_wrapped_json() {
     let body = "Sure! Here is the JSON:\n```json\n{\"observations\":[{\"facet\":\"stack\",\"observation\":\"Uses Rust\",\"quote\":\"cargo\",\"tier\":\"t2\"}]}\n```";
-    let provider = MockChat { body: Ok(body.into()) };
+    let provider = MockChat {
+        body: Ok(body.into()),
+    };
     let session = session_with(&[("cargo test", EvidenceTier::T2)]);
     let digest = digest_session(&provider, &session).await;
     assert_eq!(digest.observations.len(), 1);
@@ -66,16 +70,22 @@ async fn tolerates_prose_wrapped_json() {
 async fn soft_falls_back_on_error_and_bad_json() {
     let session = session_with(&[("x", EvidenceTier::T2)]);
 
-    let failing = MockChat { body: Err("402 requires more credits".into()) };
+    let failing = MockChat {
+        body: Err("402 requires more credits".into()),
+    };
     assert!(digest_session(&failing, &session).await.is_empty());
 
-    let garbage = MockChat { body: Ok("not json at all".into()) };
+    let garbage = MockChat {
+        body: Ok("not json at all".into()),
+    };
     assert!(digest_session(&garbage, &session).await.is_empty());
 }
 
 #[tokio::test]
 async fn empty_session_yields_empty_digest() {
-    let provider = MockChat { body: Ok("{\"observations\":[]}".into()) };
+    let provider = MockChat {
+        body: Ok("{\"observations\":[]}".into()),
+    };
     let session = RawSession::new(EvidenceSource::new(PersonaSourceKind::Codex));
     assert!(digest_session(&provider, &session).await.is_empty());
 }
@@ -88,7 +98,9 @@ async fn drops_unusable_observations() {
         {"facet":"stack","observation":"x","tier":"t2"},
         {"facet":"stack","observation":"Prefers Postgres","quote":"","tier":"t3"}
     ]}"#;
-    let provider = MockChat { body: Ok(body.into()) };
+    let provider = MockChat {
+        body: Ok(body.into()),
+    };
     let session = session_with(&[("db", EvidenceTier::T2)]);
     let digest = digest_session(&provider, &session).await;
     assert_eq!(digest.observations.len(), 1);

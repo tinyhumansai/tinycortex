@@ -90,7 +90,10 @@ fn build_fixtures() -> TempDir {
 
     // Instruction file + git repo under a project root.
     let repo = root.join("proj");
-    write(&repo.join("CLAUDE.md"), "- Always branch before writing code.\n- Commit regularly with clear messages.\n");
+    write(
+        &repo.join("CLAUDE.md"),
+        "- Always branch before writing code.\n- Commit regularly with clear messages.\n",
+    );
     init_git_repo(&repo);
 
     dir
@@ -216,7 +219,10 @@ async fn incremental_resume_after_partial_backfill() {
     };
     let second = pipeline.run(RunMode::Incremental).await.unwrap();
     assert!(second.sessions_processed >= 1, "remaining sessions resumed");
-    assert!(second.sessions_skipped >= 1, "the checkpointed file was skipped");
+    assert!(
+        second.sessions_skipped >= 1,
+        "the checkpointed file was skipped"
+    );
 
     // Final pack still well-formed.
     let pack = std::fs::read_to_string(second.pack_path.as_ref().unwrap()).unwrap();

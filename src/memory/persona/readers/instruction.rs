@@ -15,7 +15,9 @@ use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
-use super::super::types::{EvidenceSource, EvidenceTier, PersonaEvidence, PersonaFacet, PersonaSourceKind};
+use super::super::types::{
+    EvidenceSource, EvidenceTier, PersonaEvidence, PersonaFacet, PersonaSourceKind,
+};
 use super::{keep_walk_entry, RawSession};
 
 /// Filenames recognised as agent instruction files.
@@ -90,7 +92,11 @@ pub fn discover(roots: &[PathBuf], globals: &[PathBuf]) -> Vec<InstructionFile> 
             }
             // copilot-instructions.md only counts under a `.github` directory.
             if name == "copilot-instructions.md"
-                && path.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()) != Some(".github")
+                && path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    != Some(".github")
             {
                 continue;
             }
@@ -256,7 +262,11 @@ fn is_bullet(t: &str) -> bool {
 }
 
 fn strip_bullet(t: &str) -> &str {
-    if let Some(rest) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")).or_else(|| t.strip_prefix("+ ")) {
+    if let Some(rest) = t
+        .strip_prefix("- ")
+        .or_else(|| t.strip_prefix("* "))
+        .or_else(|| t.strip_prefix("+ "))
+    {
         return rest.trim_start();
     }
     // Numbered list: strip the leading "N. " / "N) ".

@@ -10,9 +10,18 @@ fn with_home_sets_platform_defaults() {
         cfg.claude_code_root.as_deref(),
         Some(Path::new("/home/x/.claude/projects"))
     );
-    assert_eq!(cfg.codex_root.as_deref(), Some(Path::new("/home/x/.codex/sessions")));
-    assert!(cfg.global_instruction_files.iter().any(|p| p.ends_with(".claude/CLAUDE.md")));
-    assert!(cfg.global_instruction_files.iter().any(|p| p.ends_with(".codex/AGENTS.md")));
+    assert_eq!(
+        cfg.codex_root.as_deref(),
+        Some(Path::new("/home/x/.codex/sessions"))
+    );
+    assert!(cfg
+        .global_instruction_files
+        .iter()
+        .any(|p| p.ends_with(".claude/CLAUDE.md")));
+    assert!(cfg
+        .global_instruction_files
+        .iter()
+        .any(|p| p.ends_with(".codex/AGENTS.md")));
     assert_eq!(cfg.total_token_budget, DEFAULT_TOTAL_MAX);
 }
 

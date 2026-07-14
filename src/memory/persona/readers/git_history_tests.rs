@@ -31,17 +31,42 @@ fn commit(repo: &Repository, email: &str, message: &str, files: &[(&str, &str)])
         v
     });
     let sig = Signature::new("Test Author", email, &Time::new(secs, 0)).unwrap();
-    let parent = repo.head().ok().and_then(|h| h.target()).and_then(|o| repo.find_commit(o).ok());
+    let parent = repo
+        .head()
+        .ok()
+        .and_then(|h| h.target())
+        .and_then(|o| repo.find_commit(o).ok());
     let parents: Vec<&git2::Commit> = parent.iter().collect();
-    repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents).unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
+        .unwrap();
 }
 
 fn build_repo(dir: &TempDir) -> Repository {
     let repo = Repository::init(dir.path()).unwrap();
-    commit(&repo, "me@work.com", "feat: add parser\n\nImplements the streaming parser.", &[("parser.rs", "fn parse() {}\n")]);
-    commit(&repo, "me@personal.com", "fix: handle empty input", &[("parser.rs", "fn parse() { /* guard */ }\n")]);
-    commit(&repo, "someone-else@example.com", "chore: unrelated", &[("other.rs", "// not mine\n")]);
-    commit(&repo, "me@work.com", "test: add regression test", &[("parser_test.rs", "#[test] fn t() {}\n")]);
+    commit(
+        &repo,
+        "me@work.com",
+        "feat: add parser\n\nImplements the streaming parser.",
+        &[("parser.rs", "fn parse() {}\n")],
+    );
+    commit(
+        &repo,
+        "me@personal.com",
+        "fix: handle empty input",
+        &[("parser.rs", "fn parse() { /* guard */ }\n")],
+    );
+    commit(
+        &repo,
+        "someone-else@example.com",
+        "chore: unrelated",
+        &[("other.rs", "// not mine\n")],
+    );
+    commit(
+        &repo,
+        "me@work.com",
+        "test: add regression test",
+        &[("parser_test.rs", "#[test] fn t() {}\n")],
+    );
     repo
 }
 
@@ -65,7 +90,12 @@ fn reads_author_filtered_message_and_diff_evidence() {
         .filter(|e| e.tier == EvidenceTier::T2)
         .collect();
     // Three of the four commits are by the configured authors.
-    assert_eq!(msg.len(), 3, "message evidence: {:?}", msg.iter().map(|e| e.excerpt()).collect::<Vec<_>>());
+    assert_eq!(
+        msg.len(),
+        3,
+        "message evidence: {:?}",
+        msg.iter().map(|e| e.excerpt()).collect::<Vec<_>>()
+    );
     assert!(msg.iter().any(|e| e.excerpt().contains("feat: add parser")));
     // The unrelated author's commit is excluded.
     assert!(!msg.iter().any(|e| e.excerpt().contains("unrelated")));
@@ -126,6 +156,9 @@ fn diff_size_cap_truncates() {
         .flat_map(|s| &s.evidence)
         .find(|e| e.tier == EvidenceTier::T3);
     if let Some(d) = diff {
-        assert!(d.excerpt().contains("truncated"), "large diff should be truncated");
+        assert!(
+            d.excerpt().contains("truncated"),
+            "large diff should be truncated"
+        );
     }
 }

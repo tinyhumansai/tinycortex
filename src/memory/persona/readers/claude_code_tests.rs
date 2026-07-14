@@ -21,8 +21,10 @@ const REAL_PROMPT: &str = r#"{"type":"user","isSidechain":false,"cwd":"/home/dro
 const CORRECTION: &str = r#"{"type":"user","isSidechain":false,"sessionId":"sess-1","timestamp":"2026-07-01T10:05:00.000Z","message":{"role":"user","content":"no, use a streaming approach instead"}}"#;
 const ASSISTANT: &str = r#"{"type":"assistant","timestamp":"2026-07-01T10:04:00.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"I loaded the whole file into memory."}]}}"#;
 const TOOL_RESULT: &str = r#"{"type":"user","isSidechain":false,"message":{"role":"user","content":[{"type":"tool_result","content":"stdout blob"}]}}"#;
-const SIDECHAIN: &str = r#"{"type":"user","isSidechain":true,"message":{"role":"user","content":"subagent prompt"}}"#;
-const META: &str = r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"meta note"}}"#;
+const SIDECHAIN: &str =
+    r#"{"type":"user","isSidechain":true,"message":{"role":"user","content":"subagent prompt"}}"#;
+const META: &str =
+    r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"meta note"}}"#;
 const CAVEAT: &str = r#"{"type":"user","isSidechain":false,"message":{"role":"user","content":"<local-command-caveat>Caveat...</local-command-caveat>"}}"#;
 const REMINDER: &str = r#"{"type":"user","isSidechain":false,"timestamp":"2026-07-01T10:06:00.000Z","message":{"role":"user","content":"ship it <system-reminder>background noise</system-reminder>"}}"#;
 
@@ -33,7 +35,14 @@ fn extracts_only_user_authored_turns() {
         &dir,
         "abc.jsonl",
         &[
-            REAL_PROMPT, ASSISTANT, CORRECTION, TOOL_RESULT, SIDECHAIN, META, CAVEAT, REMINDER,
+            REAL_PROMPT,
+            ASSISTANT,
+            CORRECTION,
+            TOOL_RESULT,
+            SIDECHAIN,
+            META,
+            CAVEAT,
+            REMINDER,
         ],
     );
     let session = read_session(&path).unwrap();
@@ -68,7 +77,10 @@ fn provenance_prefers_cwd_and_session_id() {
     let dir = TempDir::new().unwrap();
     let path = write_fixture(&dir, "abc.jsonl", &[REAL_PROMPT]);
     let session = read_session(&path).unwrap();
-    assert_eq!(session.source.scope.as_deref(), Some("/home/droid/work/demo"));
+    assert_eq!(
+        session.source.scope.as_deref(),
+        Some("/home/droid/work/demo")
+    );
     assert_eq!(session.source.session_id.as_deref(), Some("sess-1"));
 }
 

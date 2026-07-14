@@ -17,13 +17,13 @@ use serde::Serialize;
 use super::compile::{write_pack, PackInputs};
 use super::config::PersonaConfig;
 use super::distill::digest_session;
-use super::reduce::{fold_digest, fold_directives, seal_and_collect, FacetAsks, ReduceState};
 use super::readers::{claude_code, codex, instruction, RawSession};
+use super::reduce::{fold_digest, fold_directives, seal_and_collect, FacetAsks, ReduceState};
+use super::state::PersonaStateStore;
 use super::state::{self, file_key, file_unchanged, record_file};
 use super::types::PersonaFacet;
 use crate::memory::config::MemoryConfig;
 use crate::memory::score::extract::ChatProvider;
-use super::state::PersonaStateStore;
 use crate::memory::tree::Summariser;
 
 /// Run mode (§6.7).
@@ -118,6 +118,10 @@ impl Pipeline<'_> {
     pub async fn run(&self, mode: RunMode) -> Result<RunReport> {
         let asks = self.persona.asks();
         let mut state = ReduceState::default();
+        // Seed verbatim directives from the persisted store so an incremental
+        // run (which cursor-skips unchanged instruction files) still emits the
+        // Directives section. fold_directives dedups on re-read.
+        state.directives = super::compile::read_directives(self.config);
         let mut budget = Budget::from(self.persona);
         let mut report = RunReport {
             mode: mode.as_str().to_string(),
@@ -125,14 +129,17 @@ impl Pipeline<'_> {
         };
 
         // 1. Instruction files (no LLM) — highest-confidence T0 directives.
-        self.ingest_instructions(mode, &mut state, &mut report).await?;
+        self.ingest_instructions(mode, &mut state, &mut report)
+            .await?;
 
         // 2. Transcripts (Claude Code + Codex) — the digest map step.
-        self.ingest_transcripts(mode, &asks, &mut state, &mut budget, &mut report).await?;
+        self.ingest_transcripts(mode, &asks, &mut state, &mut budget, &mut report)
+            .await?;
 
         // 3. Git history (feature-gated).
         #[cfg(feature = "git-diff")]
-        self.ingest_git(mode, &asks, &mut state, &mut budget, &mut report).await?;
+        self.ingest_git(mode, &asks, &mut state, &mut budget, &mut report)
+            .await?;
 
         report.budget_hit = budget.exhausted();
 
@@ -366,7 +373,11 @@ fn author_set_hash(emails: &[String]) -> String {
     sorted.sort();
     let mut h = Sha256::new();
     h.update(sorted.join(",").as_bytes());
-    h.finalize().iter().take(4).map(|b| format!("{b:02x}")).collect()
+    h.finalize()
+        .iter()
+        .take(4)
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Current HEAD sha of a repo, or `None` for an empty/broken repo.

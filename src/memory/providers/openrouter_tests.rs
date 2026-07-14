@@ -41,7 +41,9 @@ async fn chat_for_json_happy_path_returns_content_and_records_usage() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(chat_completion_body("{\"ok\":true}")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(chat_completion_body("{\"ok\":true}")),
+        )
         .mount(&server)
         .await;
 
@@ -76,7 +78,11 @@ async fn retries_429_then_succeeds() {
     let provider = OpenRouterProvider::new(cfg(server.uri())).unwrap();
     let out = provider.chat_for_json(&prompt("hi")).await.unwrap();
     assert_eq!(out, "{\"ok\":1}");
-    assert_eq!(provider.usage().requests, 1, "only the successful call counts");
+    assert_eq!(
+        provider.usage().requests,
+        1,
+        "only the successful call counts"
+    );
 }
 
 #[tokio::test]
@@ -135,7 +141,9 @@ async fn embeddings_return_vectors_in_order() {
     let mut c = cfg(server.uri());
     c.embed_dims = 3;
     let provider = OpenRouterProvider::new(c).unwrap();
-    let vecs = EmbeddingBackend::embed(&provider, &["a", "b"]).await.unwrap();
+    let vecs = EmbeddingBackend::embed(&provider, &["a", "b"])
+        .await
+        .unwrap();
     assert_eq!(vecs.len(), 2);
     // index-0 vector must land first even though it arrived second.
     assert_eq!(vecs[0], vec![0.4, 0.5, 0.6]);
@@ -152,7 +160,8 @@ async fn summariser_folds_via_chat_and_reports_usage() {
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .respond_with(
-            ResponseTemplate::new(200).set_body_json(chat_completion_body("Prefers small commits.")),
+            ResponseTemplate::new(200)
+                .set_body_json(chat_completion_body("Prefers small commits.")),
         )
         .mount(&server)
         .await;

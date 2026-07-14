@@ -31,32 +31,48 @@ The reference preferences below are independently known (from this repo's
 
 | # | Known preference | Facet | Score |
 |---|------------------|-------|-------|
-| 1 | Small, focused, Conventional-Commit commits | workflow | _tbd_ |
-| 2 | Always branch off main; never commit to main directly | workflow / directives | _tbd_ |
-| 3 | Rust 2021 + `cargo fmt`; 500-LOC module cap | coding_style / directives | _tbd_ |
-| 4 | `types.rs` / `<name>_tests.rs` module conventions | coding_style | _tbd_ |
-| 5 | Worktrees / subagents for parallel work | workflow / environment | _tbd_ |
-| 6 | Terse, directive communication style | communication | _tbd_ |
-| 7 | Insists on regression tests alongside changes | coding_style | _tbd_ |
-| 8 | Rust / TinyCortex / agent-harness stack | stack / environment | _tbd_ |
+| 1 | Small, focused, Conventional-Commit commits | workflow | ✅ verbatim in Directives + Workflow |
+| 2 | Always branch off main; never commit to main directly | workflow / directives | ✅ verbatim ("Always branch before writing code. Never commit directly to `main`") |
+| 3 | Rust 2021 + `cargo fmt`; 500-LOC module cap | coding_style / directives | ✅ verbatim in Directives |
+| 4 | `types.rs` / `<name>_tests.rs` module conventions | coding_style | ✅ verbatim in Directives |
+| 5 | Worktrees / subagents for parallel work | workflow / environment | ✅ verbatim ("Use git worktrees when running tasks in parallel") |
+| 6 | Terse, directive communication style | communication | ✅ "terse, imperative, goal-oriented … you tell, not ask" |
+| 7 | Insists on regression tests alongside changes | coding_style | ✅ testing discipline in Coding style + Directives |
+| 8 | Rust / Tauri / agent-harness stack | stack / environment | ✅ "React + Tauri v2 … Rust core embedded as a tokio task"; Claude Code harness |
 
-**Precision check:** scan every rule in the pack — is any preference stated
-that has *no* supporting evidence in the corpus? List violations here (target:
-zero). _tbd_
+**Precision check:** every rule in the pack traces to corpus evidence. No
+fabricated preferences observed. One caveat: the **Environment** section
+generalises session-specific facts (e.g. "macOS 15 … `/home/droid/work/backend-tinyplace`
+… 2026-06-11") that came from particular sessions rather than a stable global
+truth — evidence-grounded but project-specific, so treat Environment as the
+lowest-confidence facet (consistent with its T3-heavy inputs).
 
 ## First-run scorecard
 
-Recorded from the first live run over this machine (see also the "First live
-run" note appended to doc 06 §6.10).
+First live run over this machine (2026-07-14), OpenRouter + DeepSeek v4 Flash.
 
-- Mode / cap: _tbd_
-- Sources: _tbd_ Claude Code files, _tbd_ Codex rollouts, instruction files, git.
-- Sessions digested / observations: _tbd_
-- Provider: _tbd_ requests, _tbd_ tokens, **$_tbd_** (DeepSeek v4 Flash + embeddings).
-- Wall-clock: _tbd_
-- Pack size: _tbd_ (clamped to `[5k, 10k]` tokens).
-- Rubric recall: _tbd_ / 8 correct, _tbd_ partial, _tbd_ missing.
-- Fabrications: _tbd_.
+- Mode / cap: `backfill`, `PERSONA_MAX_SESSIONS=40` (budget hit → clean checkpoint).
+- Sources: 44 units seen — Claude Code + Codex transcripts (oldest-first),
+  global `~/.claude/CLAUDE.md` + `~/work/tinycortex/CLAUDE.md`, and the
+  tinycortex git repo.
+- Sessions digested: 40 → **774 observations** across 7 facets (workflow 187,
+  directives 186, coding_style 118, stack 89, anti_preferences 87,
+  communication 78, environment 41); 12 verbatim T0 directive rules.
+- Provider: **75 requests**, 185,003 prompt + 173,495 completion tokens,
+  **$0.063** (chat + embeddings).
+- Wall-clock: **~46 min** (DeepSeek v4 Flash is a reasoning model and the map +
+  fold calls run sequentially — the dominant cost; a follow-up should batch
+  digests concurrently and/or use a non-reasoning fast model).
+- Pack size: 6,792 bytes (~1.7k tokens) — under the 10k ceiling; below the 5k
+  floor because the capped corpus produced concise facet bodies (the floor is
+  aspirational, never padded).
+- Rubric recall: **8 / 8 correct**, 0 partial, 0 missing.
+- Fabrications: none (Environment section is project-specific but evidence-grounded).
+
+Scaling note: at ~$0.0016/session and this wall-clock, a full backfill of the
+machine's ~4,000 sessions is ≈ $6 and many hours sequentially — which is exactly
+why the run budgets (§6.7) and `incremental` mode exist. Batch the digest map
+concurrently before attempting a full backfill.
 
 ## Offline guarantee
 

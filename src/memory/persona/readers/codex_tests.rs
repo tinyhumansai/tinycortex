@@ -29,14 +29,24 @@ fn extracts_user_turns_excluding_vendor_and_synthetic() {
     let path = write_fixture(
         &dir,
         &[
-            META, DEVELOPER, USER_PROMPT, ENV_CTX, SUBAGENT, ASSISTANT, CORRECTION, TOKEN_EVT,
+            META,
+            DEVELOPER,
+            USER_PROMPT,
+            ENV_CTX,
+            SUBAGENT,
+            ASSISTANT,
+            CORRECTION,
+            TOKEN_EVT,
         ],
     );
     let session = read_session(&path).unwrap();
 
     // Two genuine user turns: the prompt (T2) and the correction (T1).
     assert_eq!(session.evidence.len(), 2);
-    assert!(session.evidence.iter().any(|e| e.excerpt().contains("resolve this issue")));
+    assert!(session
+        .evidence
+        .iter()
+        .any(|e| e.excerpt().contains("resolve this issue")));
 
     let corr = session
         .evidence
@@ -44,13 +54,25 @@ fn extracts_user_turns_excluding_vendor_and_synthetic() {
         .find(|e| e.tier == EvidenceTier::T1)
         .expect("T1 correction");
     assert!(corr.excerpt().contains("keep the commits separate"));
-    assert!(corr.excerpt().contains("squash all commits"), "carries assistant context");
+    assert!(
+        corr.excerpt().contains("squash all commits"),
+        "carries assistant context"
+    );
 
     // base_instructions (developer), environment_context, and subagent
     // notifications never become evidence.
-    assert!(!session.evidence.iter().any(|e| e.excerpt().contains("Codex")));
-    assert!(!session.evidence.iter().any(|e| e.excerpt().contains("environment_context")));
-    assert!(!session.evidence.iter().any(|e| e.excerpt().contains("subagent_notification")));
+    assert!(!session
+        .evidence
+        .iter()
+        .any(|e| e.excerpt().contains("Codex")));
+    assert!(!session
+        .evidence
+        .iter()
+        .any(|e| e.excerpt().contains("environment_context")));
+    assert!(!session
+        .evidence
+        .iter()
+        .any(|e| e.excerpt().contains("subagent_notification")));
 }
 
 #[test]

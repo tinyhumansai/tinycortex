@@ -116,7 +116,11 @@ pub async fn watermark_unchanged(
 /// Record a string watermark (git sha, content sha) under `key`.
 pub async fn record_watermark(store: &dyn PersonaStateStore, key: &str, value: &str) -> Result<()> {
     store
-        .set(NAMESPACE, key, &serde_json::Value::String(value.to_string()))
+        .set(
+            NAMESPACE,
+            key,
+            &serde_json::Value::String(value.to_string()),
+        )
         .await
 }
 
@@ -163,7 +167,11 @@ impl FileStateStore {
 #[async_trait]
 impl PersonaStateStore for FileStateStore {
     async fn get(&self, namespace: &str, key: &str) -> Result<Option<serde_json::Value>> {
-        Ok(self.data.lock().get(&Self::composite(namespace, key)).cloned())
+        Ok(self
+            .data
+            .lock()
+            .get(&Self::composite(namespace, key))
+            .cloned())
     }
 
     async fn set(&self, namespace: &str, key: &str, value: &serde_json::Value) -> Result<()> {

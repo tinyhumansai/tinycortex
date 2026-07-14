@@ -47,7 +47,11 @@ fn setup() -> (TempDir, TempDir, MemoryConfig, PersonaConfig) {
         writeln!(
             f,
             "{}",
-            user_turn("s1", &format!("2026-07-0{}T10:00:00.000Z", i + 1), "implement the thing and commit small")
+            user_turn(
+                "s1",
+                &format!("2026-07-0{}T10:00:00.000Z", i + 1),
+                "implement the thing and commit small"
+            )
         )
         .unwrap();
     }
@@ -55,7 +59,11 @@ fn setup() -> (TempDir, TempDir, MemoryConfig, PersonaConfig) {
     // One instruction file under project_roots.
     let proj = src.path().join("proj");
     std::fs::create_dir_all(&proj).unwrap();
-    std::fs::write(proj.join("CLAUDE.md"), "- Always branch before writing code.\n- Commit regularly.\n").unwrap();
+    std::fs::write(
+        proj.join("CLAUDE.md"),
+        "- Always branch before writing code.\n- Commit regularly.\n",
+    )
+    .unwrap();
 
     let cfg = MemoryConfig::new(ws.path());
     let mut persona = PersonaConfig::with_home(src.path(), "me@example.com");
@@ -95,7 +103,14 @@ async fn backfill_then_incremental_resume() {
     // Incremental: nothing changed → everything skipped, no new digests.
     let report2 = pipeline.run(RunMode::Incremental).await.unwrap();
     assert_eq!(report2.sessions_processed, 0, "unchanged → no re-digest");
-    assert!(report2.sessions_skipped >= 3, "2 transcripts + 1 instruction skipped");
+    assert!(
+        report2.sessions_skipped >= 3,
+        "2 transcripts + 1 instruction skipped"
+    );
+    // Even though the instruction file was cursor-skipped, the persisted
+    // verbatim directives must still appear in the recompiled pack.
+    let pack2 = std::fs::read_to_string(report2.pack_path.as_ref().unwrap()).unwrap();
+    assert!(pack2.contains("Always branch before writing code."));
 }
 
 #[tokio::test]

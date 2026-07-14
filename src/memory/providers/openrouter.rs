@@ -29,8 +29,8 @@ use crate::memory::config::SecretString;
 use crate::memory::score::extract::{ChatPrompt, ChatProvider};
 use crate::memory::store::vectors::{format_embedding_signature, EmbeddingBackend};
 use crate::memory::tree::{
-    finish_provider_summary, prepare_summary_prompt, SummaryCall, SummaryContext, SummaryInput,
-    SummaryOutput, Summariser,
+    finish_provider_summary, prepare_summary_prompt, Summariser, SummaryCall, SummaryContext,
+    SummaryInput, SummaryOutput,
 };
 
 /// Default OpenRouter API base.
@@ -153,7 +153,10 @@ impl OpenRouterProvider {
     fn record_usage(&self, usage: &serde_json::Value) {
         let mut u = self.usage.lock();
         u.requests += 1;
-        u.prompt_tokens += usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        u.prompt_tokens += usage
+            .get("prompt_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         u.completion_tokens += usage
             .get("completion_tokens")
             .and_then(|v| v.as_u64())
@@ -253,7 +256,9 @@ impl OpenRouterProvider {
             .and_then(|c| c.get("message"))
             .and_then(|m| m.get("content"))
             .and_then(|c| c.as_str())
-            .ok_or_else(|| anyhow!("OpenRouter chat response missing choices[0].message.content"))?;
+            .ok_or_else(|| {
+                anyhow!("OpenRouter chat response missing choices[0].message.content")
+            })?;
         Ok(content.to_string())
     }
 }
@@ -364,7 +369,10 @@ impl EmbeddingBackend for OpenRouterProvider {
         // The API preserves input order, but honour `index` defensively.
         let mut out: Vec<Vec<f32>> = vec![Vec::new(); data.len()];
         for (i, item) in data.iter().enumerate() {
-            let idx = item.get("index").and_then(|v| v.as_u64()).unwrap_or(i as u64) as usize;
+            let idx = item
+                .get("index")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(i as u64) as usize;
             let vec: Vec<f32> = item
                 .get("embedding")
                 .and_then(|e| e.as_array())
@@ -377,7 +385,9 @@ impl EmbeddingBackend for OpenRouterProvider {
             }
         }
         if out.iter().any(|v| v.is_empty()) {
-            return Err(anyhow!("OpenRouter embeddings returned fewer vectors than inputs"));
+            return Err(anyhow!(
+                "OpenRouter embeddings returned fewer vectors than inputs"
+            ));
         }
         Ok(out)
     }

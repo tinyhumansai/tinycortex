@@ -16,7 +16,10 @@ fn inputs_with(bodies: &[(PersonaFacet, &str)]) -> PackInputs {
 fn emits_header_and_sections_in_fixed_order() {
     let inputs = inputs_with(&[
         (PersonaFacet::Stack, "- Uses Rust 2021."),
-        (PersonaFacet::Directives, "- Always branch before writing code."),
+        (
+            PersonaFacet::Directives,
+            "- Always branch before writing code.",
+        ),
         (PersonaFacet::CodingStyle, "- Small focused modules."),
     ]);
     let pack = compile_pack(&inputs);
@@ -54,7 +57,10 @@ fn total_budget_ceiling_protects_directives_first() {
     inputs.per_facet_budget = 2_000;
     inputs.total_budget_max = 2_100; // only room for ~one facet
     let pack = compile_pack(&inputs);
-    assert!(pack.contains("## Directives"), "directives must be protected");
+    assert!(
+        pack.contains("## Directives"),
+        "directives must be protected"
+    );
     assert!(
         !pack.contains("## Anti-preferences"),
         "later facets dropped under the ceiling:\n{}",
@@ -70,14 +76,22 @@ fn per_facet_body_is_clamped() {
     inputs.total_budget_max = 10_000;
     let pack = compile_pack(&inputs);
     // The clamped directives section must be far smaller than the raw body.
-    assert!(pack.len() < big.len() / 2, "body was not clamped: {} vs {}", pack.len(), big.len());
+    assert!(
+        pack.len() < big.len() / 2,
+        "body was not clamped: {} vs {}",
+        pack.len(),
+        big.len()
+    );
 }
 
 #[test]
 fn deterministic_across_runs() {
     let inputs = inputs_with(&[
         (PersonaFacet::Communication, "- Terse and direct."),
-        (PersonaFacet::Workflow, "- Uses worktrees for parallel work."),
+        (
+            PersonaFacet::Workflow,
+            "- Uses worktrees for parallel work.",
+        ),
     ]);
     assert_eq!(compile_pack(&inputs), compile_pack(&inputs));
 }

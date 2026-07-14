@@ -87,8 +87,20 @@ impl RawSession {
 pub fn looks_like_correction(text: &str) -> bool {
     let t = text.trim_start().to_lowercase();
     const OPENERS: [&str; 14] = [
-        "no,", "no ", "nope", "actually", "wait", "stop", "don't", "dont", "instead",
-        "revert", "undo", "that's wrong", "thats wrong", "not like that",
+        "no,",
+        "no ",
+        "nope",
+        "actually",
+        "wait",
+        "stop",
+        "don't",
+        "dont",
+        "instead",
+        "revert",
+        "undo",
+        "that's wrong",
+        "thats wrong",
+        "not like that",
     ];
     OPENERS.iter().any(|p| t.starts_with(p))
         || t.contains("not what i")

@@ -27,7 +27,9 @@ fn splits_into_rule_granular_verbatim_chunks() {
     // Two bullets + one paragraph = three rules; headings and the code fence
     // are dropped.
     assert_eq!(rules.len(), 3, "rules: {rules:?}");
-    assert!(rules.iter().any(|r| r == "Always branch before writing code."));
+    assert!(rules
+        .iter()
+        .any(|r| r == "Always branch before writing code."));
     assert!(rules.iter().any(|r| r.starts_with("Use Rust 2021")));
     assert!(!rules.iter().any(|r| r.contains("cargo fmt --all"))); // fenced code dropped
     assert!(!rules.iter().any(|r| r.contains('#'))); // headings dropped

@@ -25,10 +25,18 @@ async fn file_cursor_detects_change() {
 async fn watermark_roundtrips() {
     let dir = TempDir::new().unwrap();
     let store = FileStateStore::open_in_workspace(dir.path()).unwrap();
-    assert!(!watermark_unchanged(&store, "git_history:/r", "sha1").await.unwrap());
-    record_watermark(&store, "git_history:/r", "sha1").await.unwrap();
-    assert!(watermark_unchanged(&store, "git_history:/r", "sha1").await.unwrap());
-    assert!(!watermark_unchanged(&store, "git_history:/r", "sha2").await.unwrap());
+    assert!(!watermark_unchanged(&store, "git_history:/r", "sha1")
+        .await
+        .unwrap());
+    record_watermark(&store, "git_history:/r", "sha1")
+        .await
+        .unwrap();
+    assert!(watermark_unchanged(&store, "git_history:/r", "sha1")
+        .await
+        .unwrap());
+    assert!(!watermark_unchanged(&store, "git_history:/r", "sha2")
+        .await
+        .unwrap());
 }
 
 #[tokio::test]

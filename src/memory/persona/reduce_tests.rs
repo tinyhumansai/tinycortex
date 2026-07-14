@@ -83,9 +83,7 @@ async fn full_map_reduce_compile_offline() {
     fold_directives(std::slice::from_ref(&directive), &mut state);
 
     // Seal + compile the facet trees.
-    let bodies = seal_and_collect(&config, &asks, &summariser)
-        .await
-        .unwrap();
+    let bodies = seal_and_collect(&config, &asks, &summariser).await.unwrap();
     assert!(bodies.contains_key(&PersonaFacet::Workflow));
     assert!(bodies.contains_key(&PersonaFacet::CodingStyle));
     // Directives are collected verbatim (not folded into a tree).
@@ -115,9 +113,7 @@ async fn empty_digests_produce_empty_bodies() {
     let (_tmp, config) = cfg();
     let summariser = ConcatSummariser::new();
     let asks = FacetAsks::default();
-    let bodies = seal_and_collect(&config, &asks, &summariser)
-        .await
-        .unwrap();
+    let bodies = seal_and_collect(&config, &asks, &summariser).await.unwrap();
     assert!(bodies.is_empty(), "no leaves folded → no bodies");
 }
 

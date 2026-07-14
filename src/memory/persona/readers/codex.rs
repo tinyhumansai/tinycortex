@@ -39,8 +39,8 @@ pub fn discover(root: &Path) -> Vec<PathBuf> {
 
 /// Parse one Codex rollout file into a [`RawSession`].
 pub fn read_session(path: &Path) -> Result<RawSession> {
-    let mut source = EvidenceSource::new(PersonaSourceKind::Codex)
-        .with_path(path.to_string_lossy().to_string());
+    let mut source =
+        EvidenceSource::new(PersonaSourceKind::Codex).with_path(path.to_string_lossy().to_string());
     if let Some(stem) = path.file_stem() {
         source = source.with_session(stem.to_string_lossy().to_string());
     }
@@ -91,7 +91,10 @@ pub fn read_session(path: &Path) -> Result<RawSession> {
                 }
                 let ts = event_timestamp(v).unwrap_or_else(Utc::now);
                 let (tier, excerpt) = if looks_like_correction(&text) {
-                    (EvidenceTier::T1, with_assistant_context(&last_assistant, &text))
+                    (
+                        EvidenceTier::T1,
+                        with_assistant_context(&last_assistant, &text),
+                    )
                 } else {
                     (EvidenceTier::T2, format!("user: {text}"))
                 };
@@ -109,7 +112,13 @@ pub fn read_session(path: &Path) -> Result<RawSession> {
     }
     let src = session.source.clone();
     for (ts, tier, excerpt) in pending {
-        session.push(PersonaEvidence::new(src.clone(), ts, tier, &excerpt, vec![]));
+        session.push(PersonaEvidence::new(
+            src.clone(),
+            ts,
+            tier,
+            &excerpt,
+            vec![],
+        ));
     }
     session.raw_bytes = raw_bytes;
     Ok(session)
@@ -117,7 +126,9 @@ pub fn read_session(path: &Path) -> Result<RawSession> {
 
 fn event_timestamp(v: &serde_json::Value) -> Option<DateTime<Utc>> {
     let s = v.get("timestamp").and_then(|t| t.as_str())?;
-    DateTime::parse_from_rfc3339(s).ok().map(|t| t.with_timezone(&Utc))
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|t| t.with_timezone(&Utc))
 }
 
 fn with_assistant_context(last_assistant: &Option<String>, user_text: &str) -> String {

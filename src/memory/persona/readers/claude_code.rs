@@ -74,7 +74,10 @@ pub fn read_session(path: &Path) -> Result<RawSession> {
             }
             "user" => {
                 // Drop sidechains (subagent traffic) and meta turns outright.
-                if v.get("isSidechain").and_then(|b| b.as_bool()).unwrap_or(false) {
+                if v.get("isSidechain")
+                    .and_then(|b| b.as_bool())
+                    .unwrap_or(false)
+                {
                     return;
                 }
                 if v.get("isMeta").and_then(|b| b.as_bool()).unwrap_or(false) {
@@ -90,7 +93,10 @@ pub fn read_session(path: &Path) -> Result<RawSession> {
                 };
                 let ts = event_timestamp(v).unwrap_or_else(Utc::now);
                 let (tier, excerpt) = if looks_like_correction(&text) {
-                    (EvidenceTier::T1, with_assistant_context(&last_assistant, &text))
+                    (
+                        EvidenceTier::T1,
+                        with_assistant_context(&last_assistant, &text),
+                    )
                 } else {
                     (EvidenceTier::T2, format!("user: {text}"))
                 };
@@ -109,7 +115,13 @@ pub fn read_session(path: &Path) -> Result<RawSession> {
     }
     let src = session.source.clone();
     for (ts, tier, excerpt) in pending {
-        session.push(PersonaEvidence::new(src.clone(), ts, tier, &excerpt, vec![]));
+        session.push(PersonaEvidence::new(
+            src.clone(),
+            ts,
+            tier,
+            &excerpt,
+            vec![],
+        ));
     }
     session.raw_bytes = raw_bytes;
     Ok(session)
@@ -118,7 +130,9 @@ pub fn read_session(path: &Path) -> Result<RawSession> {
 /// Parse an event's RFC3339 `timestamp` field into UTC.
 fn event_timestamp(v: &serde_json::Value) -> Option<DateTime<Utc>> {
     let s = v.get("timestamp").and_then(|t| t.as_str())?;
-    DateTime::parse_from_rfc3339(s).ok().map(|t| t.with_timezone(&Utc))
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|t| t.with_timezone(&Utc))
 }
 
 /// Extract the leading assistant text (first [`ASSISTANT_CONTEXT_CHARS`] chars),
