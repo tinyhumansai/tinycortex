@@ -151,7 +151,12 @@ Contracts:
 
 ## 6.4 Extraction strategy per source
 
-The shared principle: **extract the person, discard the machine.** Per family:
+The shared principle: **extract the person, discard the machine.** Concretely
+(sharpened July 2026): the only content worth paying LLM tokens for is **user
+decisions, user corrections, and the challenges the user was working through**
+— raw tool output, file dumps, diffs echoed by the harness, and assistant
+prose are never ingested. This is the primary cost-reduction lever: the digest
+model reads decision-bearing text only. Per family:
 
 ### Transcripts (Family A)
 
@@ -260,6 +265,13 @@ provider — but strictly as a **reference implementation**:
 - API: OpenAI-compatible `POST {base}/chat/completions`,
   base default `https://openrouter.ai/api/v1`, model from config
   (`deepseek/deepseek-v4-flash` default), JSON-mode for digests.
+- **Embeddings too**: OpenRouter exposes an OpenAI-compatible
+  `POST {base}/embeddings` endpoint, so the same provider module also ships an
+  `OpenRouterEmbedding` implementing `EmbeddingBackend`
+  (`store/vectors`) — embedding model id from config, dims declared via the
+  existing signature contract (`provider=<name>;model=<model_id>;dims=<dims>`).
+  This lets the persona workspace exercise real vector retrieval end-to-end
+  and closes the embedding half of the C3 seam alongside the chat half.
 - Secrets: `OPENROUTER_API_KEY` read at the edge (harness/example), stored as
   the existing `SecretString` (redacted Debug, `serde(skip)`) — same rules as
   `ComposioSyncConfig`.
@@ -305,7 +317,9 @@ namespace (`persona-sync-state`, keyed `<source_kind>:<root>`):
   instruction-file glob roots, model id, per-facet asks (defaulted,
   overridable), per-facet + total token budgets, run budgets.
 - `.env.example` gains `OPENROUTER_API_KEY`, `TINYCORTEX_LLM_MODEL`,
-  `TINYCORTEX_PERSONA_ROOTS`.
+  `TINYCORTEX_EMBED_MODEL`, `TINYCORTEX_PERSONA_ROOTS`. Locally the key lives
+  in the repo-root `.env` (gitignored; loaded by dotenvy in examples/tests
+  only, same as the Composio vars).
 
 ## 6.9 Output & injection contract
 
@@ -438,15 +452,19 @@ commit-message-style batches (T2) and bounded sampled-diff evidence (T3).
 Status: todo
 Depends-on: -
 Definition of done: `providers/openrouter.rs` behind `providers-http`
-implementing `ChatProvider` + `Summariser` against an OpenAI-compatible
-endpoint, with `SecretString` key handling, retry/backoff, non-retryable
-classification, `DailyBudget`-style cost tracking, wiremock-tested; the first
-concrete provider closing the C3 seam. Nothing under `persona/` references it.
+implementing `ChatProvider` + `Summariser` + `EmbeddingBackend` against
+OpenAI-compatible endpoints, with `SecretString` key handling, retry/backoff,
+non-retryable classification, `DailyBudget`-style cost tracking,
+wiremock-tested; the first concrete provider closing the C3 seam (chat and
+embeddings). Nothing under `persona/` references it.
 
-- [ ] Client + config (base url, model id, timeouts) + JSON-mode support.
+- [ ] Client + config (base url, chat + embedding model ids, timeouts) +
+      JSON-mode support.
+- [ ] `EmbeddingBackend` impl over `POST /embeddings` with the
+      `provider=…;model=…;dims=…` signature contract.
 - [ ] Retry/backoff (429/5xx) and fail-fast (401/402/403) paths.
-- [ ] Usage/cost accounting + budget cutoff.
-- [ ] Wiremock suite (happy, retry, fail-fast, budget).
+- [ ] Usage/cost accounting + budget cutoff (chat and embedding calls).
+- [ ] Wiremock suite (happy, retry, fail-fast, budget, embeddings).
 
 ### P8 — Distillation pipeline & persona compiler
 Status: todo
