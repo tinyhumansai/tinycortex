@@ -119,7 +119,7 @@ pub fn set_chunk_embedding_for_signature(
 /// caller commits (or rolls back) `tx`.
 ///
 /// # Errors
-/// See [`upsert_chunk_embedding_conn`].
+/// Uses the same validation as the connection-scoped upsert helper.
 pub fn set_chunk_embedding_for_signature_tx(
     tx: &rusqlite::Transaction<'_>,
     chunk_id: &str,
@@ -132,7 +132,7 @@ pub fn set_chunk_embedding_for_signature_tx(
 /// Transaction-scoped summary embedding upsert (used by the legacy migration).
 ///
 /// # Errors
-/// See [`upsert_summary_embedding_conn`].
+/// Uses the same validation as the connection-scoped upsert helper.
 pub fn set_summary_embedding_for_signature_tx(
     tx: &rusqlite::Transaction<'_>,
     summary_id: &str,

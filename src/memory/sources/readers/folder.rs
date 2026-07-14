@@ -4,9 +4,9 @@
 //! `**/*.md`), and reads their content as markdown, HTML, or plaintext.
 //!
 //! Safety: file sizes are capped at
-//! [`FOLDER_FILE_SIZE_CAP_BYTES`](crate::memory::config::FOLDER_FILE_SIZE_CAP_BYTES)
+//! [`FOLDER_FILE_SIZE_CAP_BYTES`]
 //! (10 MB) on both list and read, and `read_item` is guarded against path
-//! traversal via [`ensure_within_base`](crate::memory::sources::validation::ensure_within_base).
+//! traversal via [`ensure_within_base`].
 //!
 //! The directory walk uses `walkdir`; glob patterns are compiled to a `regex`
 //! (matched against the slash-normalised path relative to the folder root).
@@ -103,13 +103,6 @@ impl SourceReader for FolderReader {
     /// relative to the source's `path`, as produced by
     /// [`list_items`](Self::list_items)).
     ///
-    /// NOTE: only path traversal is guarded here (via [`ensure_within_base`]);
-    /// the source's configured glob is *not* re-applied. Any `item_id` that
-    /// resolves to a real file under `path` is readable, even if it would not
-    /// have been matched — and thus would not have been listed — by
-    /// [`list_items`](Self::list_items)'s glob filter. A source scoped to
-    /// `docs/**/*.md` can still be made to read `docs/.env` by passing that
-    /// item id directly.
     async fn read_item(
         &self,
         source: &MemorySourceEntry,
@@ -120,6 +113,15 @@ impl SourceReader for FolderReader {
             .path
             .as_deref()
             .ok_or_else(|| MemoryError::Invalid("folder source requires a path".to_string()))?;
+
+        let pattern = source.glob.as_deref().unwrap_or("**/*.md");
+        let matcher = glob_to_regex(pattern)?;
+        let normalized_id = normalize_rel(Path::new(item_id));
+        if !matcher.is_match(&normalized_id) {
+            return Err(MemoryError::Invalid(format!(
+                "item '{item_id}' is outside source glob '{pattern}'"
+            )));
+        }
 
         let file_path = Path::new(base_path).join(item_id);
         if !file_path.exists() {

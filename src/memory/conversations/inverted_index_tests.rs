@@ -162,6 +162,12 @@ fn pathological_query_short_circuits_to_recency() {
     assert_eq!(hits.len(), 5, "fallback must still respect limit");
     // Score 0.0 is the recency-fallback marker.
     assert!(hits.iter().all(|h| h.score == 0.0));
+
+    idx.insert("bulk", msg("cjk", "猫だけ", "2026-04-11T10:00:00Z"));
+    let exact = idx.search("猫", 5, None);
+    assert_eq!(exact.len(), 1);
+    assert_eq!(exact[0].message_id, "cjk");
+    assert_eq!(exact[0].score, 1.0);
 }
 
 #[test]
@@ -231,4 +237,18 @@ fn ranks_by_score_then_recency_before_truncating() {
         "score = {}",
         hits[1].score
     );
+}
+
+#[test]
+fn recency_tiebreak_compares_instants_across_rfc3339_offsets() {
+    let mut idx = InvertedIndex::new();
+    idx.insert(
+        "t1",
+        msg("older", "alpha match", "2026-04-10T12:30:00+02:00"),
+    );
+    idx.insert("t1", msg("newer", "alpha match", "2026-04-10T11:00:00Z"));
+
+    let hits = idx.search("alpha", 2, None);
+    assert_eq!(hits[0].message_id, "newer");
+    assert_eq!(hits[1].message_id, "older");
 }

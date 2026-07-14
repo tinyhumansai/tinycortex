@@ -26,7 +26,7 @@
 //! Only the well-known scalar/list shapes the [`Entity`] uses are emitted and
 //! parsed; this is deliberately not a general YAML implementation. The free
 //! text after the closing `---` is the notes body and is never interpreted —
-//! [`notes_body`] hands it back verbatim so upserts can round-trip it.
+//! The notes-body helper hands it back verbatim so upserts can round-trip it.
 
 use chrono::{DateTime, Utc};
 

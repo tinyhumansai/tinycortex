@@ -18,9 +18,7 @@ use crate::memory::config::MemoryConfig;
 /// stores it as-is.
 ///
 /// # Errors
-/// Returns `Err` only if the underlying `UPDATE` fails. Silently affects zero
-/// rows (no error, no signal) if `chunk_id` does not exist — see the NOTE on
-/// `set_chunk_lifecycle_status_conn`.
+/// Returns `Err` if the update fails or `chunk_id` does not exist.
 pub fn set_chunk_lifecycle_status(
     config: &MemoryConfig,
     chunk_id: &str,
@@ -47,15 +45,8 @@ pub fn set_chunk_lifecycle_status_tx(
 
 /// Core `UPDATE ... SET lifecycle_status` over an arbitrary `&Connection`.
 ///
-/// # NOTE
-/// `changed` (the affected-row count) is computed but never inspected — a
-/// call for a nonexistent `chunk_id` silently succeeds with zero rows
-/// touched rather than surfacing that as an error or a return value the
-/// caller could check. Callers cannot currently distinguish "status set" from
-/// "chunk_id did not exist" without a separate existence check.
-///
 /// # Errors
-/// Returns `Err` only if the `UPDATE` statement itself fails.
+/// Returns `Err` if the statement fails or no chunk row matches.
 fn set_chunk_lifecycle_status_conn(conn: &Connection, chunk_id: &str, status: &str) -> Result<()> {
     let changed = conn.execute(
         "UPDATE mem_tree_chunks SET lifecycle_status = ?1 WHERE id = ?2",

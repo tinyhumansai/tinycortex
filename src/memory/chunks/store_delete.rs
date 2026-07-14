@@ -6,21 +6,14 @@
 //! subsystem is not ported here); it deletes only the chunk-owned rows and
 //! files.
 //!
-//! ## Deletion completeness gaps (audit findings SC-7, SC-20)
-//! - Only files at `content_path` are removed. A chunk's `raw_refs_json`
-//!   pointers (the raw-archive mirror — the *only* copy of the body for
-//!   email chunks, see [`super::raw_refs`]) are never parsed here, so their
-//!   files are never deleted, and no reachability check runs to see whether
-//!   another surviving chunk still references the same raw file. Deleting an
-//!   email account's chunks leaves every message body on disk.
-//! - Matching `RAW_FILE_GATE_KIND` rows in `mem_tree_ingested_sources` (the
-//!   raw-archive ingest gate — see [`super::store::RAW_FILE_GATE_KIND`]) are
-//!   never cleared alongside the deleted chunks.
-//! - Every public entry point loads every chunk row for the source kind into
-//!   memory and filters in Rust, then issues five `DELETE` statements per
-//!   matched chunk — `O(N·M)` round-trips for `N` chunks touched across `M`
-//!   dependent tables, rather than a single set-based `DELETE ... WHERE id IN
-//!   (subquery)` per table.
+//! Raw archives are cascade-cleaned by reachability: a file and its raw-file
+//! ingest gate are removed only after the transaction confirms no surviving
+//! chunk references that path. A malformed surviving pointer row makes cleanup
+//! conservative and preserves all candidate raw files.
+//!
+//! Selection and dependent-row cleanup are set-based in SQLite. Rust only
+//! materialises the matched rows whose filesystem pointers and source-tree
+//! scopes must be processed after the database transaction commits.
 
 use anyhow::{Context, Result};
 use rusqlite::params;
@@ -28,6 +21,8 @@ use std::collections::HashSet;
 
 use super::connection::with_connection;
 use super::content_root;
+use super::raw_refs::RawRef;
+use super::store_sources::RAW_FILE_GATE_KIND;
 use super::types::SourceKind;
 use crate::memory::config::MemoryConfig;
 
@@ -46,12 +41,7 @@ pub fn delete_chunks_by_source(
     source_kind: SourceKind,
     source_id: &str,
 ) -> Result<usize> {
-    delete_chunks_by_source_filter(
-        config,
-        source_kind,
-        |candidate, _owner| candidate == source_id,
-        |candidate| candidate == source_id,
-    )
+    delete_chunks_by_source_filter(config, source_kind, DeleteFilter::ExactSource(source_id))
 }
 
 /// Delete all chunk rows whose source id starts with `source_id_prefix`.
@@ -69,8 +59,7 @@ pub fn delete_chunks_by_source_prefix(
     delete_chunks_by_source_filter(
         config,
         source_kind,
-        |candidate, _owner| candidate.starts_with(source_id_prefix),
-        |candidate| candidate.starts_with(source_id_prefix),
+        DeleteFilter::SourcePrefix(source_id_prefix),
     )
 }
 
@@ -90,25 +79,40 @@ pub fn delete_chunks_by_owner(
     source_kind: SourceKind,
     owner: &str,
 ) -> Result<usize> {
-    delete_chunks_by_source_filter(
-        config,
-        source_kind,
-        |_source_id, candidate_owner| candidate_owner == owner,
-        |_source_id| false,
-    )
+    delete_chunks_by_source_filter(config, source_kind, DeleteFilter::Owner(owner))
+}
+
+#[derive(Clone, Copy)]
+enum DeleteFilter<'a> {
+    ExactSource(&'a str),
+    SourcePrefix(&'a str),
+    Owner(&'a str),
+}
+
+impl<'a> DeleteFilter<'a> {
+    fn value(self) -> &'a str {
+        match self {
+            Self::ExactSource(value) | Self::SourcePrefix(value) | Self::Owner(value) => value,
+        }
+    }
+
+    fn chunk_predicate(self) -> &'static str {
+        match self {
+            Self::ExactSource(_) => "source_id = ?2",
+            Self::SourcePrefix(_) => "substr(source_id, 1, length(?2)) = ?2",
+            Self::Owner(_) => "owner = ?2",
+        }
+    }
 }
 
 /// Shared implementation behind [`delete_chunks_by_source`],
 /// [`delete_chunks_by_source_prefix`], and [`delete_chunks_by_owner`].
 ///
-/// Loads every chunk row for `source_kind`, keeps those where `matches_chunk`
-/// (given `(source_id, owner)`) returns `true`, then — inside one
-/// transaction — deletes each matched chunk's score/entity-index/embedding/
-/// reembed-skip rows before the chunk row itself, and finally removes any
-/// `mem_tree_ingested_sources` row whose `source_id` either satisfies
-/// `matches_ingested_source` directly or became fully orphaned (zero
-/// remaining chunks) as a result of this delete. On-disk `content_path`
-/// files are collected during the transaction but removed only after it
+/// Selects matching rows into a temporary SQLite table, then deletes each
+/// dependent table with one set-based statement before removing the chunk
+/// rows. Ingest gates selected directly or made fully orphaned are removed in
+/// the same transaction. On-disk `content_path` and unreferenced
+/// `raw_refs_json` files are collected during the transaction but removed only after it
 /// commits, via [`remove_chunk_content_files`] (best-effort; a filesystem
 /// failure there does not roll back or fail the DB-side delete, and does not
 /// surface as an `Err` from this function).
@@ -121,121 +125,159 @@ pub fn delete_chunks_by_owner(
 fn delete_chunks_by_source_filter(
     config: &MemoryConfig,
     source_kind: SourceKind,
-    matches_chunk: impl Fn(&str, &str) -> bool,
-    matches_ingested_source: impl Fn(&str) -> bool,
+    filter: DeleteFilter<'_>,
 ) -> Result<usize> {
     let mut content_paths = Vec::new();
     let deleted = with_connection(config, |conn| {
         let tx = conn.unchecked_transaction()?;
 
+        tx.execute_batch(
+            "CREATE TEMP TABLE IF NOT EXISTS mem_tree_delete_selection (
+                id TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                path_scope TEXT,
+                content_path TEXT,
+                raw_refs_json TEXT
+             );
+             DELETE FROM mem_tree_delete_selection;",
+        )?;
+        let selection_sql = format!(
+            "INSERT INTO mem_tree_delete_selection
+                (id, source_id, path_scope, content_path, raw_refs_json)
+             SELECT id, source_id, path_scope, content_path, raw_refs_json
+               FROM mem_tree_chunks
+              WHERE source_kind = ?1 AND {}",
+            filter.chunk_predicate()
+        );
+        tx.execute(
+            &selection_sql,
+            params![source_kind.as_str(), filter.value()],
+        )?;
+
         let chunks = {
             let mut stmt = tx.prepare(
-                "SELECT id, source_id, owner, content_path, path_scope
-                   FROM mem_tree_chunks
-                  WHERE source_kind = ?1",
+                "SELECT id, source_id, content_path, path_scope, raw_refs_json
+                   FROM mem_tree_delete_selection",
             )?;
-            let rows = stmt.query_map(params![source_kind.as_str()], |row| {
+            let rows = stmt.query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(2)?,
                     row.get::<_, Option<String>>(3)?,
                     row.get::<_, Option<String>>(4)?,
                 ))
             })?;
-            rows.filter_map(|row| match row {
-                Ok((id, source_id, owner, content_path, path_scope))
-                    if matches_chunk(&source_id, &owner) =>
-                {
-                    Some(Ok((id, source_id, content_path, path_scope)))
-                }
-                Ok(_) => None,
-                Err(error) => Some(Err(error)),
-            })
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .context("Failed to collect chunks by source")?
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .context("Failed to collect chunks by source")?
         };
 
-        let deleted_source_ids: HashSet<String> = chunks
-            .iter()
-            .map(|(_, source_id, _, _)| source_id.clone())
-            .collect();
         let deleted_tree_scopes: HashSet<String> = chunks
             .iter()
-            .map(|(_, source_id, _, path_scope)| {
+            .map(|(_, source_id, _, path_scope, _)| {
                 path_scope.clone().unwrap_or_else(|| source_id.clone())
             })
             .collect();
 
-        for (chunk_id, _source_id, content_path, _path_scope) in &chunks {
-            tx.execute(
-                "DELETE FROM mem_tree_score WHERE chunk_id = ?1",
-                params![chunk_id],
-            )?;
-            tx.execute(
-                "DELETE FROM mem_tree_entity_index WHERE node_id = ?1",
-                params![chunk_id],
-            )?;
-            tx.execute(
-                "DELETE FROM mem_tree_chunk_embeddings WHERE chunk_id = ?1",
-                params![chunk_id],
-            )?;
-            tx.execute(
-                "DELETE FROM mem_tree_chunk_reembed_skipped WHERE chunk_id = ?1",
-                params![chunk_id],
-            )?;
-            tx.execute(
-                "DELETE FROM mem_tree_chunks WHERE id = ?1",
-                params![chunk_id],
-            )?;
+        let raw_path_candidates: HashSet<String> = chunks
+            .iter()
+            .filter_map(|(_, _, _, _, json)| json.as_deref())
+            .filter_map(|json| serde_json::from_str::<Vec<RawRef>>(json).ok())
+            .flatten()
+            .map(|raw_ref| raw_ref.path)
+            .collect();
+
+        for (_chunk_id, _source_id, content_path, _path_scope, _raw_refs_json) in &chunks {
             if let Some(path) = content_path.as_ref().filter(|path| !path.is_empty()) {
+                content_paths.push(path.clone());
+            }
+        }
+        tx.execute(
+            "DELETE FROM mem_tree_score
+              WHERE chunk_id IN (SELECT id FROM mem_tree_delete_selection)",
+            [],
+        )?;
+        tx.execute(
+            "DELETE FROM mem_tree_entity_index
+              WHERE node_id IN (SELECT id FROM mem_tree_delete_selection)",
+            [],
+        )?;
+        tx.execute(
+            "DELETE FROM mem_tree_chunk_embeddings
+              WHERE chunk_id IN (SELECT id FROM mem_tree_delete_selection)",
+            [],
+        )?;
+        tx.execute(
+            "DELETE FROM mem_tree_chunk_reembed_skipped
+              WHERE chunk_id IN (SELECT id FROM mem_tree_delete_selection)",
+            [],
+        )?;
+        tx.execute(
+            "DELETE FROM mem_tree_chunks
+              WHERE id IN (SELECT id FROM mem_tree_delete_selection)",
+            [],
+        )?;
+
+        // Clean raw files only when every surviving pointer row is readable.
+        // Otherwise an unknown reference could make deleting a candidate file
+        // destructive, so fail closed and leave the archive untouched.
+        let mut surviving_raw_paths = HashSet::new();
+        let mut has_corrupt_surviving_refs = false;
+        {
+            let mut stmt = tx.prepare(
+                "SELECT raw_refs_json FROM mem_tree_chunks
+                  WHERE raw_refs_json IS NOT NULL AND raw_refs_json != ''",
+            )?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            for row in rows {
+                match serde_json::from_str::<Vec<RawRef>>(&row?) {
+                    Ok(refs) => surviving_raw_paths.extend(refs.into_iter().map(|r| r.path)),
+                    Err(_) => has_corrupt_surviving_refs = true,
+                }
+            }
+        }
+        if !has_corrupt_surviving_refs {
+            for path in raw_path_candidates.difference(&surviving_raw_paths) {
+                tx.execute(
+                    "DELETE FROM mem_tree_ingested_sources
+                      WHERE source_kind = ?1 AND source_id = ?2",
+                    params![RAW_FILE_GATE_KIND, path],
+                )?;
                 content_paths.push(path.clone());
             }
         }
 
         // A fully-orphaned source (no chunks left) has its ingest gate removed.
-        let mut orphaned_deleted_sources = HashSet::new();
-        for source_id in &deleted_source_ids {
-            let remaining: i64 = tx.query_row(
-                "SELECT COUNT(*)
-                   FROM mem_tree_chunks
-                  WHERE source_kind = ?1 AND source_id = ?2",
-                params![source_kind.as_str(), source_id],
-                |row| row.get(0),
-            )?;
-            if remaining == 0 {
-                orphaned_deleted_sources.insert(source_id.clone());
+        tx.execute(
+            "DELETE FROM mem_tree_ingested_sources AS gate
+              WHERE gate.source_kind = ?1
+                AND gate.source_id IN (
+                    SELECT DISTINCT source_id FROM mem_tree_delete_selection
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM mem_tree_chunks AS chunk
+                     WHERE chunk.source_kind = gate.source_kind
+                       AND chunk.source_id = gate.source_id
+                )",
+            params![source_kind.as_str()],
+        )?;
+        match filter {
+            DeleteFilter::ExactSource(source_id) => {
+                tx.execute(
+                    "DELETE FROM mem_tree_ingested_sources
+                      WHERE source_kind = ?1 AND source_id = ?2",
+                    params![source_kind.as_str(), source_id],
+                )?;
             }
-        }
-
-        let ingested_sources = {
-            let mut stmt = tx.prepare(
-                "SELECT source_id
-                   FROM mem_tree_ingested_sources
-                  WHERE source_kind = ?1",
-            )?;
-            let rows =
-                stmt.query_map(params![source_kind.as_str()], |row| row.get::<_, String>(0))?;
-            rows.filter_map(|row| match row {
-                Ok(source_id)
-                    if matches_ingested_source(&source_id)
-                        || orphaned_deleted_sources.contains(&source_id) =>
-                {
-                    Some(Ok(source_id))
-                }
-                Ok(_) => None,
-                Err(error) => Some(Err(error)),
-            })
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .context("Failed to collect ingested sources")?
-        };
-
-        for source_id in &ingested_sources {
-            tx.execute(
-                "DELETE FROM mem_tree_ingested_sources
-                  WHERE source_kind = ?1 AND source_id = ?2",
-                params![source_kind.as_str(), source_id],
-            )?;
+            DeleteFilter::SourcePrefix(prefix) => {
+                tx.execute(
+                    "DELETE FROM mem_tree_ingested_sources
+                      WHERE source_kind = ?1
+                        AND substr(source_id, 1, length(?2)) = ?2",
+                    params![source_kind.as_str(), prefix],
+                )?;
+            }
+            DeleteFilter::Owner(_) => {}
         }
 
         for scope in &deleted_tree_scopes {

@@ -157,23 +157,14 @@ impl ConversationStore {
 
     pub(super) fn list_threads_unlocked(&self) -> Result<Vec<ConversationThread>, String> {
         let mut index = self.thread_index_unlocked()?;
-        // Backfill stats for any thread with no MessageAppended/Stats history
-        // yet (legacy data). The slow per-thread file read happens at most once
-        // per thread — we persist a `Stats` snapshot so subsequent
-        // list_threads calls hit the fast path.
-        let needs_backfill: Vec<String> = index
-            .iter()
-            .filter_map(|(id, entry)| {
-                if entry.message_count.is_none() {
-                    Some(id.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if !needs_backfill.is_empty() {
+        // Reconcile the derived stat trail against the authoritative message
+        // files. Appending a message and its compact stat event spans two files
+        // and cannot be one filesystem transaction; this check repairs either
+        // crash window instead of trusting a possibly-short stat history.
+        let thread_ids = index.keys().cloned().collect::<Vec<_>>();
+        if !thread_ids.is_empty() {
             let threads_path = self.ensure_root()?.join(THREADS_FILENAME);
-            for thread_id in &needs_backfill {
+            for thread_id in &thread_ids {
                 let (count, last_message_at) = self.measure_messages_unlocked(thread_id)?;
                 // Treat created_at as last_message_at when there are no
                 // messages — keeps the sort key meaningful and matches the
@@ -184,14 +175,20 @@ impl ConversationStore {
                         .map(|e| e.created_at.clone())
                         .unwrap_or_default()
                 });
-                append_jsonl(
-                    &threads_path,
-                    &ThreadLogEntry::Stats {
-                        thread_id: thread_id.clone(),
-                        message_count: count,
-                        last_message_at: resolved_last.clone(),
-                    },
-                )?;
+                let differs = index.get(thread_id).is_none_or(|entry| {
+                    entry.message_count != Some(count)
+                        || entry.last_message_at.as_deref() != Some(resolved_last.as_str())
+                });
+                if differs {
+                    append_jsonl(
+                        &threads_path,
+                        &ThreadLogEntry::Stats {
+                            thread_id: thread_id.clone(),
+                            message_count: count,
+                            last_message_at: resolved_last.clone(),
+                        },
+                    )?;
+                }
                 if let Some(entry) = index.get_mut(thread_id) {
                     entry.message_count = Some(count);
                     entry.last_message_at = Some(resolved_last);
@@ -221,22 +218,17 @@ impl ConversationStore {
                 }
             })
             .collect();
-        // NOTE: both fields are compared as raw strings (lexicographic), not
-        // parsed timestamps. RFC3339 sorts correctly this way only when every
-        // value shares the same offset representation; mixed `+00:00` / `Z` /
-        // non-UTC offsets across threads can misorder the listing — see audit
-        // TR-16.
         threads.sort_by(|a, b| {
-            b.last_message_at
-                .cmp(&a.last_message_at)
-                .then_with(|| b.created_at.cmp(&a.created_at))
+            timestamp_millis(&b.last_message_at)
+                .cmp(&timestamp_millis(&a.last_message_at))
+                .then_with(|| timestamp_millis(&b.created_at).cmp(&timestamp_millis(&a.created_at)))
         });
         Ok(threads)
     }
 
     /// Count messages and find the newest timestamp by reading the per-thread
-    /// JSONL file. Slow path — used only when the threads-log stat history is
-    /// missing (legacy data) so we can write a one-time `Stats` snapshot.
+    /// JSONL file. This is the authoritative source used to reconcile the
+    /// compact thread stat trail after either side of a two-file append crash.
     pub(super) fn measure_messages_unlocked(
         &self,
         thread_id: &str,
@@ -260,17 +252,8 @@ impl ConversationStore {
             Some(entry) => entry,
             None => return Ok(None),
         };
-        // Prefer the index-tracked stats (cheap). Fall back to a single
-        // per-thread file read for legacy threads with no stat history —
-        // list_threads is responsible for permanently backfilling those.
-        let (message_count, last_message_at) =
-            match (entry.message_count, entry.last_message_at.as_ref()) {
-                (Some(count), Some(last_at)) => (count, last_at.clone()),
-                _ => {
-                    let (count, last_at) = self.measure_messages_unlocked(thread_id)?;
-                    (count, last_at.unwrap_or_else(|| entry.created_at.clone()))
-                }
-            };
+        let (message_count, last_at) = self.measure_messages_unlocked(thread_id)?;
+        let last_message_at = last_at.unwrap_or_else(|| entry.created_at.clone());
         Ok(Some(ConversationThread {
             id: thread_id.to_string(),
             title: entry.title.clone(),
@@ -396,4 +379,10 @@ impl ConversationStore {
             message_count,
         })
     }
+}
+
+fn timestamp_millis(value: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|timestamp| timestamp.timestamp_millis())
+        .unwrap_or(i64::MIN)
 }

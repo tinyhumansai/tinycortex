@@ -10,10 +10,8 @@
 //!   same error family, currently exercised only by tests (see NOTE on its
 //!   doc comment).
 //! - [`recover_corrupt_db`] / [`quick_check_ok`]: a `SQLITE_CORRUPT`
-//!   quarantine-and-rebuild path that is **not** invoked from any production
-//!   call site today — see the NOTE on [`recover_corrupt_db`] (audit finding
-//!   SC-5). A real `SQLITE_CORRUPT` on the chunk DB currently wedges the
-//!   store rather than recovering.
+//!   quarantine-and-rebuild path serialized by the connection cache's per-path
+//!   initialization lock and used by cold-open recovery and runtime loops.
 //!
 //! [`try_cleanup_stale_files`] never unlinks the `-wal`: it first attempts a
 //! `wal_checkpoint(TRUNCATE)` and, only if that fails, quarantines the `-wal`
@@ -27,7 +25,7 @@ use chrono::Utc;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 
-use super::connection::{drop_cached_connection, get_or_init_connection};
+use super::connection::recover_corrupt_connection;
 use super::{db_path_for, SQLITE_BUSY_TIMEOUT};
 use crate::memory::config::MemoryConfig;
 
@@ -112,6 +110,25 @@ pub fn is_io_open_error(err: &anyhow::Error) -> bool {
         || msg.contains("unable to open database file")
         || msg.contains("xshmmap")
         || msg.contains("truncate file")
+}
+
+/// Whether an error chain reports a corrupt or non-database SQLite image.
+pub fn is_corrupt_error(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<rusqlite::Error>()
+            .is_some_and(|error| {
+                matches!(
+                    error,
+                    rusqlite::Error::SqliteFailure(code, _)
+                        if matches!(
+                            code.code,
+                            rusqlite::ErrorCode::DatabaseCorrupt
+                                | rusqlite::ErrorCode::NotADatabase
+                        )
+                )
+            })
+    })
 }
 
 /// Clean up WAL/SHM side-files that can block a clean DB open after a crash,
@@ -227,51 +244,16 @@ fn quick_check_ok(db_path: &Path) -> Result<bool> {
     Ok(result.eq_ignore_ascii_case("ok"))
 }
 
-/// Recover from a `SQLITE_CORRUPT` (malformed image) on the chunk DB.
+/// Reconfirm corruption and quarantine the main database plus side files.
 ///
-/// Quarantines the damaged file (and its WAL/SHM side-files) to a timestamped
-/// `.corrupt-<ts>` copy — preserved, not deleted — then rebuilds an empty
-/// schema so the store resumes instead of wedging indefinitely.
-///
-/// Returns `Ok(true)` when a quarantine + rebuild happened, `Ok(false)` when a
-/// fresh `PRAGMA quick_check` now passes (the earlier failure was transient),
-/// and `Err` when the quarantine rename or the schema rebuild failed.
-///
-/// # NOTE — not wired into any production error path (audit finding SC-5)
-/// `#[allow(dead_code)]` here is not incidental: nothing in `connection.rs`
-/// currently calls this on a `SQLITE_CORRUPT` failure, so a real corruption
-/// event wedges `get_or_init_connection` (via the circuit breaker) rather
-/// than triggering this recovery. Wiring it in requires care beyond adding a
-/// call site: the two-step "drop cached connection, then rename" sequence
-/// below does not hold any lock across the gap, so a concurrent
-/// `with_connection` call for the same path can reopen and re-cache the
-/// about-to-be-quarantined file between step 1 and step 3 — its writes then
-/// land in the file this function is about to rename out from under it, and
-/// step 4's fresh `get_or_init_connection` call returns that same stale
-/// cached `Arc` instead of a connection to the newly rebuilt schema. A safe
-/// wiring needs the per-path init lock held across the whole
-/// quarantine-and-rebuild sequence.
-///
-/// # Errors
-/// Returns `Err` if quarantining any of the main/`-wal`/`-shm` files fails
-/// (e.g. permissions, or a lingering file handle keeping the rename from
-/// succeeding on platforms with mandatory file locking), or if rebuilding the
-/// schema via [`get_or_init_connection`] fails.
-#[allow(dead_code)]
-pub fn recover_corrupt_db(config: &MemoryConfig) -> Result<bool> {
+/// The caller must hold the connection cache's per-path initialization lock
+/// and must have removed the cached connection before calling this helper.
+pub(super) fn quarantine_corrupt_files(config: &MemoryConfig) -> Result<bool> {
     let db_path = db_path_for(config);
-
-    // 1. Drop any cached (corrupt) connection + breaker so the OS file handle
-    //    is closed before we rename.
-    drop_cached_connection(config);
-
-    // 2. Re-confirm corruption against the on-disk file. If `quick_check` now
-    //    passes, the image is actually healthy — don't destroy good data.
     if db_path.exists() && matches!(quick_check_ok(&db_path), Ok(true)) {
         return Ok(false);
     }
 
-    // 3. Quarantine the main DB + WAL/SHM side-files to `<name>.corrupt-<ts>`.
     let ts = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
     for suffix in &["", "-wal", "-shm"] {
         let src = with_name_suffix(&db_path, suffix);
@@ -287,12 +269,26 @@ pub fn recover_corrupt_db(config: &MemoryConfig) -> Result<bool> {
             )
         })?;
     }
-
-    // 4. Rebuild an empty schema by forcing a fresh open.
-    get_or_init_connection(config)
-        .context("failed to rebuild chunk DB schema after quarantining corrupt DB")?;
-
     Ok(true)
+}
+
+/// Recover from a `SQLITE_CORRUPT` (malformed image) on the chunk DB.
+///
+/// Quarantines the damaged file (and its WAL/SHM side-files) to a timestamped
+/// `.corrupt-<ts>` copy — preserved, not deleted — then rebuilds an empty
+/// schema so the store resumes instead of wedging indefinitely.
+///
+/// Returns `Ok(true)` when a quarantine + rebuild happened, `Ok(false)` when a
+/// fresh `PRAGMA quick_check` now passes (the earlier failure was transient),
+/// and `Err` when the quarantine rename or the schema rebuild failed.
+///
+/// # Errors
+/// Returns `Err` if quarantining any of the main/`-wal`/`-shm` files fails
+/// (e.g. permissions, or a lingering file handle keeping the rename from
+/// succeeding on platforms with mandatory file locking), or if rebuilding the
+/// schema initialization fails.
+pub fn recover_corrupt_db(config: &MemoryConfig) -> Result<bool> {
+    recover_corrupt_connection(config)
 }
 
 #[cfg(test)]

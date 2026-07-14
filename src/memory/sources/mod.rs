@@ -29,8 +29,8 @@ pub mod types;
 pub mod validation;
 
 pub use readers::{is_locally_readable, reader_for, SourceReader};
-pub use registry::{
-    memory_sync_defaults_for_toolkit, ComposioUpsertTarget, MemorySourcePatch, SourceRegistry,
+pub use registry::{memory_sync_defaults_for_toolkit, ComposioUpsertTarget, SourceRegistry};
+pub use types::{
+    ContentType, MemorySourceEntry, MemorySourcePatch, SourceContent, SourceItem, SourceKind,
 };
-pub use types::{ContentType, MemorySourceEntry, SourceContent, SourceItem, SourceKind};
 pub use validation::{ensure_within_base, validate_entry};

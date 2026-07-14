@@ -1,3 +1,6 @@
+use super::super::transaction::{
+    index_entities_tx, index_entities_tx_with_identity, index_summary_entity_ids_tx_with_identity,
+};
 use super::*;
 use crate::memory::store::entity_index::types::{CanonicalEntity, EntityKind};
 use std::sync::Arc;
@@ -43,6 +46,21 @@ fn shared_connection_preserves_owner_pragmas_and_visibility() {
         .unwrap();
     assert_eq!(synchronous, 0);
     assert_eq!(count, 1);
+}
+
+#[test]
+fn memory_config_constructor_shares_rows_with_score_and_retrieval_store() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = crate::memory::config::MemoryConfig::new(temp.path());
+    let index = EntityIndex::for_memory_config(&config).unwrap();
+    index
+        .index_entity(&sample_entity("alice"), "chunk-1", "leaf", 1000, None)
+        .unwrap();
+
+    let hits = crate::memory::score::store::lookup_entity(&config, "email:alice", None).unwrap();
+
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].node_id, "chunk-1");
 }
 
 #[derive(Debug)]
@@ -320,4 +338,23 @@ fn custom_identity_marks_self_rows() {
         idx.lookup_entity("email:alice@example.com", None).unwrap()[0].is_user,
         "summary self-identity should resolve from canonical id"
     );
+}
+
+#[test]
+fn identity_free_transaction_reindex_preserves_existing_user_flag() {
+    struct OnlyAlice;
+    impl SelfIdentity for OnlyAlice {
+        fn is_self(&self, kind: EntityKind, surface: &str) -> bool {
+            kind == EntityKind::Email && surface == "alice@example.com"
+        }
+    }
+
+    let idx = EntityIndex::open_in_memory_with_identity(std::sync::Arc::new(OnlyAlice)).unwrap();
+    let alice = sample_entity("alice");
+    idx.index_entity(&alice, "chunk-1", "leaf", 1000, None)
+        .unwrap();
+    idx.with_transaction(|tx| index_entities_tx(tx, &[alice], "chunk-1", "leaf", 2000, None))
+        .unwrap();
+
+    assert!(idx.lookup_entity("email:alice", None).unwrap()[0].is_user);
 }

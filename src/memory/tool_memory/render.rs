@@ -76,37 +76,22 @@ impl ToolMemoryRulesSection {
 /// Pure rendering helper — public so callers that pre-render the block
 /// (e.g. tests, dynamic prompt sources) can share the same logic.
 ///
-/// NOTE: `rule.rule` and `rule.tool_name` are concatenated into the output
-/// verbatim (only `trim()`ed) — neither is escaped. A rule body containing
-/// its own `\n### \`tool\`` heading-shaped text renders as a fake extra
-/// tool section inside a block the prompt frames as a hard constraint, and
-/// a backtick in `tool_name` breaks out of the `` ` `` code span in the
-/// `### \`tool_name\`` heading. Callers that accept rule content from
-/// untrusted sources (e.g. auto-captured tool-failure text) must sanitize
-/// before storing, since this function does not.
-///
-/// NOTE: the sort above orders by priority first, tool name second, so a
-/// tool with rules at two different priorities (e.g. one Critical, one
-/// High) is split across the Critical block and the High block by
-/// construction. Heading emission tracks only the *immediately previous*
-/// rule's `tool_name`, so that tool gets two separate `### \`tool\``
-/// headings — one per block — instead of one grouped section. This is a
-/// real, reachable rendering artifact whenever a tool has both a Critical
-/// and a High rule.
+/// Tool names and bodies are normalized to single-line prompt text. This keeps
+/// stored newlines/backticks from forging headings or escaping code spans.
 pub fn render_tool_memory_rules(rules: &[ToolMemoryRule]) -> String {
     if rules.is_empty() {
         return String::new();
     }
 
-    // Stable order: Critical first, then High; within a priority, by tool
-    // name, then by rule body, then by id. Callers may pass an
+    // Stable order: group by normalized tool name, then Critical before High,
+    // then by rule body and id. Callers may pass an
     // already-sorted list (the store does), but rendering must not depend
     // on that contract — the system prompt has to be byte-stable.
     let mut sorted: Vec<&ToolMemoryRule> = rules.iter().collect();
     sorted.sort_by(|a, b| {
-        b.priority
-            .cmp(&a.priority)
-            .then_with(|| a.tool_name.cmp(&b.tool_name))
+        a.tool_name
+            .cmp(&b.tool_name)
+            .then_with(|| b.priority.cmp(&a.priority))
             .then_with(|| a.rule.cmp(&b.rule))
             .then_with(|| a.id.cmp(&b.id))
     });
@@ -129,18 +114,22 @@ pub fn render_tool_memory_rules(rules: &[ToolMemoryRule]) -> String {
                 out.push('\n');
             }
             out.push_str("### `");
-            out.push_str(rule.tool_name.as_str());
+            out.push_str(&prompt_line(&rule.tool_name).replace('`', "'"));
             out.push_str("`\n");
             current_tool = Some(rule.tool_name.as_str());
         }
         out.push_str("- ");
         out.push_str(priority_marker(rule.priority));
         out.push(' ');
-        out.push_str(rule.rule.trim());
+        out.push_str(&prompt_line(&rule.rule));
         out.push('\n');
     }
 
     out
+}
+
+fn prompt_line(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn priority_marker(priority: ToolMemoryPriority) -> &'static str {

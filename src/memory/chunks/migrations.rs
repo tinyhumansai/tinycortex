@@ -6,12 +6,9 @@
 //! ## Contract
 //! Both migrations here follow the same shape: read `user_version`, bail out
 //! if it is already at/past the migration's target version, otherwise do the
-//! work inside one `unchecked_transaction`, commit, then bump
-//! `user_version` in a *separate* statement after the commit. That last step
-//! is not itself transactional with the migration body — a crash between
-//! commit and the `pragma_update` re-runs the (idempotent, `DELETE`/copy-only)
-//! migration body on next open, which is safe. The reverse is not safe: see
-//! the NOTE on [`migrate_legacy_embeddings_to_sidecar`] (audit finding SC-10).
+//! work and bump `user_version` inside one `unchecked_transaction`. A crash can
+//! therefore expose neither the migrated rows nor the version marker, or both,
+//! but never a split state.
 //!
 //! Neither migration is exercised by an automated test in this module (audit
 //! test-coverage gap) — both are asserted only via the module's behavior at
@@ -97,9 +94,9 @@ pub(super) fn migrate_legacy_embeddings_to_sidecar(
         }
     }
 
+    tx.pragma_update(None, "user_version", TREE_EMBEDDING_MIGRATION_VERSION)
+        .context("set PRAGMA user_version during embedding migration")?;
     tx.commit()?;
-    conn.pragma_update(None, "user_version", TREE_EMBEDDING_MIGRATION_VERSION)
-        .context("set PRAGMA user_version after embedding migration")?;
     Ok(())
 }
 
@@ -166,6 +163,8 @@ pub(super) fn purge_global_topic_trees(conn: &Connection, config: &MemoryConfig)
         "DELETE FROM mem_tree_jobs WHERE kind IN ('topic_route','digest_daily')",
         [],
     )?;
+    tx.pragma_update(None, "user_version", GLOBAL_TOPIC_PURGE_MIGRATION_VERSION)
+        .context("set PRAGMA user_version during global/topic purge")?;
     tx.commit()?;
 
     // On-disk: drop `wiki/summaries/global*` and `topic-*` summary folders.
@@ -181,7 +180,5 @@ pub(super) fn purge_global_topic_trees(conn: &Connection, config: &MemoryConfig)
         }
     }
 
-    conn.pragma_update(None, "user_version", GLOBAL_TOPIC_PURGE_MIGRATION_VERSION)
-        .context("set PRAGMA user_version after global/topic purge")?;
     Ok(())
 }

@@ -1,6 +1,6 @@
 //! Shared filesystem primitives for the memory engine.
 //!
-//! [`atomic_write`] is the single crash-safe write path used by the on-disk
+//! `atomic_write` is the single crash-safe write path used by the on-disk
 //! stores (goals list, time-tree nodes, staged summaries). It writes to a
 //! hidden same-directory temp file, fsyncs it, then renames it over the
 //! destination. Because POSIX `rename(2)` is atomic, a crash or a concurrent

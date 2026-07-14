@@ -127,3 +127,40 @@ fn missing_keys_return_none() {
     assert!(!kv.delete_global("nope").unwrap());
     assert!(!kv.delete_namespace("ns", "nope").unwrap());
 }
+
+#[test]
+fn corrupt_json_is_reported_by_every_read_shape() {
+    let kv = store();
+    {
+        let conn = kv.conn.lock();
+        conn.execute(
+            "INSERT INTO kv_global (key, value_json, updated_at) VALUES ('bad', '{', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO kv_namespace (namespace, key, value_json, updated_at)
+             VALUES ('ns', 'bad', '{', 0)",
+            [],
+        )
+        .unwrap();
+    }
+
+    assert!(kv.get_global("bad").is_err());
+    assert!(kv.get_namespace("ns", "bad").is_err());
+    assert!(kv.list_namespace("ns").is_err());
+    assert!(kv.records_namespace("ns").is_err());
+    assert!(kv.records_global().is_err());
+    assert!(kv.records_for_scope("ns").is_err());
+}
+
+#[test]
+fn owned_connection_configures_busy_timeout() {
+    let kv = store();
+    let timeout: i64 = kv
+        .conn
+        .lock()
+        .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(timeout, 15_000);
+}

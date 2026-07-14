@@ -98,6 +98,27 @@ async fn read_item_returns_file_content() {
 }
 
 #[tokio::test]
+async fn read_item_enforces_configured_glob() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join("docs")).unwrap();
+    fs::write(tmp.path().join("docs/allowed.md"), "allowed").unwrap();
+    fs::write(tmp.path().join("docs/secret.env"), "secret").unwrap();
+    let mut source = folder_source(&tmp.path().to_string_lossy());
+    source.glob = Some("docs/**/*.md".into());
+    let reader = FolderReader;
+
+    assert!(reader
+        .read_item(&source, "docs/allowed.md", &config())
+        .await
+        .is_ok());
+    let err = reader
+        .read_item(&source, "docs/secret.env", &config())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("outside source glob"));
+}
+
+#[tokio::test]
 async fn read_item_prevents_path_traversal() {
     let tmp = TempDir::new().unwrap();
     fs::write(tmp.path().join("safe.md"), "ok").unwrap();

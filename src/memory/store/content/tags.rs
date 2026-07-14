@@ -156,22 +156,9 @@ fn augment_with_source_tag_for_chunk(file_bytes: &[u8], tags: &[String]) -> Vec<
     out
 }
 
-/// Generate a temp-file name suffix from the current time's sub-second
-/// nanoseconds.
-///
-/// NOTE: unlike [`super::atomic::write_if_new`]'s temp-name generator (which
-/// mixes in a per-process atomic counter), this is `subsec_nanos()` alone —
-/// two rewrites of the same chunk file landing in the same directory close
-/// enough in time can produce the same `.tmp_tags_<id>.md` name and clobber
-/// each other's staging file before the rename. This is a known gap (tracked
-/// as SC-21 in the storage-primitives audit), not a documentation error.
+/// Generate a collision-resistant temp-file suffix.
 fn crate_temp_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let ns = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    format!("{ns:08x}")
+    uuid::Uuid::new_v4().simple().to_string()
 }
 
 #[cfg(test)]

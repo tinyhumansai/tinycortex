@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use parking_lot::Mutex;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use super::embedding::EmbeddingBackend;
 
@@ -32,6 +32,7 @@ use super::embedding::EmbeddingBackend;
 const INIT_SQL: &str = "
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
+    PRAGMA busy_timeout = 15000;
 
     CREATE TABLE IF NOT EXISTS vectors (
         id         TEXT    NOT NULL,
@@ -143,7 +144,7 @@ impl VectorStore {
                 [],
                 |row| row.get(0),
             )
-            .ok();
+            .optional()?;
 
         match stored_dims {
             None => {
@@ -160,9 +161,11 @@ impl VectorStore {
                 }
             }
             Some(dims_str) => {
-                let stored: usize = dims_str.parse().unwrap_or(0);
+                let stored: usize = dims_str.parse().with_context(|| {
+                    format!("invalid vector store embed_dims metadata: {dims_str}")
+                })?;
                 let runtime = backend.dimensions();
-                if stored != 0 && runtime != 0 && stored != runtime {
+                if stored != runtime {
                     anyhow::bail!(
                         "vector store dimension mismatch: database was created with \
                          {stored}-dim embeddings but the current backend ({}) uses \
@@ -207,6 +210,12 @@ impl VectorStore {
         embedding: &[f32],
         metadata: serde_json::Value,
     ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            embedding.len() == self.backend.dimensions(),
+            "embedding dimension mismatch: expected {}, got {}",
+            self.backend.dimensions(),
+            embedding.len()
+        );
         let blob = vec_to_bytes(embedding);
         let meta_str = serde_json::to_string(&metadata)?;
         let now = now_ts();
@@ -321,17 +330,17 @@ impl VectorStore {
         let mut scored: Vec<ScoredRow> = rows
             .into_iter()
             .map(|(id, namespace, text, blob, meta_str)| {
-                let stored_vec = bytes_to_vec(&blob);
+                let stored_vec = bytes_to_vec(&blob)?;
                 let score = cosine_similarity(query_vec, &stored_vec);
-                ScoredRow {
+                Ok(ScoredRow {
                     score,
                     id,
                     namespace,
                     text,
                     meta_str,
-                }
+                })
             })
-            .collect();
+            .collect::<anyhow::Result<Vec<_>>>()?;
 
         // Sort descending by score.
         scored.sort_by(|a, b| {
@@ -428,30 +437,28 @@ pub fn vec_to_bytes(v: &[f32]) -> Vec<u8> {
 
 /// Deserializes little-endian bytes back to a float vector.
 ///
-/// Uses `chunks_exact(4)`, so any trailing 1-3 bytes that don't form a full
-/// `f32` are silently dropped rather than erroring — a truncated or corrupt
-/// blob yields a shorter vector instead of a decode failure. (Contrast with
-/// `crate::memory::chunks::embedding_from_blob`, the chunk-store's own blob
-/// decoder, which errors instead of truncating — the two decoders currently
-/// have different contracts for malformed input.)
-pub fn bytes_to_vec(bytes: &[u8]) -> Vec<f32> {
-    bytes
+/// Returns an error when the blob length is not divisible by four rather than
+/// silently truncating corrupt trailing bytes.
+pub fn bytes_to_vec(bytes: &[u8]) -> anyhow::Result<Vec<f32>> {
+    anyhow::ensure!(
+        bytes.len().is_multiple_of(4),
+        "invalid embedding blob byte length: {}",
+        bytes.len()
+    );
+    Ok(bytes
         .chunks_exact(4)
         .map(|chunk| {
             let arr: [u8; 4] = chunk.try_into().unwrap_or([0; 4]);
             f32::from_le_bytes(arr)
         })
-        .collect()
+        .collect())
 }
 
 /// Computes cosine similarity between two vectors. Returns 0.0 for
 /// mismatched lengths, empty vectors, or zero-magnitude vectors.
 ///
-/// The raw cosine value (mathematically in `[-1.0, 1.0]`) is clamped to
-/// `[0.0, 1.0]` before being returned, so two vectors pointing in opposite
-/// directions score identically to two unrelated (orthogonal) vectors — both
-/// report `0.0`. Callers that need to distinguish "opposite" from "unrelated"
-/// cannot do so from this score alone.
+/// The raw cosine value is clamped only for floating-point drift, preserving
+/// its mathematical `[-1.0, 1.0]` range.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
@@ -470,7 +477,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     if denom <= f64::EPSILON {
         return 0.0;
     }
-    (dot / denom).clamp(0.0, 1.0)
+    (dot / denom).clamp(-1.0, 1.0)
 }
 
 fn now_ts() -> f64 {

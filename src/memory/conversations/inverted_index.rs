@@ -86,6 +86,7 @@ struct DocEntry {
     content: String,            // original, returned verbatim in hits
     content_normalized: String, // for Phase 2 substring verification
     created_at: String,
+    created_at_ms: i64,
 }
 
 /// In-memory trigram/bigram inverted index over conversation messages.
@@ -140,6 +141,9 @@ impl InvertedIndex {
             return;
         }
         let normalized = normalize(&content);
+        let created_at_ms = chrono::DateTime::parse_from_rfc3339(&created_at)
+            .map(|value| value.timestamp_millis())
+            .unwrap_or(i64::MIN);
         let doc_id = self.docs.len() as u32;
         for ngram in ngrams(&normalized) {
             if let Some(posting) = self.postings.get_mut(ngram) {
@@ -159,6 +163,7 @@ impl InvertedIndex {
             content,
             content_normalized: normalized,
             created_at,
+            created_at_ms,
         }));
         self.by_message.insert(key, doc_id);
     }
@@ -243,7 +248,16 @@ impl InvertedIndex {
         let mut per_term: Vec<Vec<u32>> = Vec::with_capacity(terms.len());
         for term in &terms {
             let candidates = match self.candidates_for_term(term) {
-                Some(v) => v,
+                Some(v) => {
+                    if v.len() > LARGE_CANDIDATE_LIMIT {
+                        return self.recency_fallback(exclude_thread_id, limit);
+                    }
+                    v
+                }
+                // Terms too short for an ngram (notably one CJK character)
+                // require exact verification over the corpus. Returning the
+                // recency fallback here would manufacture unrelated score-0
+                // hits instead of answering the query.
                 None => self
                     .docs
                     .iter()
@@ -251,9 +265,6 @@ impl InvertedIndex {
                     .filter_map(|(i, slot)| slot.as_ref().map(|_| i as u32))
                     .collect::<Vec<u32>>(),
             };
-            if candidates.len() > LARGE_CANDIDATE_LIMIT {
-                return self.recency_fallback(exclude_thread_id, limit);
-            }
             per_term.push(candidates);
         }
 
@@ -283,21 +294,16 @@ impl InvertedIndex {
         // Ranking by `matched` (usize) is order-equivalent to ranking by
         // `score = matched / total_terms` since `total_terms` is a positive
         // constant, so the returned order is unchanged.
-        let mut ranked: Vec<(u32, usize, &str)> = hit_counts
+        let mut ranked: Vec<(u32, usize, i64)> = hit_counts
             .into_iter()
             .map(|(doc_id, matched)| {
                 let entry = self.docs[doc_id as usize]
                     .as_ref()
                     .expect("doc_id from hit_counts must be live");
-                (doc_id, matched, entry.created_at.as_str())
+                (doc_id, matched, entry.created_at_ms)
             })
             .collect();
-        // NOTE: `created_at` is compared as a raw string (lexicographic, not
-        // parsed-to-instant). Values are RFC3339 with a consistent zero-padded
-        // width in practice, so this tiebreak orders correctly for same-offset
-        // timestamps, but mixed offsets (`+00:00` vs `Z` vs a non-UTC offset)
-        // can misorder — see audit TR-16.
-        ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(a.2)));
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(&a.2)));
         ranked.truncate(limit);
 
         ranked
@@ -385,11 +391,16 @@ impl InvertedIndex {
         exclude_thread_id: Option<&str>,
         limit: usize,
     ) -> Vec<CrossThreadHit> {
-        let mut hits: Vec<CrossThreadHit> = self
+        let mut entries: Vec<&DocEntry> = self
             .docs
             .iter()
             .filter_map(|slot| slot.as_ref())
             .filter(|entry| exclude_thread_id != Some(entry.thread_id.as_ref()))
+            .collect();
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.created_at_ms));
+        entries.truncate(limit);
+        entries
+            .into_iter()
             .map(|entry| CrossThreadHit {
                 thread_id: entry.thread_id.to_string(),
                 message_id: entry.message_id.clone(),
@@ -402,12 +413,7 @@ impl InvertedIndex {
                 // the newest entries first.
                 score: 0.0,
             })
-            .collect();
-        // NOTE: lexicographic string comparison, not a parsed-timestamp
-        // comparison — see the TR-16 note on the Phase 2 ranking above.
-        hits.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        hits.truncate(limit);
-        hits
+            .collect()
     }
 }
 

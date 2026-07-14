@@ -76,6 +76,38 @@ fn add_rejects_invalid_entry() {
 }
 
 #[test]
+fn concurrent_registry_adds_preserve_every_source() {
+    let (_tmp, reg) = registry();
+    let writers = 24;
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(writers));
+    let mut threads = Vec::new();
+    for index in 0..writers {
+        let reg = reg.clone();
+        let barrier = barrier.clone();
+        threads.push(std::thread::spawn(move || {
+            barrier.wait();
+            reg.add(folder_entry(&format!("src_concurrent_{index}")))
+                .unwrap();
+        }));
+    }
+    for thread in threads {
+        thread.join().unwrap();
+    }
+
+    let mut ids: Vec<_> = reg
+        .list()
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.id)
+        .collect();
+    ids.sort();
+    assert_eq!(ids.len(), writers);
+    for index in 0..writers {
+        assert!(ids.contains(&format!("src_concurrent_{index}")));
+    }
+}
+
+#[test]
 fn update_applies_patch_and_persists() {
     let (_tmp, reg) = registry();
     reg.add(folder_entry("src_u")).unwrap();
@@ -243,8 +275,37 @@ fn memory_source_patch_deserializes_partial_and_github_fields() {
     let patch: MemorySourcePatch = serde_json::from_value(json).unwrap();
     assert_eq!(patch.label.as_deref(), Some("New label"));
     assert_eq!(patch.enabled, Some(false));
-    assert_eq!(patch.max_commits, Some(100));
-    assert_eq!(patch.max_issues, Some(50));
-    assert_eq!(patch.max_prs, Some(25));
+    assert_eq!(patch.max_commits, Some(Some(100)));
+    assert_eq!(patch.max_issues, Some(Some(50)));
+    assert_eq!(patch.max_prs, Some(Some(25)));
     assert!(patch.toolkit.is_none());
+}
+
+#[test]
+fn memory_source_patch_can_clear_optional_fields_with_null() {
+    let (_tmp, reg) = registry();
+    let mut entry = folder_entry("src_clear");
+    entry.glob = Some("**/*.md".into());
+    entry.max_items = Some(10);
+    reg.add(entry).unwrap();
+
+    let patch: MemorySourcePatch = serde_json::from_value(serde_json::json!({
+        "glob": null,
+        "max_items": null
+    }))
+    .unwrap();
+    let updated = reg.update("src_clear", patch).unwrap();
+    assert!(updated.glob.is_none());
+    assert!(updated.max_items.is_none());
+}
+
+#[test]
+fn update_rejects_fields_that_do_not_apply_to_source_kind() {
+    let (_tmp, reg) = registry();
+    reg.add(folder_entry("src_kind")).unwrap();
+    let patch: MemorySourcePatch = serde_json::from_value(serde_json::json!({
+        "url": "https://example.com/repo"
+    }))
+    .unwrap();
+    assert!(reg.update("src_kind", patch).is_err());
 }

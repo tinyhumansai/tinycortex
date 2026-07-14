@@ -12,18 +12,24 @@
 //! Each on-disk write (`SourceRegistry::atomic_write`) is atomic (temp file +
 //! rename), so a crash mid-write cannot leave a truncated `config.toml`.
 //!
-//! NOTE: the load-modify-save cycle itself is *not* locked — there is no mutex
-//! or file lock guarding the read-mutate-write window (contrast the diff
-//! ledger's `WRITE_LOCK` or goals' mutation lock). Two concurrent mutations on
-//! the same registry race: the second writer's `list()` snapshot does not see
-//! the first writer's change, so its `write_all` silently overwrites it —
-//! last writer wins and one mutation is lost.
+//! The complete load-modify-save cycle is guarded by a process-wide mutation
+//! lock, so separate [`SourceRegistry`] handles cannot overwrite one another's
+//! in-process updates. Atomic rename protects each individual disk write.
 
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use super::types::{MemorySourceEntry, SourceKind};
+use super::types::{MemorySourceEntry, MemorySourcePatch, SourceKind};
+
+/// Serializes each registry load-modify-save transaction in this process.
+///
+/// A single lock deliberately covers every path: registry mutation is rare,
+/// and correctness is more important than allowing unrelated config files to
+/// race through their atomic renames. The on-disk rename remains the crash-
+/// safety boundary; this mutex closes the in-process lost-update window.
+static REGISTRY_MUTATION_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 /// Conservative default sync caps for a Composio toolkit, keyed by toolkit slug.
 ///
@@ -112,12 +118,9 @@ impl SourceRegistry {
     /// leaving a truncated `config.toml`, matching the OpenHuman source
     /// registry contract.
     ///
-    /// NOTE: this re-reads the file via [`SourceRegistry::read_table`] to
-    /// obtain the "other top-level keys" to preserve. That read is a second,
-    /// unsynchronized file access separate from whatever `list()` call the
-    /// caller used to build `entries` — under concurrent writers the two reads
-    /// can observe different file versions, so `entries` and the preserved
-    /// keys in the final file may not have come from the same snapshot.
+    /// Mutation callers hold [`REGISTRY_MUTATION_LOCK`] across their initial
+    /// read and this preserving re-read, keeping the two snapshots ordered with
+    /// respect to every other in-process writer.
     fn write_all(&self, entries: &[MemorySourceEntry]) -> Result<()> {
         let mut table = self.read_table()?;
         let value = toml::Value::try_from(entries).context("failed to encode memory_sources")?;
@@ -177,6 +180,9 @@ impl SourceRegistry {
 
     /// Validate and add a new source. Fails if the id already exists.
     pub fn add(&self, entry: MemorySourceEntry) -> Result<MemorySourceEntry> {
+        let _guard = REGISTRY_MUTATION_LOCK
+            .lock()
+            .expect("source registry mutation lock poisoned");
         entry.validate().map_err(|e| anyhow!(e))?;
         let mut sources = self.list()?;
         if sources.iter().any(|s| s.id == entry.id) {
@@ -190,12 +196,16 @@ impl SourceRegistry {
     /// Apply a [`MemorySourcePatch`] to an existing source, then re-validate and
     /// save. Fails if no source has the given id.
     pub fn update(&self, id: &str, patch: MemorySourcePatch) -> Result<MemorySourceEntry> {
+        let _guard = REGISTRY_MUTATION_LOCK
+            .lock()
+            .expect("source registry mutation lock poisoned");
         let mut sources = self.list()?;
         let entry = sources
             .iter_mut()
             .find(|s| s.id == id)
             .ok_or_else(|| anyhow!("source '{id}' not found"))?;
 
+        patch.validate_for_kind(entry.kind.clone())?;
         patch.apply_to(entry);
         entry.validate().map_err(|e| anyhow!(e))?;
         let updated = entry.clone();
@@ -205,6 +215,9 @@ impl SourceRegistry {
 
     /// Remove a source by id. Returns `true` if an entry was removed.
     pub fn remove(&self, id: &str) -> Result<bool> {
+        let _guard = REGISTRY_MUTATION_LOCK
+            .lock()
+            .expect("source registry mutation lock poisoned");
         let mut sources = self.list()?;
         let before = sources.len();
         sources.retain(|s| s.id != id);
@@ -219,6 +232,9 @@ impl SourceRegistry {
     /// removed. Mirrors [`SourceRegistry::upsert_composio_source`], which keys
     /// composio sources on `connection_id` rather than the `src_*` id.
     pub fn remove_composio_source_by_connection_id(&self, connection_id: &str) -> Result<usize> {
+        let _guard = REGISTRY_MUTATION_LOCK
+            .lock()
+            .expect("source registry mutation lock poisoned");
         let mut sources = self.list()?;
         let before = sources.len();
         sources.retain(|s| {
@@ -242,6 +258,9 @@ impl SourceRegistry {
         connection_id: &str,
         label: &str,
     ) -> Result<MemorySourceEntry> {
+        let _guard = REGISTRY_MUTATION_LOCK
+            .lock()
+            .expect("source registry mutation lock poisoned");
         let mut sources = self.list()?;
         let (entry, _was_insert) =
             upsert_composio_entry_in_place(&mut sources, toolkit, connection_id, label);
@@ -254,6 +273,9 @@ impl SourceRegistry {
         if targets.is_empty() {
             return Ok(0);
         }
+        let _guard = REGISTRY_MUTATION_LOCK
+            .lock()
+            .expect("source registry mutation lock poisoned");
         let mut sources = self.list()?;
         for (toolkit, connection_id, label) in targets {
             upsert_composio_entry_in_place(&mut sources, toolkit, connection_id, label);
@@ -264,6 +286,9 @@ impl SourceRegistry {
 
     /// Enable every source and clear all per-source caps ("All In" mode).
     pub fn apply_all_in(&self) -> Result<Vec<MemorySourceEntry>> {
+        let _guard = REGISTRY_MUTATION_LOCK
+            .lock()
+            .expect("source registry mutation lock poisoned");
         let mut sources = self.list()?;
         for source in &mut sources {
             source.enabled = true;
@@ -326,131 +351,6 @@ pub(crate) fn upsert_composio_entry_in_place(
     };
     sources.push(entry.clone());
     (entry, true)
-}
-
-/// Partial update payload for a source entry. Absent fields are left unchanged.
-#[derive(Debug, Default, serde::Deserialize)]
-pub struct MemorySourcePatch {
-    /// New human-readable label for the source.
-    #[serde(default)]
-    pub label: Option<String>,
-    /// Toggle whether the source participates in sync.
-    #[serde(default)]
-    pub enabled: Option<bool>,
-    /// Composio toolkit slug (e.g. `gmail`, `slack`).
-    #[serde(default)]
-    pub toolkit: Option<String>,
-    /// Composio connection id this source binds to.
-    #[serde(default)]
-    pub connection_id: Option<String>,
-    /// Filesystem root for a local-files source.
-    #[serde(default)]
-    pub path: Option<String>,
-    /// Glob filter applied under [`MemorySourcePatch::path`].
-    #[serde(default)]
-    pub glob: Option<String>,
-    /// Remote URL for a git/web source.
-    #[serde(default)]
-    pub url: Option<String>,
-    /// Git branch to track.
-    #[serde(default)]
-    pub branch: Option<String>,
-    /// Explicit path allowlist within a repo source.
-    #[serde(default)]
-    pub paths: Option<Vec<String>>,
-    /// Search/filter query string for query-driven sources.
-    #[serde(default)]
-    pub query: Option<String>,
-    /// Lookback window in days for items to ingest.
-    #[serde(default)]
-    pub since_days: Option<u32>,
-    /// Cap on the number of items pulled per sync.
-    #[serde(default)]
-    pub max_items: Option<u32>,
-    /// Source-specific selector (e.g. a Notion database or Slack channel).
-    #[serde(default)]
-    pub selector: Option<String>,
-    /// Token budget per sync run.
-    #[serde(default)]
-    pub max_tokens_per_sync: Option<u64>,
-    /// Cost budget per sync run, in USD.
-    #[serde(default)]
-    pub max_cost_per_sync_usd: Option<f64>,
-    /// History depth in days for tree/summary backfill.
-    #[serde(default)]
-    pub sync_depth_days: Option<u32>,
-    /// Cap on commits ingested from a git source.
-    #[serde(default)]
-    pub max_commits: Option<u32>,
-    /// Cap on issues ingested from a repo source.
-    #[serde(default)]
-    pub max_issues: Option<u32>,
-    /// Cap on pull requests ingested from a repo source.
-    #[serde(default)]
-    pub max_prs: Option<u32>,
-}
-
-impl MemorySourcePatch {
-    /// Apply each present field of this patch onto `entry` in place.
-    fn apply_to(self, entry: &mut MemorySourceEntry) {
-        if let Some(label) = self.label {
-            entry.label = label;
-        }
-        if let Some(enabled) = self.enabled {
-            entry.enabled = enabled;
-        }
-        if let Some(toolkit) = self.toolkit {
-            entry.toolkit = Some(toolkit);
-        }
-        if let Some(connection_id) = self.connection_id {
-            entry.connection_id = Some(connection_id);
-        }
-        if let Some(path) = self.path {
-            entry.path = Some(path);
-        }
-        if let Some(glob) = self.glob {
-            entry.glob = Some(glob);
-        }
-        if let Some(url) = self.url {
-            entry.url = Some(url);
-        }
-        if let Some(branch) = self.branch {
-            entry.branch = Some(branch);
-        }
-        if let Some(paths) = self.paths {
-            entry.paths = paths;
-        }
-        if let Some(query) = self.query {
-            entry.query = Some(query);
-        }
-        if let Some(since_days) = self.since_days {
-            entry.since_days = Some(since_days);
-        }
-        if let Some(max_items) = self.max_items {
-            entry.max_items = Some(max_items);
-        }
-        if let Some(selector) = self.selector {
-            entry.selector = Some(selector);
-        }
-        if let Some(v) = self.max_tokens_per_sync {
-            entry.max_tokens_per_sync = Some(v);
-        }
-        if let Some(v) = self.max_cost_per_sync_usd {
-            entry.max_cost_per_sync_usd = Some(v);
-        }
-        if let Some(v) = self.sync_depth_days {
-            entry.sync_depth_days = Some(v);
-        }
-        if let Some(v) = self.max_commits {
-            entry.max_commits = Some(v);
-        }
-        if let Some(v) = self.max_issues {
-            entry.max_issues = Some(v);
-        }
-        if let Some(v) = self.max_prs {
-            entry.max_prs = Some(v);
-        }
-    }
 }
 
 #[cfg(test)]

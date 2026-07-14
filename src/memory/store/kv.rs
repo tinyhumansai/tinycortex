@@ -38,6 +38,7 @@ const SCHEMA_SQL: &str = "
 const OWNED_CONNECTION_PRAGMAS: &str = "
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
+    PRAGMA busy_timeout = 15000;
 ";
 
 /// SQLite-backed global + namespace JSON key-value store.
@@ -136,10 +137,8 @@ impl KvStore {
 
     /// Read a global key, returning `None` if absent.
     ///
-    /// NOTE: a present row whose `value_json` fails to parse (corrupt data)
-    /// also returns `Ok(None)` — `serde_json::from_str(..).ok()` collapses
-    /// "absent" and "present but corrupt" into the same result, so callers
-    /// cannot distinguish the two from this return value alone.
+    /// A present row with corrupt JSON returns an error rather than masquerading
+    /// as a missing key.
     pub fn get_global(&self, key: &str) -> Result<Option<Value>, String> {
         let conn = self.conn.lock();
         let value: Option<String> = conn
@@ -150,7 +149,9 @@ impl KvStore {
             )
             .optional()
             .map_err(|e| format!("get_global: {e}"))?;
-        Ok(value.and_then(|v| serde_json::from_str(&v).ok()))
+        value
+            .map(|raw| serde_json::from_str(&raw).map_err(|e| format!("get_global JSON: {e}")))
+            .transpose()
     }
 
     /// Insert or update a namespace-scoped key-value pair.
@@ -185,8 +186,7 @@ impl KvStore {
 
     /// Read a namespace-scoped key, returning `None` if absent.
     ///
-    /// Same caveat as [`Self::get_global`]: a corrupt stored `value_json`
-    /// also reads back as `Ok(None)`, indistinguishable from a missing key.
+    /// A corrupt stored value returns an error.
     pub fn get_namespace(&self, namespace: &str, key: &str) -> Result<Option<Value>, String> {
         let conn = self.conn.lock();
         let value: Option<String> = conn
@@ -197,7 +197,9 @@ impl KvStore {
             )
             .optional()
             .map_err(|e| format!("get_namespace: {e}"))?;
-        Ok(value.and_then(|v| serde_json::from_str(&v).ok()))
+        value
+            .map(|raw| serde_json::from_str(&raw).map_err(|e| format!("get_namespace JSON: {e}")))
+            .transpose()
     }
 
     /// Delete a global key. Returns `true` if a row was removed.
@@ -224,9 +226,7 @@ impl KvStore {
     /// List all keys in a namespace, most recently updated first, as a JSON
     /// array of `{key, value, updatedAt}` objects.
     ///
-    /// A row whose `value_json` fails to parse contributes `"value": null`
-    /// rather than being skipped or erroring — corrupt rows still appear in
-    /// the listing, just with a null payload.
+    /// A corrupt stored value fails the listing so corruption is observable.
     pub fn list_namespace(&self, namespace: &str) -> Result<Vec<Value>, String> {
         let conn = self.conn.lock();
         let mut stmt = conn
@@ -244,9 +244,12 @@ impl KvStore {
             .map_err(|e| format!("list_namespace row: {e}"))?
         {
             let value_raw: String = row.get(1).map_err(|e| e.to_string())?;
+            let key = row.get::<_, String>(0).map_err(|e| e.to_string())?;
+            let value = serde_json::from_str::<Value>(&value_raw)
+                .map_err(|e| format!("list_namespace JSON for key '{key}': {e}"))?;
             out.push(json!({
-                "key": row.get::<_, String>(0).map_err(|e| e.to_string())?,
-                "value": serde_json::from_str::<Value>(&value_raw).unwrap_or(Value::Null),
+                "key": key,
+                "value": value,
                 "updatedAt": row.get::<_, f64>(2).map_err(|e| e.to_string())?,
             }));
         }
@@ -268,8 +271,7 @@ impl KvStore {
 
     /// All records in a namespace as typed [`MemoryKvRecord`]s, newest first.
     ///
-    /// Same corrupt-row handling as [`Self::list_namespace`]: an unparsable
-    /// `value_json` surfaces as `Value::Null` rather than an error.
+    /// An unparsable stored value returns an error.
     pub fn records_namespace(&self, namespace: &str) -> Result<Vec<MemoryKvRecord>, String> {
         let ns = Self::sanitize_namespace(namespace);
         let conn = self.conn.lock();
@@ -288,10 +290,13 @@ impl KvStore {
             .map_err(|e| format!("row records_namespace: {e}"))?
         {
             let value_raw: String = row.get(1).map_err(|e| e.to_string())?;
+            let key: String = row.get(0).map_err(|e| e.to_string())?;
+            let value = serde_json::from_str(&value_raw)
+                .map_err(|e| format!("records_namespace JSON for key '{key}': {e}"))?;
             out.push(MemoryKvRecord {
                 namespace: Some(ns.clone()),
-                key: row.get(0).map_err(|e| e.to_string())?,
-                value: serde_json::from_str(&value_raw).unwrap_or(Value::Null),
+                key,
+                value,
                 updated_at: row.get(2).map_err(|e| e.to_string())?,
             });
         }
@@ -300,8 +305,7 @@ impl KvStore {
 
     /// All global records as typed [`MemoryKvRecord`]s, newest first.
     ///
-    /// Same corrupt-row handling as [`Self::list_namespace`]: an unparsable
-    /// `value_json` surfaces as `Value::Null` rather than an error.
+    /// An unparsable stored value returns an error.
     pub fn records_global(&self) -> Result<Vec<MemoryKvRecord>, String> {
         let conn = self.conn.lock();
         let mut stmt = conn
@@ -316,10 +320,13 @@ impl KvStore {
             .map_err(|e| format!("row records_global: {e}"))?
         {
             let value_raw: String = row.get(1).map_err(|e| e.to_string())?;
+            let key: String = row.get(0).map_err(|e| e.to_string())?;
+            let value = serde_json::from_str(&value_raw)
+                .map_err(|e| format!("records_global JSON for key '{key}': {e}"))?;
             out.push(MemoryKvRecord {
                 namespace: None,
-                key: row.get(0).map_err(|e| e.to_string())?,
-                value: serde_json::from_str(&value_raw).unwrap_or(Value::Null),
+                key,
+                value,
                 updated_at: row.get(2).map_err(|e| e.to_string())?,
             });
         }

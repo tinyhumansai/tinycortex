@@ -156,6 +156,182 @@ impl MemorySourceEntry {
     }
 }
 
+fn deserialize_double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    <Option<T> as serde::Deserialize>::deserialize(deserializer).map(Some)
+}
+
+/// Partial update payload for a source entry.
+///
+/// An absent field leaves the current value unchanged. For optional source
+/// properties, an explicit JSON `null` clears the value while a concrete value
+/// replaces it.
+#[derive(Debug, Default, Deserialize)]
+pub struct MemorySourcePatch {
+    /// New human-readable label for the source.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Toggle whether the source participates in sync.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Composio toolkit slug (e.g. `gmail`, `slack`).
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub toolkit: Option<Option<String>>,
+    /// Composio connection id this source binds to.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub connection_id: Option<Option<String>>,
+    /// Filesystem root for a local-files source.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub path: Option<Option<String>>,
+    /// Glob filter applied under [`MemorySourcePatch::path`].
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub glob: Option<Option<String>>,
+    /// Remote URL for a git/web source.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub url: Option<Option<String>>,
+    /// Git branch to track.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub branch: Option<Option<String>>,
+    /// Explicit path allowlist within a repo source.
+    #[serde(default)]
+    pub paths: Option<Vec<String>>,
+    /// Search/filter query string for query-driven sources.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub query: Option<Option<String>>,
+    /// Lookback window in days for items to ingest.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub since_days: Option<Option<u32>>,
+    /// Cap on the number of items pulled per sync.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub max_items: Option<Option<u32>>,
+    /// Source-specific selector (e.g. a CSS selector for a web page).
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub selector: Option<Option<String>>,
+    /// Token budget per sync run.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub max_tokens_per_sync: Option<Option<u64>>,
+    /// Cost budget per sync run, in USD.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub max_cost_per_sync_usd: Option<Option<f64>>,
+    /// History depth in days for tree/summary backfill.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub sync_depth_days: Option<Option<u32>>,
+    /// Cap on commits ingested from a git source.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub max_commits: Option<Option<u32>>,
+    /// Cap on issues ingested from a repo source.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub max_issues: Option<Option<u32>>,
+    /// Cap on pull requests ingested from a repo source.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub max_prs: Option<Option<u32>>,
+}
+
+impl MemorySourcePatch {
+    pub(crate) fn validate_for_kind(&self, kind: SourceKind) -> anyhow::Result<()> {
+        let reject = |field: &str| {
+            Err(anyhow::anyhow!(
+                "field '{field}' is not applicable to source kind '{}'",
+                kind.as_str()
+            ))
+        };
+        if (self.toolkit.is_some() || self.connection_id.is_some()) && kind != SourceKind::Composio
+        {
+            return reject("toolkit/connection_id");
+        }
+        if (self.path.is_some() || self.glob.is_some()) && kind != SourceKind::Folder {
+            return reject("path/glob");
+        }
+        if (self.branch.is_some()
+            || self.paths.is_some()
+            || self.max_commits.is_some()
+            || self.max_issues.is_some()
+            || self.max_prs.is_some())
+            && kind != SourceKind::GithubRepo
+        {
+            return reject("github repository fields");
+        }
+        if self.query.is_some() && kind != SourceKind::TwitterQuery {
+            return reject("query");
+        }
+        if self.selector.is_some() && kind != SourceKind::WebPage {
+            return reject("selector");
+        }
+        if self.url.is_some()
+            && kind != SourceKind::GithubRepo
+            && kind != SourceKind::RssFeed
+            && kind != SourceKind::WebPage
+        {
+            return reject("url");
+        }
+        Ok(())
+    }
+
+    /// Apply each present field of this patch onto `entry` in place.
+    pub(crate) fn apply_to(self, entry: &mut MemorySourceEntry) {
+        if let Some(value) = self.label {
+            entry.label = value;
+        }
+        if let Some(value) = self.enabled {
+            entry.enabled = value;
+        }
+        if let Some(value) = self.toolkit {
+            entry.toolkit = value;
+        }
+        if let Some(value) = self.connection_id {
+            entry.connection_id = value;
+        }
+        if let Some(value) = self.path {
+            entry.path = value;
+        }
+        if let Some(value) = self.glob {
+            entry.glob = value;
+        }
+        if let Some(value) = self.url {
+            entry.url = value;
+        }
+        if let Some(value) = self.branch {
+            entry.branch = value;
+        }
+        if let Some(value) = self.paths {
+            entry.paths = value;
+        }
+        if let Some(value) = self.query {
+            entry.query = value;
+        }
+        if let Some(value) = self.since_days {
+            entry.since_days = value;
+        }
+        if let Some(value) = self.max_items {
+            entry.max_items = value;
+        }
+        if let Some(value) = self.selector {
+            entry.selector = value;
+        }
+        if let Some(value) = self.max_tokens_per_sync {
+            entry.max_tokens_per_sync = value;
+        }
+        if let Some(value) = self.max_cost_per_sync_usd {
+            entry.max_cost_per_sync_usd = value;
+        }
+        if let Some(value) = self.sync_depth_days {
+            entry.sync_depth_days = value;
+        }
+        if let Some(value) = self.max_commits {
+            entry.max_commits = value;
+        }
+        if let Some(value) = self.max_issues {
+            entry.max_issues = value;
+        }
+        if let Some(value) = self.max_prs {
+            entry.max_prs = value;
+        }
+    }
+}
+
 /// One item listed from a source reader.
 ///
 /// `id` is reader-scoped (e.g. a folder-relative path or a thread id) and is

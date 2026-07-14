@@ -3,12 +3,11 @@
 //! embedding / delete / migration accessors against a tempdir-backed SQLite
 //! store.
 //!
-//! Because the connection cache is a process-level singleton, tests that
-//! exercise cache behaviour call `clear_connection_cache()` at the start, or
-//! use unique tempdirs that cannot collide with other tests.
+//! Tests use unique tempdirs so parallel cache checks cannot collide. Tests
+//! that must force a reopen reset only their own workspace path.
 
 use super::connection::{
-    clear_connection_cache, get_or_init_connection, invalidate_connection,
+    clear_connection_cache_for, get_or_init_connection, invalidate_connection,
     schema_apply_count_for_path_for_tests, with_connection, CB_THRESHOLD,
 };
 use super::embeddings::{active_embedding_dims, embedding_to_blob};
@@ -227,7 +226,6 @@ fn legacy_embeddings_migrate_to_sidecar_once() {
 
 #[test]
 fn connection_cache_returns_same_arc_for_same_workspace() {
-    clear_connection_cache();
     let (_tmp, cfg) = test_config();
 
     let arc1 = get_or_init_connection(&cfg).expect("first get_or_init");
@@ -240,7 +238,6 @@ fn connection_cache_returns_same_arc_for_same_workspace() {
 
 #[test]
 fn connection_cache_uses_separate_connections_for_different_workspaces() {
-    clear_connection_cache();
     let (_tmp1, cfg1) = test_config();
     let (_tmp2, cfg2) = test_config();
 
@@ -259,7 +256,6 @@ fn connection_cache_uses_separate_connections_for_different_workspaces() {
 
 #[test]
 fn circuit_breaker_trips_after_threshold() {
-    clear_connection_cache();
     let tmp = TempDir::new().expect("tempdir");
 
     // Create a regular file where the memory_tree *directory* would be.
@@ -344,7 +340,7 @@ fn existing_wal_db_migrates_to_truncate() {
             .expect("seed");
     }
 
-    clear_connection_cache();
+    clear_connection_cache_for(&cfg);
     with_connection(&cfg, |conn| {
         let mode: String = conn.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
         assert!(

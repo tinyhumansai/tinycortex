@@ -65,6 +65,38 @@ async fn persists_inbound_and_processed_turns_into_workspace_thread() {
 }
 
 #[tokio::test]
+async fn later_channel_turn_preserves_user_assigned_labels() {
+    let temp = TempDir::new().expect("tempdir");
+    let subscriber = ConversationPersistenceSubscriber::new(temp.path().to_path_buf());
+    let event = |message_id: &str| ChannelEvent::Received {
+        channel: "slack".into(),
+        message_id: message_id.into(),
+        sender: "alice".into(),
+        reply_target: "general".into(),
+        content: "hello".into(),
+        thread_ts: None,
+        workspace_dir: temp.path().to_path_buf(),
+    };
+
+    subscriber.handle(&event("m1")).await;
+    super::super::update_thread_labels(
+        temp.path().to_path_buf(),
+        "channel:slack_alice_general",
+        vec!["tasks".into()],
+        "2026-07-14T00:00:00Z",
+    )
+    .unwrap();
+    subscriber.handle(&event("m2")).await;
+
+    let thread = super::super::list_threads(temp.path().to_path_buf())
+        .unwrap()
+        .into_iter()
+        .find(|thread| thread.id == "channel:slack_alice_general")
+        .unwrap();
+    assert_eq!(thread.labels, vec!["tasks"]);
+}
+
+#[tokio::test]
 async fn telegram_thread_ts_does_not_split_persisted_thread() {
     let temp = TempDir::new().expect("tempdir");
     let subscriber = ConversationPersistenceSubscriber::new(temp.path().to_path_buf());
@@ -127,6 +159,13 @@ fn persisted_channel_thread_id_ignores_blank_thread_ts() {
     let without = persisted_channel_thread_id("slack", "alice", "general", None);
     let with_blank = persisted_channel_thread_id("slack", "alice", "general", Some("   "));
     assert_eq!(without, with_blank);
+}
+
+#[test]
+fn persisted_channel_thread_ids_do_not_alias_underscore_components() {
+    let left = persisted_channel_thread_id("slack", "a_b", "c", None);
+    let right = persisted_channel_thread_id("slack", "a", "b_c", None);
+    assert_ne!(left, right);
 }
 
 #[test]

@@ -279,13 +279,6 @@ struct ChannelTurnDescriptor<'a> {
 /// short-lived channel threads, O(n) per turn (O(n²) over a thread's
 /// lifetime) for long-running ones.
 ///
-/// NOTE (audit TR-8): every call passes `labels: Some(vec!["general"])` to
-/// `ensure_thread`, and the thread-log fold (`ThreadLogEntry::Upsert`
-/// handling in `store_index::thread_index_unlocked`) lets a `Some` label list
-/// on a later `Upsert` override the thread's current labels. So a user-set
-/// label (e.g. via `update_thread_labels`) is silently reset to `["general"]`
-/// the next time a message lands on this thread — this call site should pass
-/// `labels: None` once thread creation and per-turn touch are distinguished.
 fn persist_channel_turn(
     workspace_dir: &Path,
     descriptor: ChannelTurnDescriptor<'_>,
@@ -311,7 +304,9 @@ fn persist_channel_turn(
             title,
             created_at: created_at.clone(),
             parent_thread_id: None,
-            labels: Some(vec!["general".to_string()]),
+            // The store infers `general` when creating a channel thread. On
+            // later touches, `None` preserves any labels the user assigned.
+            labels: None,
             personality_id: None,
         },
     )?;
@@ -354,21 +349,30 @@ fn persist_channel_turn(
 /// channels append a `_thread:<ts>` suffix when a non-blank `thread_ts` is
 /// present) and prefixes it with `channel:`.
 ///
-/// NOTE (audit TR-15): `base_key` is a plain `_`-joined concatenation of
-/// `channel`, `sender`, and `reply_target`, none of which are guaranteed
-/// underscore-free. Two distinct triples can collide onto the same thread id
-/// — e.g. `("slack", "a_b", "c")` and `("slack", "a", "b_c")` both yield
-/// `slack_a_b_c`. A length-prefixed or hex-encoded join (as
-/// `ConversationStore::thread_messages_path`'s `hex_encode` already does for
-/// filenames) would be collision-free; this preserves the existing wire
-/// format for already-persisted thread ids, so it is not changed here.
 fn persisted_channel_thread_id(
     channel: &str,
     sender: &str,
     reply_target: &str,
     thread_ts: Option<&str>,
 ) -> String {
-    let base_key = format!("{channel}_{sender}_{reply_target}");
+    let mut base_key = format!("{channel}_{sender}_{reply_target}");
+    if [channel, sender, reply_target]
+        .iter()
+        .any(|component| component.contains('_'))
+    {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        for component in [channel, sender, reply_target] {
+            hasher.update(component.len().to_be_bytes());
+            hasher.update(component.as_bytes());
+        }
+        let suffix = hasher.finalize()[..6]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        base_key.push_str("__");
+        base_key.push_str(&suffix);
+    }
     let key = if channel == "telegram" {
         base_key
     } else {

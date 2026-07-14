@@ -111,19 +111,10 @@ impl ConversationStore {
 
     /// Append a message to the thread's JSONL file. Errors if the thread is missing.
     ///
-    /// Persists via two separate fsync'd appends — the message row itself,
-    /// then a `MessageAppended` stat entry in `threads.jsonl` — plus, if the
-    /// in-memory search index is already warm for this workspace, an
-    /// in-process index update. None of the three are transactional with
-    /// each other.
-    ///
-    /// NOTE (audit TR-17): a crash between the message append and the
-    /// `MessageAppended` append leaves the message durably persisted but the
-    /// thread's cached `message_count`/`last_message_at` permanently one
-    /// short — `list_threads_unlocked`'s legacy backfill only re-derives
-    /// those stats from the raw message file when there is *no* prior
-    /// `MessageAppended`/`Stats` history at all (`message_count.is_none()`),
-    /// so a thread that already has stat history does not get corrected.
+    /// Persists via two separate fsync'd appends — the authoritative message
+    /// row, then a compact `MessageAppended` stat entry. Thread reads reconcile
+    /// that stat trail against the message file, repairing a crash between the
+    /// two appends.
     pub fn append_message(
         &self,
         thread_id: &str,

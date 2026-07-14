@@ -5,7 +5,7 @@
 //!
 //! The exhaustive multilingual national-ID PII module (`safety::pii`, ~1k lines
 //! of checksum logic) is ported from OpenHuman and runs as part of
-//! [`sanitize_text`]. The write-rejection boundary stays stricter than content
+//! `sanitize_text`. The write-rejection boundary stays stricter than content
 //! scrubbing: formatted national IDs are rejected, while phone/email-like text is
 //! scrubbed from content without rejecting every write that mentions them.
 
@@ -15,7 +15,7 @@ use regex::Regex;
 use serde_json::Value;
 
 /// Exhaustive checksum-gated multilingual national-ID PII module (ported from
-/// OpenHuman). Content scrubbing runs from [`sanitize_text`]; the boundary
+/// OpenHuman). Content scrubbing runs from `sanitize_text`; the boundary
 /// check is re-exported as [`has_likely_pii`].
 pub mod pii;
 
@@ -29,18 +29,18 @@ const MAX_JSON_SANITIZE_DEPTH: usize = 128;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SanitizationReport {
     /// Count of secret/token pattern matches rewritten in string text by the
-    /// [`REDACTION_PATTERNS`] pass.
+    /// text-pattern redaction pass.
     pub text_redactions: usize,
     /// Count of JSON object entries dropped wholesale because their key was
-    /// classified as sensitive by [`is_sensitive_key`].
+    /// classified as sensitive by the key classifier.
     pub key_redactions: usize,
-    /// Count of full private-key blocks ([`BLOCK_PATTERNS`]) replaced; these are
+    /// Count of full private-key blocks replaced; these are
     /// the most severe hits since the entire block is removed.
     pub blocked_secret_hits: usize,
     /// Count of nodes collapsed because JSON nesting reached
-    /// [`MAX_JSON_SANITIZE_DEPTH`]; the subtree is replaced rather than walked.
+    /// the JSON traversal depth cap; the subtree is replaced rather than walked.
     pub depth_redactions: usize,
-    /// Count of personal-identifier matches ([`PII_PATTERNS`]) replaced by the
+    /// Count of personal-identifier matches replaced by the
     /// lightweight PII screen.
     pub pii_redactions: usize,
 }
@@ -219,7 +219,7 @@ pub fn sanitize_text(value: &str) -> Sanitized<String> {
 }
 
 /// Recursively scrub a JSON value: sensitive keys are replaced wholesale and
-/// every string value runs through [`sanitize_text`].
+/// every string value runs through `sanitize_text`.
 pub fn sanitize_json(value: &Value) -> Sanitized<Value> {
     sanitize_json_inner(value, 0)
 }

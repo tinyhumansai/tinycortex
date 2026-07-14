@@ -37,8 +37,13 @@ pub fn write_if_new(abs_path: &Path, bytes: &[u8]) -> anyhow::Result<bool> {
             .map_err(|e| anyhow::anyhow!("fsync tempfile {:?}: {e}", tmp_path))?;
     }
 
-    match std::fs::rename(&tmp_path, abs_path) {
+    // Publish without replacement. A sibling hard link is atomic and fails
+    // with AlreadyExists when another writer won the same destination; plain
+    // `rename` cannot provide this contract because it replaces the target on
+    // Unix.
+    match std::fs::hard_link(&tmp_path, abs_path) {
         Ok(()) => {
+            let _ = std::fs::remove_file(&tmp_path);
             // fsync the parent directory so the rename is durable across a crash.
             #[cfg(unix)]
             if let Some(parent) = abs_path.parent() {
@@ -55,7 +60,7 @@ pub fn write_if_new(abs_path: &Path, bytes: &[u8]) -> anyhow::Result<bool> {
                 Ok(false)
             } else {
                 Err(anyhow::anyhow!(
-                    "rename {:?} -> {:?}: {e}",
+                    "publish {:?} -> {:?}: {e}",
                     tmp_path,
                     abs_path
                 ))
@@ -173,20 +178,9 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
-/// Tiny deterministic-ish hex string for temp file names.
+/// Collision-resistant random suffix for sibling temp files.
 fn uuid_v4_hex() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    format!(
-        "{:08x}{:016x}",
-        t,
-        n.wrapping_mul(0x9e37_79b9_7f4a_7c15).wrapping_add(t as u64)
-    )
+    uuid::Uuid::new_v4().simple().to_string()
 }
 
 #[cfg(test)]

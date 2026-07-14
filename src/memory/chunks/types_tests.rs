@@ -1,6 +1,7 @@
 //! Unit tests for the chunk model (`super`).
 
 use super::*;
+use chrono::TimeZone;
 
 #[test]
 fn chunk_id_is_deterministic() {
@@ -128,4 +129,80 @@ fn approx_token_count_scales_linearly() {
     assert_eq!(approx_token_count("abcd"), 1); // 4→1
     assert_eq!(approx_token_count("abcde"), 2); // 5→2
     assert_eq!(approx_token_count(&"x".repeat(400)), 100);
+}
+
+#[test]
+fn source_kind_parse_rejects_unknown_wire_values() {
+    assert_eq!(
+        SourceKind::parse("video").unwrap_err(),
+        "unknown source kind: video"
+    );
+}
+
+#[test]
+fn metadata_constructor_and_source_ref_fill_documented_defaults() {
+    let timestamp = Utc.timestamp_millis_opt(1_700_000_000_123).unwrap();
+    let mut metadata = Metadata::point_in_time(SourceKind::Document, "doc-1", "alice", timestamp);
+    metadata.source_ref = Some(SourceRef::new("notion://doc-1"));
+
+    assert_eq!(metadata.source_id, "doc-1");
+    assert_eq!(metadata.owner, "alice");
+    assert_eq!(metadata.time_range, (timestamp, timestamp));
+    assert!(metadata.tags.is_empty());
+    assert_eq!(metadata.source_ref.unwrap().value, "notion://doc-1");
+}
+
+#[test]
+fn chunk_json_round_trips_millisecond_time_range_and_partial_default() {
+    let timestamp = Utc.timestamp_millis_opt(1_700_000_000_123).unwrap();
+    let chunk = Chunk {
+        id: "chunk".into(),
+        content: "body".into(),
+        metadata: Metadata::point_in_time(SourceKind::Chat, "channel", "alice", timestamp),
+        token_count: 1,
+        seq_in_source: 0,
+        created_at: timestamp,
+        partial_message: true,
+    };
+    let encoded = serde_json::to_value(&chunk).unwrap();
+    assert_eq!(
+        encoded["metadata"]["time_range"]["start_ms"],
+        timestamp.timestamp_millis()
+    );
+    assert_eq!(serde_json::from_value::<Chunk>(encoded).unwrap(), chunk);
+
+    let mut legacy = serde_json::to_value(&chunk).unwrap();
+    legacy.as_object_mut().unwrap().remove("partial_message");
+    assert!(
+        !serde_json::from_value::<Chunk>(legacy)
+            .unwrap()
+            .partial_message
+    );
+}
+
+#[test]
+fn chunk_json_rejects_out_of_range_time_range_endpoints() {
+    let timestamp = Utc.timestamp_millis_opt(1_700_000_000_123).unwrap();
+    let chunk = Chunk {
+        id: "chunk".into(),
+        content: "body".into(),
+        metadata: Metadata::point_in_time(SourceKind::Chat, "channel", "alice", timestamp),
+        token_count: 1,
+        seq_in_source: 0,
+        created_at: timestamp,
+        partial_message: false,
+    };
+    let mut encoded = serde_json::to_value(chunk).unwrap();
+    encoded["metadata"]["time_range"]["start_ms"] = serde_json::json!(i64::MAX);
+    assert!(serde_json::from_value::<Chunk>(encoded.clone())
+        .unwrap_err()
+        .to_string()
+        .contains("invalid start_ms"));
+
+    encoded["metadata"]["time_range"]["start_ms"] = serde_json::json!(0);
+    encoded["metadata"]["time_range"]["end_ms"] = serde_json::json!(i64::MAX);
+    assert!(serde_json::from_value::<Chunk>(encoded)
+        .unwrap_err()
+        .to_string()
+        .contains("invalid end_ms"));
 }

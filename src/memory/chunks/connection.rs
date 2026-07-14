@@ -5,22 +5,26 @@
 //! `ConnectionCache` keyed by DB path: each entry holds one
 //! `parking_lot::Mutex<Connection>` that is initialised once (schema +
 //! migrations) and reused for all subsequent calls. A per-entry
-//! [`CircuitBreaker`] stops retrying after [`CB_THRESHOLD`] consecutive init
-//! failures for [`CB_COOLDOWN`] so a broken install does not busy-loop.
+//! [`CircuitBreaker`] stops retrying after the configured failure threshold
+//! for a cooldown period so a broken install does not busy-loop.
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex as PMutex;
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 #[cfg(test)]
 use std::sync::Mutex;
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+
+use super::connection_breaker::CircuitBreaker;
+#[cfg(test)]
+pub(crate) use super::connection_breaker::CB_THRESHOLD;
 
 use super::migrations::{migrate_legacy_embeddings_to_sidecar, purge_global_topic_trees};
-use super::recovery::{is_io_open_error, try_cleanup_stale_files};
+use super::recovery::{
+    is_corrupt_error, is_io_open_error, quarantine_corrupt_files, try_cleanup_stale_files,
+};
 use super::schema::SCHEMA;
 use super::{db_path_for, SQLITE_BUSY_TIMEOUT};
 use crate::memory::config::MemoryConfig;
@@ -60,72 +64,6 @@ pub(crate) fn schema_apply_count_for_path_for_tests(path: &Path) -> usize {
         .unwrap_or(0)
 }
 
-// ── Circuit breaker ──────────────────────────────────────────────────────────
-
-/// How many consecutive init failures before the circuit breaker trips.
-pub(crate) const CB_THRESHOLD: u32 = 3;
-/// How long the circuit breaker holds the DB closed after tripping.
-pub(crate) const CB_COOLDOWN: Duration = Duration::from_secs(30);
-
-/// Per-path circuit breaker: after [`CB_THRESHOLD`] consecutive init failures
-/// the breaker trips and `get_or_init_connection` returns an error immediately
-/// until [`CB_COOLDOWN`] elapses. On the first success it resets to zero.
-struct CircuitBreaker {
-    /// Count of consecutive init failures since the last success. Reset to 0
-    /// on any success.
-    consecutive_failures: AtomicU32,
-    /// Whether the breaker is currently open (rejecting new attempts).
-    tripped: AtomicBool,
-    /// Timestamp of the most recent trip/re-trip, used by [`Self::is_open`] to
-    /// compute whether [`CB_COOLDOWN`] has elapsed. `None` when never tripped
-    /// or after a reset.
-    last_trip: PMutex<Option<Instant>>,
-}
-
-impl CircuitBreaker {
-    fn new() -> Self {
-        Self {
-            consecutive_failures: AtomicU32::new(0),
-            tripped: AtomicBool::new(false),
-            last_trip: PMutex::new(None),
-        }
-    }
-
-    /// Records a successful init. Returns `true` if this call cleared a
-    /// previously-tripped breaker (a transition back to healthy).
-    fn record_success(&self) -> bool {
-        self.consecutive_failures.store(0, Ordering::Relaxed);
-        *self.last_trip.lock() = None;
-        self.tripped.swap(false, Ordering::Relaxed)
-    }
-
-    /// Records one more failure. Returns `true` if this call just tripped the
-    /// breaker (i.e. the threshold was crossed right now).
-    fn record_failure(&self) -> bool {
-        let prev = self.consecutive_failures.fetch_add(1, Ordering::Relaxed);
-        let count = prev + 1;
-        if count >= CB_THRESHOLD && !self.tripped.swap(true, Ordering::Relaxed) {
-            *self.last_trip.lock() = Some(Instant::now());
-            return true;
-        }
-        // Re-arm the cooldown on each subsequent failure while already tripped.
-        if self.tripped.load(Ordering::Relaxed) {
-            *self.last_trip.lock() = Some(Instant::now());
-        }
-        false
-    }
-
-    /// Returns `true` when the breaker is open AND the cooldown has not yet
-    /// elapsed. Returns `false` (allowing a retry) once the cooldown passes.
-    fn is_open(&self) -> bool {
-        if !self.tripped.load(Ordering::Relaxed) {
-            return false;
-        }
-        let guard = self.last_trip.lock();
-        matches!(*guard, Some(t) if t.elapsed() < CB_COOLDOWN)
-    }
-}
-
 // ── Connection cache ─────────────────────────────────────────────────────────
 
 /// Process-global, per-DB-path connection state.
@@ -135,7 +73,7 @@ impl CircuitBreaker {
 /// circuit breaker tracking recent init failures, and a per-path init lock
 /// used to serialise cold-start initialisation across concurrent callers.
 /// Entries are never evicted except by [`invalidate_connection`],
-/// [`drop_cached_connection`], or [`clear_connection_cache`] (test-only) — one
+/// [`drop_cached_connection`], or test-only path-local reset — one
 /// entry accumulates per distinct workspace path for the life of the process.
 struct ConnectionCache {
     /// One live, already-initialised `Connection` per DB path, wrapped so
@@ -213,13 +151,10 @@ fn apply_schema(conn: &Connection) -> Result<()> {
     let journal_mode: String = conn
         .query_row("PRAGMA journal_mode=TRUNCATE", [], |row| row.get(0))
         .context("Failed to set chunk DB journal_mode=TRUNCATE")?;
-    // NOTE: SQLite can refuse a journal-mode change (e.g. an open transaction
-    // elsewhere, or WAL mode held by another connection to the same file) by
-    // simply returning the *previous* mode instead of erroring. This check is
-    // currently a no-op — a refusal is silently accepted here, and the
-    // synchronous=FULL crash-safety assumption in `init_db` is only actually
-    // valid when the mode really did become TRUNCATE. See audit finding SC-9.
-    let _ = journal_mode.eq_ignore_ascii_case("truncate");
+    anyhow::ensure!(
+        journal_mode.eq_ignore_ascii_case("truncate"),
+        "SQLite refused journal_mode=TRUNCATE (active mode: {journal_mode})"
+    );
     conn.execute_batch(SCHEMA)
         .context("Failed to initialize chunk DB schema")?;
     // Additive, idempotent migrations.
@@ -300,8 +235,8 @@ pub(super) fn add_column_if_missing(
 /// per-path circuit breaker is open (see [`CircuitBreaker`]). Otherwise
 /// returns `Err` if opening the SQLite file or running [`init_db`] fails
 /// (after the single stale-file-cleanup retry) — each failure is recorded
-/// against the breaker, and three consecutive failures trip it for
-/// [`CB_COOLDOWN`].
+/// against the breaker, and three consecutive failures trip it for the
+/// configured cooldown.
 pub(crate) fn get_or_init_connection(config: &MemoryConfig) -> Result<Arc<PMutex<Connection>>> {
     let db_path = db_path_for(config);
 
@@ -346,14 +281,23 @@ pub(crate) fn get_or_init_connection(config: &MemoryConfig) -> Result<Arc<PMutex
 
     // Attempt to open + init. On certain I/O errors we clean up stale WAL/SHM
     // side-files and retry once.
-    let conn = open_and_init(&db_path, config).or_else(|first_err| {
-        if is_io_open_error(&first_err) {
-            try_cleanup_stale_files(&db_path);
-            open_and_init(&db_path, config)
-        } else {
-            Err(first_err)
-        }
-    });
+    let conn = open_and_init(&db_path, config)
+        .or_else(|first_err| {
+            if is_io_open_error(&first_err) {
+                try_cleanup_stale_files(&db_path);
+                open_and_init(&db_path, config)
+            } else {
+                Err(first_err)
+            }
+        })
+        .or_else(|error| {
+            if is_corrupt_error(&error) {
+                quarantine_corrupt_files(config)?;
+                open_and_init(&db_path, config)
+            } else {
+                Err(error)
+            }
+        });
 
     match conn {
         Ok(conn) => {
@@ -369,11 +313,12 @@ pub(crate) fn get_or_init_connection(config: &MemoryConfig) -> Result<Arc<PMutex
                     .or_insert_with(|| Arc::new(CircuitBreaker::new()))
                     .clone()
             };
-            // NOTE: `record_success` returns whether this call cleared a
-            // previously-tripped breaker (recovery signal); currently
-            // discarded, so a breaker recovering from an open state is not
-            // logged anywhere. See audit finding SC-9.
-            breaker.record_success();
+            if breaker.record_success() {
+                log::info!(
+                    "[memory_tree:sqlite] connection circuit breaker recovered path={}",
+                    db_path.display()
+                );
+            }
             Ok(arc_conn)
         }
         Err(err) => {
@@ -448,15 +393,48 @@ pub(super) fn drop_cached_connection(config: &MemoryConfig) {
     conn_cache().breakers.lock().remove(&db_path);
 }
 
-/// Clear cached connections and init locks for test isolation.
+/// Quarantine and rebuild a corrupt database while holding the same per-path
+/// initialization lock used by cold opens.
+pub(super) fn recover_corrupt_connection(config: &MemoryConfig) -> Result<bool> {
+    let db_path = db_path_for(config);
+    let init_lock = {
+        let mut locks = conn_cache().init_locks.lock();
+        locks
+            .entry(db_path.clone())
+            .or_insert_with(|| Arc::new(PMutex::new(())))
+            .clone()
+    };
+    let _init_guard = init_lock.lock();
+
+    drop_cached_connection(config);
+    let quarantined = quarantine_corrupt_files(config)?;
+    let conn = open_and_init(&db_path, config)
+        .context("failed to rebuild chunk DB schema after quarantining corrupt DB")?;
+    let connection = Arc::new(PMutex::new(conn));
+    conn_cache()
+        .connections
+        .lock()
+        .insert(db_path.clone(), connection);
+    let breaker = {
+        let mut breakers = conn_cache().breakers.lock();
+        breakers
+            .entry(db_path)
+            .or_insert_with(|| Arc::new(CircuitBreaker::new()))
+            .clone()
+    };
+    breaker.record_success();
+    Ok(quarantined)
+}
+
+/// Remove only one workspace from the test connection cache.
 ///
-/// Breakers are deliberately retained: tests use unique temporary workspace
-/// paths, and clearing the process-wide breaker map races with parallel tests
-/// that are proving threshold behavior for another path.
+/// Keeping cache-reset scope local prevents parallel tests with unrelated
+/// tempdirs from invalidating one another's live `Arc`s.
 #[cfg(test)]
-pub(crate) fn clear_connection_cache() {
-    conn_cache().connections.lock().clear();
-    conn_cache().init_locks.lock().clear();
+pub(crate) fn clear_connection_cache_for(config: &MemoryConfig) {
+    let path = db_path_for(config);
+    conn_cache().connections.lock().remove(&path);
+    conn_cache().init_locks.lock().remove(&path);
 }
 
 /// Open the chunk SQLite DB and run a closure against it.

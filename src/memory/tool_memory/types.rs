@@ -150,12 +150,8 @@ impl ToolMemoryRule {
 /// reason about the namespace without ambiguity. Always build the
 /// namespace through this helper — never hard-code the `tool-` format.
 ///
-/// NOTE: only the namespace is normalised here. [`ToolMemoryRule::tool_name`]
-/// itself is stored verbatim by [`ToolMemoryStore::put_rule`], so
-/// `tool_name = "Email"` and `tool_name = "email"` land in the same
-/// namespace but are still distinct strings for grouping/display purposes
-/// downstream (list output, prompt-section headings). Normalize the input
-/// before constructing a [`ToolMemoryRule`] if case consistency matters.
+/// [`ToolMemoryStore::put_rule`] applies the same normalization to the stored
+/// rule so namespace and display/grouping identity cannot diverge.
 ///
 /// [`ToolMemoryStore::put_rule`]: super::store::ToolMemoryStore::put_rule
 pub fn tool_memory_namespace(tool_name: &str) -> String {

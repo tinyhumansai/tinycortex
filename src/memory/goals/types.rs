@@ -9,7 +9,7 @@
 //! This module is pure: it owns parse/render and the in-memory mutation logic
 //! (`add` / `edit` / `delete`) plus their validation rules. The cap-enforcing
 //! persistence layer lives in [`super::store`]; the reflection apply/dedupe
-//! logic lives in [`super::reflect`].
+//! logic lives in [`super::reflect()`].
 
 use serde::{Deserialize, Serialize};
 

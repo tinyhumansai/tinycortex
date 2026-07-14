@@ -7,12 +7,12 @@
 //!
 //! ## Module layout
 //!
-//! - [`paths`]   — path generation + `slugify_source_id` + summary path builders
-//! - [`compose`] — YAML front-matter + body composition; tag rewriting
-//! - [`atomic`]  — tempfile + fsync + rename writes; SHA-256; `stage_summary`
-//! - [`read`]    — read + SHA-256 verification + `split_front_matter`
-//! - [`tags`]    — `update_chunk_tags` + Obsidian tag slugifiers
-//! - [`raw`]     — verbatim per-item raw archive (`raw/<source>/<kind>/…`)
+//! - `paths` — path generation, slugification, and summary path builders
+//! - `compose` — YAML front matter, body composition, and tag rewriting
+//! - `atomic` — tempfile, fsync, rename, SHA-256, and summary staging
+//! - `read` — reads, SHA-256 verification, and front-matter splitting
+//! - `tags` — chunk-tag updates and Obsidian tag slugifiers
+//! - `raw` — verbatim per-item raw archive (`raw/<source>/<kind>/…`)
 //!
 //! ## Deferred
 //!

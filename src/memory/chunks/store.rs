@@ -16,9 +16,6 @@ use super::connection::with_connection;
 use super::types::{Chunk, Metadata, SourceKind, SourceRef, StagedChunk};
 use crate::memory::config::MemoryConfig;
 
-pub(super) const DEFAULT_LIST_LIMIT: usize = 100;
-pub(super) const MAX_LIST_LIMIT: usize = 10_000;
-
 /// Chunk lifecycle: freshly persisted, awaiting the async extract job.
 pub const CHUNK_STATUS_PENDING_EXTRACTION: &str = "pending_extraction";
 /// Chunk lifecycle: extract ran and the chunk passed admission.
@@ -41,16 +38,9 @@ pub const CHUNK_STATUS_DROPPED: &str = "dropped";
 ///
 /// Returns `Ok(0)` immediately (no DB access) for an empty `chunks` slice.
 ///
-/// # Gotcha (audit finding SC-17)
-/// This `ON CONFLICT` clause only overwrites the plain-content columns; it
-/// never touches `content_path`, `content_sha256`, or `lifecycle_status`. If
-/// a chunk id was previously staged via `upsert_staged_chunks_tx` (so it has
-/// a `content_path`) or was marked `dropped` by the admission gate, calling
-/// this function again for the same id leaves those columns exactly as they
-/// were — it does not clear a stale `content_path` pointing at now-orphaned
-/// content, and it cannot resurrect a `dropped` chunk back to an admitted
-/// state. Use the staged path / [`super::store_sources::set_chunk_lifecycle_status`]
-/// explicitly when either of those needs to change.
+/// Replacing a previously staged row clears its file pointer and restores the
+/// lifecycle to `admitted`, so the row's storage representation and lifecycle
+/// match this plain-content write.
 ///
 /// # Errors
 /// Returns `Err` if beginning the transaction, preparing/executing
@@ -98,7 +88,10 @@ const UPSERT_SQL: &str = "INSERT INTO mem_tree_chunks (
         content = excluded.content,
         token_count = excluded.token_count,
         seq_in_source = excluded.seq_in_source,
-        created_at_ms = excluded.created_at_ms";
+        created_at_ms = excluded.created_at_ms,
+        content_path = NULL,
+        content_sha256 = NULL,
+        lifecycle_status = 'admitted'";
 
 /// Bind and execute `UPSERT_SQL` once per chunk against an already-prepared
 /// statement. Split out from [`upsert_chunks`] so the statement is prepared
@@ -257,7 +250,7 @@ pub fn list_source_ids_with_prefix(
     })
 }
 
-const SELECT_COLUMNS: &str = "id, source_kind, source_id, path_scope, source_ref, owner,
+pub(super) const SELECT_COLUMNS: &str = "id, source_kind, source_id, path_scope, source_ref, owner,
     timestamp_ms, time_range_start_ms, time_range_end_ms,
     tags_json, content, token_count, seq_in_source, created_at_ms";
 
@@ -326,109 +319,6 @@ pub fn get_chunks_batch(
     })
 }
 
-/// Query parameters for [`list_chunks`]. All fields are optional filters —
-/// callers pass `ListChunksQuery::default()` to get recent-across-everything.
-#[derive(Debug, Default, Clone)]
-pub struct ListChunksQuery {
-    /// Restrict to one source kind.
-    pub source_kind: Option<SourceKind>,
-    /// Restrict to one logical source id.
-    pub source_id: Option<String>,
-    /// Restrict to one owner.
-    pub owner: Option<String>,
-    /// Inclusive lower bound on `timestamp` (milliseconds since epoch).
-    pub since_ms: Option<i64>,
-    /// Inclusive upper bound on `timestamp` (milliseconds since epoch).
-    pub until_ms: Option<i64>,
-    /// Max rows to return (default 100 when `None`).
-    pub limit: Option<usize>,
-    /// Per-profile memory-source allowlist. When `Some`, memory-source chunks
-    /// whose source identifier is not in the set are dropped *before* the row
-    /// limit is applied. Non-source chunks always pass.
-    pub source_scope: Option<std::collections::HashSet<String>>,
-    /// When `true`, rows the admission gate rejected (`lifecycle_status =
-    /// 'dropped'`) are excluded.
-    pub exclude_dropped: bool,
-}
-
-/// List chunks matching the provided filters, ordered by `timestamp_ms` DESC,
-/// then `seq_in_source` ASC as a tiebreaker.
-///
-/// # Gotcha (audit finding SC-15)
-/// When `query.source_scope` is `Some`, the allowlist filter has to run in
-/// Rust *after* the SQL fetch (SQLite doesn't know about the memory-source
-/// tag semantics), so this fetches up to `MAX_LIST_LIMIT` (10,000)
-/// candidate rows from SQL — ordered newest-first — before filtering and
-/// truncating to `query.limit` in Rust. If a workspace has more than 10,000
-/// chunks newer than the allowed ones, valid, in-scope rows past that SQL
-/// cutoff are silently dropped and never reach the Rust-side filter, even
-/// though they would have passed it. This only affects scoped queries; an
-/// unscoped `list_chunks` call applies `query.limit` directly in SQL and has
-/// no such gap.
-///
-/// # Errors
-/// Returns `Err` if the query fails to prepare/execute or any row fails to
-/// decode (see `row_to_chunk`).
-pub fn list_chunks(config: &MemoryConfig, query: &ListChunksQuery) -> Result<Vec<Chunk>> {
-    with_connection(config, |conn| {
-        let mut sql = format!("SELECT {SELECT_COLUMNS} FROM mem_tree_chunks WHERE 1=1");
-        let mut bound: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-
-        if let Some(kind) = query.source_kind {
-            sql.push_str(" AND source_kind = ?");
-            bound.push(Box::new(kind.as_str().to_string()));
-        }
-        if let Some(ref source_id) = query.source_id {
-            sql.push_str(" AND source_id = ?");
-            bound.push(Box::new(source_id.clone()));
-        }
-        if let Some(ref owner) = query.owner {
-            sql.push_str(" AND owner = ?");
-            bound.push(Box::new(owner.clone()));
-        }
-        if let Some(since_ms) = query.since_ms {
-            sql.push_str(" AND timestamp_ms >= ?");
-            bound.push(Box::new(since_ms));
-        }
-        if let Some(until_ms) = query.until_ms {
-            sql.push_str(" AND timestamp_ms <= ?");
-            bound.push(Box::new(until_ms));
-        }
-        if query.exclude_dropped {
-            sql.push_str(" AND lifecycle_status != ?");
-            bound.push(Box::new(CHUNK_STATUS_DROPPED.to_string()));
-        }
-        let requested_limit = normalized_limit(query.limit);
-        // When a profile source-scope is active, fetch a wider candidate set and
-        // apply the gate in Rust *before* truncating, so a disallowed-source
-        // prefix can't push permitted rows past the requested limit.
-        let sql_limit = if query.source_scope.is_some() {
-            MAX_LIST_LIMIT as i64
-        } else {
-            requested_limit
-        };
-        sql.push_str(" ORDER BY timestamp_ms DESC, seq_in_source ASC LIMIT ?");
-        bound.push(Box::new(sql_limit));
-
-        let mut stmt = conn.prepare(&sql)?;
-        let param_refs: Vec<&dyn rusqlite::ToSql> = bound
-            .iter()
-            .map(|b| b.as_ref() as &dyn rusqlite::ToSql)
-            .collect();
-        let mut rows = stmt
-            .query_map(param_refs.as_slice(), row_to_chunk)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .context("Failed to collect chunks")?;
-        if let Some(ref allowed) = query.source_scope {
-            rows.retain(|c| {
-                super::chunk_source_allowed_in(allowed, &c.metadata.tags, &c.metadata.source_id)
-            });
-            rows.truncate(requested_limit as usize);
-        }
-        Ok(rows)
-    })
-}
-
 /// Count total chunks in the store (no filters — every row in
 /// `mem_tree_chunks`, regardless of lifecycle status).
 ///
@@ -473,16 +363,6 @@ pub fn extraction_coverage(config: &MemoryConfig) -> Result<f32> {
         )?;
         Ok((covered.max(0) as f32) / (total as f32))
     })
-}
-
-/// Clamp a caller-requested row limit to `[1, MAX_LIST_LIMIT]`, defaulting to
-/// [`DEFAULT_LIST_LIMIT`] when `requested` is `None`. Never returns 0 (a
-/// caller-requested limit of 0 is treated as 1, not "no rows").
-pub(super) fn normalized_limit(requested: Option<usize>) -> i64 {
-    let clamped = requested
-        .unwrap_or(DEFAULT_LIST_LIMIT)
-        .clamp(1, MAX_LIST_LIMIT);
-    i64::try_from(clamped).unwrap_or(MAX_LIST_LIMIT as i64)
 }
 
 /// Decode one `mem_tree_chunks` row (columns in exactly [`SELECT_COLUMNS`]

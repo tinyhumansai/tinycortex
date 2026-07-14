@@ -1,6 +1,6 @@
 //! Unit tests for corrupt-DB recovery (`super`).
 
-use super::super::connection::{clear_connection_cache, with_connection};
+use super::super::connection::{clear_connection_cache_for, with_connection};
 use super::super::db_path_for;
 use super::recover_corrupt_db;
 use crate::memory::config::MemoryConfig;
@@ -17,7 +17,6 @@ fn corrupt_test_config() -> (TempDir, MemoryConfig) {
 /// a fresh, queryable schema so the store resumes.
 #[test]
 fn recover_corrupt_db_quarantines_and_rebuilds() {
-    clear_connection_cache();
     let (_tmp, cfg) = corrupt_test_config();
     let db_path = db_path_for(&cfg);
     std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
@@ -41,13 +40,33 @@ fn recover_corrupt_db_quarantines_and_rebuilds() {
         "exactly one quarantined copy should exist"
     );
 
-    clear_connection_cache();
+    clear_connection_cache_for(&cfg);
     let count: i64 = with_connection(&cfg, |conn| {
         conn.query_row("SELECT COUNT(*) FROM mem_tree_jobs", [], |r| r.get(0))
             .context("count jobs")
     })
     .expect("rebuilt DB must be queryable");
     assert_eq!(count, 0, "rebuilt jobs table starts empty");
+}
+
+#[test]
+fn cold_open_automatically_quarantines_corrupt_database() {
+    let (_tmp, cfg) = corrupt_test_config();
+    let db_path = db_path_for(&cfg);
+    std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    std::fs::write(&db_path, b"not a database").unwrap();
+
+    let count: i64 = with_connection(&cfg, |conn| {
+        conn.query_row("SELECT COUNT(*) FROM mem_tree_jobs", [], |row| row.get(0))
+            .map_err(anyhow::Error::from)
+    })
+    .expect("cold open should recover and initialize schema");
+
+    assert_eq!(count, 0);
+    assert!(std::fs::read_dir(db_path.parent().unwrap())
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|entry| entry.file_name().to_string_lossy().contains(".corrupt-")));
 }
 
 /// A legacy DB still in WAL mode can hold committed-but-uncheckpointed
@@ -109,7 +128,6 @@ fn cleanup_preserves_committed_wal_data() {
 /// preserved and recovery is a no-op returning `Ok(false)`.
 #[test]
 fn recover_corrupt_db_is_noop_on_healthy_db() {
-    clear_connection_cache();
     let (_tmp, cfg) = corrupt_test_config();
     with_connection(&cfg, |conn| {
         conn.query_row("SELECT COUNT(*) FROM mem_tree_jobs", [], |r| {

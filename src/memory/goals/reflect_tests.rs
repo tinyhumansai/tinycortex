@@ -130,3 +130,21 @@ fn reflect_skips_secret_or_pii_goal_proposals() {
     assert_eq!(outcome.skipped, 2);
     assert_eq!(outcome.goals.items[0].text, "ship the memory engine");
 }
+
+#[test]
+fn edit_to_normalized_duplicate_is_skipped() {
+    let mut doc = GoalsDoc::default();
+    let first = doc.add("Ship the engine").unwrap();
+    let second = doc.add("Write documentation").unwrap();
+    let (applied, skipped) = apply_mutations(
+        &mut doc,
+        &[GoalMutation::Edit {
+            id: second,
+            text: "  SHIP   the ENGINE ".into(),
+        }],
+    );
+    assert_eq!((applied, skipped), (0, 1));
+    assert_eq!(doc.items.len(), 2);
+    assert_eq!(doc.items[0].id, first);
+    assert_eq!(doc.items[1].text, "Write documentation");
+}

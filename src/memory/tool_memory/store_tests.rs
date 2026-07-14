@@ -82,6 +82,23 @@ async fn put_rule_preserves_created_at_on_upsert() {
 }
 
 #[tokio::test]
+async fn put_rule_normalizes_tool_name_with_namespace() {
+    let store = fresh_store();
+    let stored = store
+        .record(
+            " Email ",
+            "normalized",
+            ToolMemoryPriority::Critical,
+            ToolMemorySource::Programmatic,
+            vec![],
+        )
+        .await
+        .unwrap();
+    assert_eq!(stored.tool_name, "email");
+    assert_eq!(store.list_rules("email").await.unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn list_rules_sorts_critical_first_then_freshest() {
     let store = fresh_store();
     store
@@ -301,6 +318,28 @@ async fn rules_for_prompt_caps_results() {
         .unwrap();
     let count: usize = rendered.values().map(|v| v.len()).sum();
     assert_eq!(count, TOOL_MEMORY_PROMPT_CAP);
+}
+
+#[tokio::test]
+async fn rules_for_prompt_never_truncates_critical_rules() {
+    let store = fresh_store();
+    for idx in 0..(TOOL_MEMORY_PROMPT_CAP + 5) {
+        store
+            .record(
+                "shell",
+                &format!("critical rule {idx}"),
+                ToolMemoryPriority::Critical,
+                ToolMemorySource::UserExplicit,
+                vec![],
+            )
+            .await
+            .unwrap();
+    }
+    let rendered = store
+        .rules_for_prompt(&["shell".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(rendered["shell"].len(), TOOL_MEMORY_PROMPT_CAP + 5);
 }
 
 #[tokio::test]

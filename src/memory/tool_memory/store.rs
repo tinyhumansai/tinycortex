@@ -16,13 +16,20 @@
 //! particular (un-ported) store.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use serde_json::Value;
 
 use super::types::{tool_memory_namespace, ToolMemoryPriority, ToolMemoryRule, ToolMemorySource};
 use crate::memory::traits::Memory;
 use crate::memory::types::MemoryCategory;
+
+/// Serializes the read-modify-write portion of rule upserts across store
+/// handles. The backend trait does not expose compare-and-swap, so the lock is
+/// the only portable way to preserve `created_at` and prevent lost in-process
+/// updates.
+static RULE_MUTATION_LOCK: LazyLock<futures::lock::Mutex<()>> =
+    LazyLock::new(|| futures::lock::Mutex::new(()));
 
 /// Maximum number of rules surfaced into the system prompt at once.
 ///
@@ -79,11 +86,9 @@ impl ToolMemoryStore {
     /// per-tool heading. Normalize `tool_name` before calling if case
     /// consistency matters to the caller.
     ///
-    /// NOTE: this is a racy read (`fetch_rule`) → write (`Memory::store`)
-    /// with no mutation lock (unlike the process-wide lock the `goals`
-    /// module uses around its own load→mutate→save sequences). Concurrent
-    /// upserts of the same `(tool_name, id)` can interleave and lose an
-    /// update.
+    /// The read (`fetch_rule`) → write (`Memory::store`) transaction is
+    /// serialized across all in-process store handles because the generic
+    /// backend contract does not expose compare-and-swap.
     pub async fn put_rule(&self, mut rule: ToolMemoryRule) -> Result<ToolMemoryRule, String> {
         if rule.tool_name.trim().is_empty() {
             return Err("tool_name is required".to_string());
@@ -94,6 +99,9 @@ impl ToolMemoryStore {
         if rule.id.trim().is_empty() {
             rule.id = ToolMemoryRule::generate_id();
         }
+        rule.tool_name = rule.tool_name.trim().to_lowercase();
+
+        let _guard = RULE_MUTATION_LOCK.lock().await;
 
         let namespace = tool_memory_namespace(&rule.tool_name);
         let key = ToolMemoryRule::storage_key(&rule.id);
@@ -210,7 +218,11 @@ impl ToolMemoryStore {
                 .cmp(&a.priority)
                 .then_with(|| b.updated_at.cmp(&a.updated_at))
         });
-        collected.truncate(TOOL_MEMORY_PROMPT_CAP);
+        let critical_count = collected
+            .iter()
+            .take_while(|rule| rule.priority == ToolMemoryPriority::Critical)
+            .count();
+        collected.truncate(TOOL_MEMORY_PROMPT_CAP.max(critical_count));
 
         let mut out: HashMap<String, Vec<ToolMemoryRule>> = HashMap::new();
         for rule in collected {
