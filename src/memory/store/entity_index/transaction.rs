@@ -11,7 +11,7 @@ use super::types::CanonicalEntity;
 ///
 /// New rows are inserted with `is_user = false` because [`NoSelfIdentity`]
 /// performs no identity classification. On conflict,
-/// [`UPSERT_PRESERVE_USER_SQL`] deliberately preserves the existing `is_user`
+/// `UPSERT_PRESERVE_USER_SQL` deliberately preserves the existing `is_user`
 /// value rather than resetting a prior identity match.
 pub fn index_entities_tx(
     tx: &Transaction<'_>,

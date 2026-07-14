@@ -183,6 +183,8 @@ async fn summariser_folds_via_chat_and_reports_usage() {
         tree_kind: TreeKind::Flavoured,
         target_level: 1,
         token_budget: 200,
+        input_token_budget: 4_096,
+        overhead_reserve_tokens: 256,
         ask: Some("Distill workflow habits."),
     };
     let call = Summariser::summarise_with_usage(&provider, &inputs, &ctx)

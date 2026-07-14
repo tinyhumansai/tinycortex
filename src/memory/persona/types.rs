@@ -10,7 +10,7 @@
 //!
 //! [`PersonaEvidence`] can only be constructed through [`PersonaEvidence::new`],
 //! which runs the raw excerpt through
-//! [`sanitize_text`](crate::memory::store::safety::sanitize_text) *before* the
+//! [`sanitize_text`] *before* the
 //! value is stored on the struct. `sanitize_text` is the composite redactor: it
 //! scrubs secrets/tokens/keys (OpenAI `sk-…`, GitHub `gh*_…`, OAuth/bearer
 //! credentials) *and* runs the formatted-PII pass

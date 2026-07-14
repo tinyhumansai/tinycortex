@@ -54,7 +54,10 @@ fn memory_category_serde_uses_snake_case() {
             category
         );
     }
-    assert!("project_notes".parse::<MemoryCategory>().is_err());
+    assert_eq!(
+        "project_notes".parse::<MemoryCategory>().unwrap(),
+        MemoryCategory::Custom("project_notes".into())
+    );
 }
 
 #[test]

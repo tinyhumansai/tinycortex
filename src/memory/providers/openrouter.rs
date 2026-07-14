@@ -4,13 +4,17 @@
 //! not a hard dependency. [`OpenRouterProvider`] implements all three provider
 //! seams against OpenRouter's OpenAI-compatible endpoints:
 //!
-//! - [`ChatProvider`] — `POST /chat/completions` in JSON mode (persona digests).
-//! - [`Summariser`] — the same endpoint in plain-text mode (flavoured-tree folds).
-//! - [`EmbeddingBackend`] — `POST /embeddings` (vector retrieval).
+//! - [`ChatProvider`](crate::memory::score::extract::ChatProvider) —
+//!   `POST /chat/completions` in JSON mode (persona digests).
+//! - [`Summariser`](crate::memory::tree::Summariser) — the same endpoint in
+//!   plain-text mode (flavoured-tree folds).
+//! - [`EmbeddingBackend`](crate::memory::store::vectors::EmbeddingBackend) —
+//!   `POST /embeddings` (vector retrieval).
 //!
 //! Nothing under `memory::persona` names this type: the pipeline depends only on
 //! the traits, and OpenHuman injects its own routes. Secrets are held as
-//! [`SecretString`]; token usage is accumulated per-run and the provider aborts
+//! [`SecretString`](crate::memory::config::SecretString); token usage is
+//! accumulated per-run and the provider aborts
 //! cleanly (returns a non-retryable error) once a configured cost/call budget is
 //! hit, mirroring the [`DailyBudget`](crate::memory::sync::state::DailyBudget)
 //! pattern. Transport and `429`/`5xx` failures retry with backoff; `4xx` client

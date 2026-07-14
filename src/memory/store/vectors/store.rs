@@ -426,6 +426,7 @@ pub fn vec_to_bytes(v: &[f32]) -> Vec<u8> {
 ///
 /// Returns an error when the blob length is not divisible by four rather than
 /// silently truncating corrupt trailing bytes.
+#[allow(clippy::manual_is_multiple_of)] // Keep compatibility below Rust 1.87.
 pub fn bytes_to_vec(bytes: &[u8]) -> anyhow::Result<Vec<f32>> {
     anyhow::ensure!(
         bytes.len() % 4 == 0,
