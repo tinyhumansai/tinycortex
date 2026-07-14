@@ -27,11 +27,13 @@ pub mod distill;
 pub mod pipeline;
 pub mod readers;
 pub mod reduce;
+pub mod retrieve;
 pub mod state;
 pub mod types;
 
 pub use config::PersonaConfig;
 pub use pipeline::{Pipeline, RunMode, RunReport};
+pub use retrieve::{PersonaHit, PersonaRetriever};
 
 pub use types::{
     evidence_id, DigestObservation, EvidenceSource, EvidenceTier, PersonaEvidence, PersonaFacet,
