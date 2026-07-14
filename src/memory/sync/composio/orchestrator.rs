@@ -65,6 +65,9 @@ pub trait IncrementalSource: Send + Sync {
     fn retain_dedup_keys(&self) -> bool {
         true
     }
+    fn stop_on_empty_pending(&self) -> bool {
+        false
+    }
     fn server_side_depth(&self) -> bool {
         false
     }
@@ -271,6 +274,7 @@ async fn run_pages(
 
             let fetched = source.extract_page(&response.data, page_token.as_deref());
             let mut reached_cursor_boundary = false;
+            let mut saw_unsynced_item = false;
             for raw in fetched.items {
                 if config
                     .sync
@@ -291,6 +295,7 @@ async fn run_pages(
                 if state.is_synced(&dedup_key) {
                     continue;
                 }
+                saw_unsynced_item = true;
                 let sort_cursor = source.sort_cursor(&raw);
                 if sort_cursor
                     .as_deref()
@@ -376,6 +381,15 @@ async fn run_pages(
             }
 
             page_token = fetched.next;
+            if source.stop_on_empty_pending() && !saw_unsynced_item {
+                tracing::debug!(
+                    toolkit = source.toolkit(),
+                    connection_id,
+                    scope = %scope.label,
+                    "[sync:orchestrator] stopping after all-deduplicated page"
+                );
+                break;
+            }
             if reached_cursor_boundary {
                 break;
             }

@@ -6,8 +6,8 @@ use tempfile::TempDir;
 
 use super::{ingest_chat, ingest_document, ingest_document_versioned, ingest_email_with_raw_refs};
 use crate::memory::chunks::{
-    count_chunks, get_chunk_lifecycle_status, is_source_ingested, SourceKind,
-    CHUNK_STATUS_PENDING_EXTRACTION,
+    count_chunks, get_chunk_content_pointers, get_chunk_lifecycle_status, is_source_ingested,
+    SourceKind, CHUNK_STATUS_PENDING_EXTRACTION,
 };
 use crate::memory::chunks::{get_chunk_raw_refs, RawRef};
 use crate::memory::config::MemoryConfig;
@@ -99,6 +99,11 @@ async fn ingest_chat_writes_chunks_and_enqueues_extract_jobs() {
     assert!(out.chunks_written >= 1);
     assert_eq!(count_chunks(&cfg).unwrap(), out.chunks_written as u64);
     assert_eq!(out.chunk_ids.len(), out.chunks_written);
+    let pointers = get_chunk_content_pointers(&cfg, &out.chunk_ids[0])
+        .unwrap()
+        .unwrap();
+    assert!(!pointers.0.is_empty());
+    assert!(!pointers.1.is_empty());
 
     // Every scheduled chunk got an extract job and is parked at pending.
     assert_eq!(out.extract_jobs_enqueued, out.chunk_ids.len());

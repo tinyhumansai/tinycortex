@@ -82,6 +82,9 @@ impl IncrementalSource for GmailSyncPipeline {
     fn max_pages(&self) -> usize {
         self.max_pages
     }
+    fn stop_on_empty_pending(&self) -> bool {
+        true
+    }
 
     fn server_side_depth(&self) -> bool {
         true

@@ -221,11 +221,22 @@ impl ComposioClient {
             let _ = response.bytes().await;
             anyhow::bail!("Composio proxy request failed with HTTP {status}");
         }
-        response
+        let raw: serde_json::Value = response
             .json()
             .await
-            .map_err(|error| anyhow::anyhow!("Composio proxy response decode failed: {error}"))
+            .map_err(|error| anyhow::anyhow!("Composio proxy response decode failed: {error}"))?;
+        decode_proxy_response(raw)
     }
+}
+
+fn decode_proxy_response(raw: serde_json::Value) -> anyhow::Result<ExecuteResponse> {
+    let payload = if raw.get("successful").is_some() {
+        raw
+    } else {
+        raw.get("data").cloned().unwrap_or(raw)
+    };
+    serde_json::from_value(payload)
+        .map_err(|error| anyhow::anyhow!("Composio proxy response decode failed: {error}"))
 }
 
 fn retryable_provider_error(error: Option<&str>) -> bool {
@@ -258,4 +269,37 @@ async fn decode_response(
         .json()
         .await
         .map_err(|error| anyhow::anyhow!("Composio {mode} response decode failed: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proxied_backend_envelope_decodes_provider_response() {
+        let response = decode_proxy_response(serde_json::json!({
+            "success": true,
+            "data": {
+                "successful": true,
+                "data": {"messages": [{"messageId": "message-1"}]},
+                "error": null
+            }
+        }))
+        .unwrap();
+
+        assert!(response.successful);
+        assert_eq!(response.data["messages"][0]["messageId"], "message-1");
+    }
+
+    #[test]
+    fn flat_proxy_response_remains_supported() {
+        let response = decode_proxy_response(serde_json::json!({
+            "successful": true,
+            "data": {"items": [1]}
+        }))
+        .unwrap();
+
+        assert!(response.successful);
+        assert_eq!(response.data["items"], serde_json::json!([1]));
+    }
 }
