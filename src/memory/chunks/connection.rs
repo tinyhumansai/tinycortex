@@ -271,6 +271,20 @@ pub(crate) fn get_or_init_connection(config: &MemoryConfig) -> Result<Arc<PMutex
     };
     let _init_guard = init_lock.lock();
 
+    // A caller ahead of us may have failed and re-tripped the breaker while
+    // we waited for the init lock.
+    {
+        let breakers = conn_cache().breakers.lock();
+        if let Some(breaker) = breakers.get(&db_path) {
+            if breaker.is_open() {
+                anyhow::bail!(
+                    "[chunks] circuit breaker open for {}: too many consecutive init failures",
+                    db_path.display()
+                );
+            }
+        }
+    }
+
     // Re-check the cache once we hold the init lock.
     {
         let guard = conn_cache().connections.lock();
@@ -379,20 +393,6 @@ pub(crate) fn invalidate_connection(config: &MemoryConfig) {
     conn_cache().breakers.lock().remove(&db_path);
 }
 
-/// Drop the cached connection + breaker for `config` (used by corrupt-DB
-/// recovery before quarantining the on-disk file).
-///
-/// NOTE: this only removes this process's cache entry; it does not hold any
-/// lock across the removal and the caller's subsequent quarantine rename.
-/// A concurrent `with_connection` call racing with the caller can re-open and
-/// re-cache the (about to be quarantined) file between this call returning
-/// and the rename happening — see audit finding SC-5.
-pub(super) fn drop_cached_connection(config: &MemoryConfig) {
-    let db_path = db_path_for(config);
-    conn_cache().connections.lock().remove(&db_path);
-    conn_cache().breakers.lock().remove(&db_path);
-}
-
 /// Quarantine and rebuild a corrupt database while holding the same per-path
 /// initialization lock used by cold opens.
 pub(super) fn recover_corrupt_connection(config: &MemoryConfig) -> Result<bool> {
@@ -406,7 +406,12 @@ pub(super) fn recover_corrupt_connection(config: &MemoryConfig) -> Result<bool> 
     };
     let _init_guard = init_lock.lock();
 
-    drop_cached_connection(config);
+    // Remove the cache entry, then quiesce every caller that already cloned
+    // its Arc before renaming the database. The guard remains held through
+    // quarantine and rebuild, so no write can land in the quarantined file.
+    let cached = conn_cache().connections.lock().remove(&db_path);
+    let _cached_guard = cached.as_ref().map(|connection| connection.lock());
+    conn_cache().breakers.lock().remove(&db_path);
     let quarantined = quarantine_corrupt_files(config)?;
     let conn = open_and_init(&db_path, config)
         .context("failed to rebuild chunk DB schema after quarantining corrupt DB")?;

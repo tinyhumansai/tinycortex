@@ -20,7 +20,7 @@
 //! Unwindowed queries still materialize all selected summaries; callers should
 //! supply a window for bounded historical retrieval.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{Duration, Utc};
 
 use crate::memory::chunks::SourceKind;
@@ -61,11 +61,15 @@ pub async fn query_source(
         limit.min(limits.max_limit)
     };
 
-    let window = time_window_days.map(|days| {
-        let now = Utc::now();
-        let start = now - Duration::days(days as i64);
-        (start.timestamp_millis(), now.timestamp_millis())
-    });
+    let window = time_window_days
+        .map(|days| -> Result<_> {
+            let now = Utc::now();
+            let start = now
+                .checked_sub_signed(Duration::days(days as i64))
+                .context("retrieval time window exceeds supported timestamp range")?;
+            Ok((start.timestamp_millis(), now.timestamp_millis()))
+        })
+        .transpose()?;
     let scored = collect_source_hits(config, source_id, source_kind, window)?;
     let total = scored.len();
 

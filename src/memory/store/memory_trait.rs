@@ -43,19 +43,7 @@ fn entry_from_record(record: &MemoryRecord) -> MemoryEntry {
 }
 
 fn query_score(content: &str, query: &str) -> Option<f64> {
-    let terms = query
-        .split_whitespace()
-        .map(str::to_lowercase)
-        .collect::<Vec<_>>();
-    if terms.is_empty() {
-        return Some(1.0);
-    }
-    let content = content.to_lowercase();
-    let matched = terms
-        .iter()
-        .filter(|term| content.contains(term.as_str()))
-        .count();
-    (matched != 0).then_some(matched as f64 / terms.len() as f64)
+    super::query_match_score(content, query).map(f64::from)
 }
 
 #[async_trait]

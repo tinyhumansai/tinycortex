@@ -50,12 +50,29 @@ pub fn upsert_chunks(config: &MemoryConfig, chunks: &[Chunk]) -> Result<usize> {
     if chunks.is_empty() {
         return Ok(0);
     }
-    with_connection(config, |conn| {
+    let (count, replaced_content_paths) = with_connection(config, |conn| {
         let tx = conn.unchecked_transaction()?;
+        let mut replaced_content_paths = Vec::new();
+        for chunk in chunks {
+            if let Some(path) = tx
+                .query_row(
+                    "SELECT content_path FROM mem_tree_chunks WHERE id = ?1",
+                    [&chunk.id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten()
+                .filter(|path| !path.is_empty())
+            {
+                replaced_content_paths.push(path);
+            }
+        }
         let count = upsert_chunks_tx(&tx, chunks)?;
         tx.commit()?;
-        Ok(count)
-    })
+        Ok((count, replaced_content_paths))
+    })?;
+    super::store_delete::remove_chunk_content_files(config, &replaced_content_paths);
+    Ok(count)
 }
 
 pub fn upsert_chunks_tx(tx: &Transaction<'_>, chunks: &[Chunk]) -> Result<usize> {
@@ -73,8 +90,8 @@ pub fn upsert_chunks_tx(tx: &Transaction<'_>, chunks: &[Chunk]) -> Result<usize>
 const UPSERT_SQL: &str = "INSERT INTO mem_tree_chunks (
         id, source_kind, source_id, path_scope, source_ref, owner,
         timestamp_ms, time_range_start_ms, time_range_end_ms,
-        tags_json, content, token_count, seq_in_source, created_at_ms
-    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+        tags_json, content, token_count, seq_in_source, created_at_ms, lifecycle_status
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
     ON CONFLICT(id) DO UPDATE SET
         source_kind = excluded.source_kind,
         source_id = excluded.source_id,
@@ -91,7 +108,7 @@ const UPSERT_SQL: &str = "INSERT INTO mem_tree_chunks (
         created_at_ms = excluded.created_at_ms,
         content_path = NULL,
         content_sha256 = NULL,
-        lifecycle_status = 'admitted'";
+        lifecycle_status = excluded.lifecycle_status";
 
 /// Bind and execute `UPSERT_SQL` once per chunk against an already-prepared
 /// statement. Split out from [`upsert_chunks`] so the statement is prepared
@@ -121,6 +138,7 @@ fn upsert_chunks_with_statement(
             chunk.token_count,
             chunk.seq_in_source,
             chunk.created_at.timestamp_millis(),
+            CHUNK_STATUS_ADMITTED,
         ])?;
     }
     Ok(())

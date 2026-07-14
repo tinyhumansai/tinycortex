@@ -335,15 +335,10 @@ impl InvertedIndex {
     /// posting lists: `acc` is rewritten in place once per remaining
     /// ngram, allocating zero intermediate sets.
     ///
-    /// NOTE: the `None` case in `search`'s caller treats "no ngrams" as "every
-    /// live doc is a candidate" (a full-corpus scan), not as "no candidates".
-    /// For a large corpus this routinely exceeds `LARGE_CANDIDATE_LIMIT` and
-    /// trips the recency-only fallback (see `search`), returning score-`0.0`
-    /// hits that are visually indistinguishable from genuine substring
-    /// matches. Query terms that are too short to ngram-index (sub-3-byte
-    /// non-CJK terms already fail `MIN_TERM_BYTES`, so this mostly affects
-    /// single CJK characters) degrade silently rather than returning no
-    /// results.
+    /// The `None` case intentionally performs an uncapped full-corpus scan and
+    /// does not invoke the recency fallback. This avoids fabricating score-0.0
+    /// hits for short or single-CJK terms, at the cost of scanning every live
+    /// document for those queries.
     fn candidates_for_term(&self, term: &str) -> Option<Vec<u32>> {
         let term_ngrams = ngrams(term);
         if term_ngrams.is_empty() {

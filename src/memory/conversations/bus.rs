@@ -28,7 +28,8 @@ use chrono::Utc;
 use serde_json::json;
 
 use super::{
-    append_message, ensure_thread, get_messages, ConversationMessage, CreateConversationThread,
+    append_message, ensure_thread, get_messages, list_threads, ConversationMessage,
+    CreateConversationThread,
 };
 
 static CONVERSATION_PERSISTENCE_WORKSPACE: OnceLock<Arc<RwLock<PathBuf>>> = OnceLock::new();
@@ -283,12 +284,27 @@ fn persist_channel_turn(
     workspace_dir: &Path,
     descriptor: ChannelTurnDescriptor<'_>,
 ) -> Result<(), String> {
-    let thread_id = persisted_channel_thread_id(
+    let collision_safe_id = persisted_channel_thread_id(
         descriptor.channel,
         descriptor.sender,
         descriptor.reply_target,
         descriptor.thread_ts,
     );
+    let legacy_id = legacy_channel_thread_id(
+        descriptor.channel,
+        descriptor.sender,
+        descriptor.reply_target,
+        descriptor.thread_ts,
+    );
+    let thread_id = if legacy_id != collision_safe_id
+        && list_threads(workspace_dir.to_path_buf())?
+            .iter()
+            .any(|thread| thread.id == legacy_id)
+    {
+        legacy_id
+    } else {
+        collision_safe_id
+    };
     let title = channel_thread_title(
         descriptor.channel,
         descriptor.sender,
@@ -373,6 +389,27 @@ fn persisted_channel_thread_id(
         base_key.push_str("__");
         base_key.push_str(&suffix);
     }
+    let key = if channel == "telegram" {
+        base_key
+    } else {
+        match thread_ts.and_then(non_empty_trimmed) {
+            Some(thread_ts) => format!("{base_key}_thread:{thread_ts}"),
+            None => base_key,
+        }
+    };
+    format!("channel:{key}")
+}
+
+/// Derive the pre-collision-fix id so existing underscore-containing channel
+/// threads can continue receiving turns. New threads use
+/// [`persisted_channel_thread_id`].
+fn legacy_channel_thread_id(
+    channel: &str,
+    sender: &str,
+    reply_target: &str,
+    thread_ts: Option<&str>,
+) -> String {
+    let base_key = format!("{channel}_{sender}_{reply_target}");
     let key = if channel == "telegram" {
         base_key
     } else {

@@ -121,7 +121,10 @@ pub fn chunk_markdown(input: &ChunkerInput, opts: &ChunkerOptions) -> Vec<Chunk>
             for (part, piece) in sub_pieces.into_iter().enumerate() {
                 let seq = out.len() as u32;
                 let tc = approx_token_count(&piece);
-                let id = chunk_id(input.source_kind, &input.source_id, part as u32, &unit);
+                // Include the emitted piece in the identity. If the split
+                // boundary changes, a body must not silently reuse the old
+                // embedding/score identity for the same part number.
+                let id = chunk_id(input.source_kind, &input.source_id, part as u32, &piece);
                 out.push(Chunk {
                     id,
                     content: piece,

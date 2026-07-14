@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub(crate) const DEFAULT_MAX_DEFER_AGE_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
+
 /// Runtime bounds shared by retrieval entry points.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -144,7 +146,7 @@ impl Default for QueueConfig {
             retry_cap_ms: 60 * 60 * 1_000,
             max_attempts: 5,
             llm_permits: 1,
-            max_defer_age_ms: 7 * 24 * 60 * 60 * 1_000,
+            max_defer_age_ms: DEFAULT_MAX_DEFER_AGE_MS,
         }
     }
 }
@@ -164,3 +166,7 @@ impl QueueConfig {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "policy_tests.rs"]
+mod tests;

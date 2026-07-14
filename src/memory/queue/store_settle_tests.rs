@@ -344,6 +344,7 @@ fn mark_deferred_does_not_increment_attempts() {
 #[test]
 fn mark_deferred_parks_jobs_that_exceed_the_defer_age_bound() {
     let (_tmp, cfg) = test_config();
+    let max_defer_age_ms = cfg.queue.max_defer_age_ms;
     let id = enqueue(&cfg, &extract_job("c-defer-expired", 5))
         .unwrap()
         .expect("inserted");
@@ -354,7 +355,7 @@ fn mark_deferred_parks_jobs_that_exceed_the_defer_age_bound() {
             rusqlite::params![
                 Utc::now()
                     .timestamp_millis()
-                    .saturating_sub(MAX_DEFER_AGE_MS + 1),
+                    .saturating_sub(max_defer_age_ms + 1),
                 id,
             ],
         )?;

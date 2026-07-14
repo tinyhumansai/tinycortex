@@ -151,7 +151,11 @@ async fn persist_score_enqueue(
                 &chunk.id,
                 CHUNK_STATUS_PENDING_EXTRACTION,
             )?;
-            jobs += usize::from(sink.enqueue_extract_tx(&transaction, &chunk.id)?);
+            jobs += usize::from(sink.enqueue_extract_tx(
+                &transaction,
+                &chunk.id,
+                config.queue.max_attempts,
+            )?);
         }
         transaction.commit()?;
         Ok(Some((chunks_written, jobs)))

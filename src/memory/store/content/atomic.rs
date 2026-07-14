@@ -60,7 +60,7 @@ pub fn write_if_new(abs_path: &Path, bytes: &[u8]) -> anyhow::Result<bool> {
                 Ok(false)
             } else {
                 Err(anyhow::anyhow!(
-                    "publish {:?} -> {:?}: {e}",
+                    "filesystem does not support required atomic hard-link publish {:?} -> {:?}: {e}",
                     tmp_path,
                     abs_path
                 ))

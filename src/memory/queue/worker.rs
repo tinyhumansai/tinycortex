@@ -20,7 +20,8 @@
 //! The Sentry-once emission and the storage-degraded flag stay host-owned
 //! regardless.
 
-use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock};
 
 use anyhow::Result;
 
@@ -40,6 +41,8 @@ use crate::memory::queue::types::{
 /// upstream single-permit semaphore); LLM-bound jobs hold a permit for the
 /// duration of their handler.
 static LLM_GATE: LazyLock<LlmGate> = LazyLock::new(LlmGate::default);
+static CONFIGURED_LLM_GATES: LazyLock<parking_lot::Mutex<HashMap<usize, Arc<LlmGate>>>> =
+    LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 
 /// Short delay used when an LLM job is claimed while the process-wide gate is
 /// full. Deferring releases the job lease and attempt immediately, avoiding a
@@ -75,7 +78,15 @@ pub fn bootstrap(config: &MemoryConfig) -> Result<(usize, usize)> {
 /// handler and drop it; the other blocks the only executor thread inside
 /// `acquire`).
 pub async fn run_once(config: &MemoryConfig, delegates: &dyn QueueDelegates) -> Result<bool> {
-    run_once_with_gate(config, delegates, &LLM_GATE).await
+    let gate = {
+        let mut gates = CONFIGURED_LLM_GATES.lock();
+        Arc::clone(
+            gates
+                .entry(config.queue.llm_permits)
+                .or_insert_with(|| Arc::new(LlmGate::new(config.queue.llm_permits))),
+        )
+    };
+    run_once_with_gate(config, delegates, &gate).await
 }
 
 async fn run_once_with_gate(
@@ -141,8 +152,8 @@ fn settle_planned_job(
             let arms_reembed = follow_ups
                 .iter()
                 .any(|follow_up| follow_up.kind == JobKind::ReembedBackfill);
-            mark_done_with_followups(config, job, &follow_ups)?;
-            if arms_reembed {
+            let committed = mark_done_with_followups(config, job, &follow_ups)?;
+            if committed && arms_reembed {
                 set_backfill_in_progress(true);
             }
 

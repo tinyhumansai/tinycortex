@@ -46,7 +46,9 @@ pub(crate) const DEFAULT_MAX_ATTEMPTS: u32 = 5;
 /// `ready`/`running`) shares it. Returns `Some(id)` if inserted, `None` if a
 /// duplicate was suppressed.
 pub fn enqueue(config: &MemoryConfig, job: &NewJob) -> Result<Option<String>> {
-    with_connection(config, |conn| enqueue_conn(conn, job))
+    with_connection(config, |conn| {
+        enqueue_conn(conn, job, config.queue.max_attempts)
+    })
 }
 
 /// Enqueue inside a caller-owned transaction. Use this when the producer is
@@ -54,14 +56,28 @@ pub fn enqueue(config: &MemoryConfig, job: &NewJob) -> Result<Option<String>> {
 /// insert lands atomically with the side-effect. `Transaction` derefs to
 /// `Connection`, so callers just pass `&tx`.
 pub fn enqueue_tx(tx: &Transaction<'_>, job: &NewJob) -> Result<Option<String>> {
-    enqueue_conn(tx, job)
+    enqueue_conn(tx, job, DEFAULT_MAX_ATTEMPTS)
 }
 
-pub(crate) fn enqueue_conn(conn: &Connection, job: &NewJob) -> Result<Option<String>> {
+/// Enqueue inside a transaction using the caller's configured default retry
+/// budget when the job does not override it.
+pub(crate) fn enqueue_tx_with_default(
+    tx: &Transaction<'_>,
+    job: &NewJob,
+    default_max_attempts: u32,
+) -> Result<Option<String>> {
+    enqueue_conn(tx, job, default_max_attempts)
+}
+
+pub(crate) fn enqueue_conn(
+    conn: &Connection,
+    job: &NewJob,
+    default_max_attempts: u32,
+) -> Result<Option<String>> {
     let id = format!("job:{}", Uuid::new_v4());
     let now_ms = Utc::now().timestamp_millis();
     let available_at = job.available_at_ms.unwrap_or(now_ms);
-    let max_attempts = job.max_attempts.unwrap_or(DEFAULT_MAX_ATTEMPTS) as i64;
+    let max_attempts = job.max_attempts.unwrap_or(default_max_attempts) as i64;
 
     let inserted = conn.execute(
         "INSERT OR IGNORE INTO mem_tree_jobs (

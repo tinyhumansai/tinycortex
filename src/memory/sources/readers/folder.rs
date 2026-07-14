@@ -114,7 +114,7 @@ impl SourceReader for FolderReader {
             .as_deref()
             .ok_or_else(|| MemoryError::Invalid("folder source requires a path".to_string()))?;
 
-        let pattern = source.glob.as_deref().unwrap_or("**/*.md");
+        let pattern = source.glob.as_deref().unwrap_or(DEFAULT_GLOB);
         let matcher = glob_to_regex(pattern)?;
         let normalized_id = normalize_rel(Path::new(item_id));
         if !matcher.is_match(&normalized_id) {

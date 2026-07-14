@@ -113,6 +113,7 @@ async fn run_once_reschedules_reembed_jobs_that_defer() {
 
 #[test]
 fn terminal_reembed_failure_clears_process_backfill_flag() {
+    let _flag_guard = crate::memory::queue::test_support::BACKFILL_FLAG_TEST_LOCK.lock();
     let (_tmp, cfg) = test_config();
     let mut new_job = NewJob::reembed_backfill(&ReembedBackfillPayload {
         signature: "provider=test;model=terminal;dims=3".into(),

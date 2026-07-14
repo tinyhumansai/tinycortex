@@ -31,6 +31,12 @@ use super::types::{MemorySourceEntry, MemorySourcePatch, SourceKind};
 /// safety boundary; this mutex closes the in-process lost-update window.
 static REGISTRY_MUTATION_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+fn mutation_guard() -> std::sync::MutexGuard<'static, ()> {
+    REGISTRY_MUTATION_LOCK
+        .lock()
+        .expect("source registry mutation lock poisoned")
+}
+
 /// Conservative default sync caps for a Composio toolkit, keyed by toolkit slug.
 ///
 /// Single source of truth for the cheap out-of-the-box sync volume. Applied to a
@@ -180,9 +186,7 @@ impl SourceRegistry {
 
     /// Validate and add a new source. Fails if the id already exists.
     pub fn add(&self, entry: MemorySourceEntry) -> Result<MemorySourceEntry> {
-        let _guard = REGISTRY_MUTATION_LOCK
-            .lock()
-            .expect("source registry mutation lock poisoned");
+        let _guard = mutation_guard();
         entry.validate().map_err(|e| anyhow!(e))?;
         let mut sources = self.list()?;
         if sources.iter().any(|s| s.id == entry.id) {
@@ -196,9 +200,7 @@ impl SourceRegistry {
     /// Apply a [`MemorySourcePatch`] to an existing source, then re-validate and
     /// save. Fails if no source has the given id.
     pub fn update(&self, id: &str, patch: MemorySourcePatch) -> Result<MemorySourceEntry> {
-        let _guard = REGISTRY_MUTATION_LOCK
-            .lock()
-            .expect("source registry mutation lock poisoned");
+        let _guard = mutation_guard();
         let mut sources = self.list()?;
         let entry = sources
             .iter_mut()
@@ -215,9 +217,7 @@ impl SourceRegistry {
 
     /// Remove a source by id. Returns `true` if an entry was removed.
     pub fn remove(&self, id: &str) -> Result<bool> {
-        let _guard = REGISTRY_MUTATION_LOCK
-            .lock()
-            .expect("source registry mutation lock poisoned");
+        let _guard = mutation_guard();
         let mut sources = self.list()?;
         let before = sources.len();
         sources.retain(|s| s.id != id);
@@ -232,9 +232,7 @@ impl SourceRegistry {
     /// removed. Mirrors [`SourceRegistry::upsert_composio_source`], which keys
     /// composio sources on `connection_id` rather than the `src_*` id.
     pub fn remove_composio_source_by_connection_id(&self, connection_id: &str) -> Result<usize> {
-        let _guard = REGISTRY_MUTATION_LOCK
-            .lock()
-            .expect("source registry mutation lock poisoned");
+        let _guard = mutation_guard();
         let mut sources = self.list()?;
         let before = sources.len();
         sources.retain(|s| {
@@ -258,9 +256,7 @@ impl SourceRegistry {
         connection_id: &str,
         label: &str,
     ) -> Result<MemorySourceEntry> {
-        let _guard = REGISTRY_MUTATION_LOCK
-            .lock()
-            .expect("source registry mutation lock poisoned");
+        let _guard = mutation_guard();
         let mut sources = self.list()?;
         let (entry, _was_insert) =
             upsert_composio_entry_in_place(&mut sources, toolkit, connection_id, label);
@@ -273,9 +269,7 @@ impl SourceRegistry {
         if targets.is_empty() {
             return Ok(0);
         }
-        let _guard = REGISTRY_MUTATION_LOCK
-            .lock()
-            .expect("source registry mutation lock poisoned");
+        let _guard = mutation_guard();
         let mut sources = self.list()?;
         for (toolkit, connection_id, label) in targets {
             upsert_composio_entry_in_place(&mut sources, toolkit, connection_id, label);
@@ -286,9 +280,7 @@ impl SourceRegistry {
 
     /// Enable every source and clear all per-source caps ("All In" mode).
     pub fn apply_all_in(&self) -> Result<Vec<MemorySourceEntry>> {
-        let _guard = REGISTRY_MUTATION_LOCK
-            .lock()
-            .expect("source registry mutation lock poisoned");
+        let _guard = mutation_guard();
         let mut sources = self.list()?;
         for source in &mut sources {
             source.enabled = true;

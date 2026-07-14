@@ -30,17 +30,12 @@ pub fn node_file_path(config: &MemoryConfig, namespace: &str, node_id: &str) -> 
 /// namespace so distinct machine ids cannot alias the same directory.
 fn sanitize(namespace: &str) -> String {
     let raw = namespace.trim();
-    let sanitized = raw.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|', '.'], "_");
-    if sanitized == raw {
-        return sanitized;
-    }
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(raw.as_bytes());
-    let suffix = digest[..6]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    format!("{sanitized}-{suffix}")
+    crate::memory::fsutil::sanitize_component_with_digest(raw, |character| {
+        !matches!(
+            character,
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '.'
+        )
+    })
 }
 
 /// Validate a namespace string, erroring on empty / dangerous input.

@@ -366,7 +366,7 @@ pub fn delete_orphaned_source_tree(
 /// Best-effort removal of on-disk chunk content files, with strict sandboxing:
 /// a `content_path` that escapes the content root (via `..`, an absolute path,
 /// or a symlink pointing outside) is refused rather than followed.
-fn remove_chunk_content_files(config: &MemoryConfig, content_paths: &[String]) {
+pub(super) fn remove_chunk_content_files(config: &MemoryConfig, content_paths: &[String]) {
     use std::path::{Component, Path};
 
     let root = content_root(config);

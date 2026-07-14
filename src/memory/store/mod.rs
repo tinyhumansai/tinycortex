@@ -49,3 +49,22 @@ pub use vectors::{
     bytes_to_vec, cosine_similarity, vec_to_bytes, EmbeddingBackend, InertEmbedding, SearchResult,
     VectorStore,
 };
+
+/// Score a case-insensitive whitespace-term query against content.
+///
+/// Empty queries match fully; content with no matching term is excluded.
+pub(super) fn query_match_score(content: &str, query: &str) -> Option<f32> {
+    let terms = query
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>();
+    if terms.is_empty() {
+        return Some(1.0);
+    }
+    let content = content.to_lowercase();
+    let matched = terms
+        .iter()
+        .filter(|term| content.contains(term.as_str()))
+        .count();
+    (matched != 0).then_some(matched as f32 / terms.len() as f32)
+}

@@ -81,16 +81,7 @@ impl MemoryStore for InMemoryMemoryStore {
     }
 
     async fn search(&self, query: MemoryQuery) -> MemoryResult<Vec<SearchHit>> {
-        let terms = query
-            .text
-            .as_deref()
-            .map(str::to_lowercase)
-            .map(|text| {
-                text.split_whitespace()
-                    .map(str::to_string)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let query_text = query.text.as_deref().unwrap_or_default();
         let limit = query.limit.unwrap_or(20);
 
         let mut hits = self
@@ -105,19 +96,7 @@ impl MemoryStore for InMemoryMemoryStore {
                     .is_none_or(|namespace| record.namespace == namespace)
             })
             .filter_map(|record| {
-                let score = if terms.is_empty() {
-                    1.0
-                } else {
-                    let content = record.content.to_lowercase();
-                    let matched = terms
-                        .iter()
-                        .filter(|term| content.contains(term.as_str()))
-                        .count();
-                    if matched == 0 {
-                        return None;
-                    }
-                    matched as f32 / terms.len() as f32
-                };
+                let score = super::query_match_score(&record.content, query_text)?;
 
                 Some(SearchHit {
                     record: record.clone(),

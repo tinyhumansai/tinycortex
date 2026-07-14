@@ -76,7 +76,7 @@ pub async fn query_global(
 /// optionally restricted to `[since_ms, until_ms]` and reranked by `query`.
 ///
 /// The entity-index timestamp window is pushed into SQLite before the
-/// the configured topic lookup cap, so historical windows are not crowded
+/// configured topic lookup cap, so historical windows are not crowded
 /// out by newer mentions. A window containing more than the cap remains
 /// intentionally bounded.
 pub async fn query_topic(
@@ -121,11 +121,10 @@ pub async fn query_topic(
 /// (summary sidecar / chunk sidecar) for the optional rerank pass.
 ///
 /// Caps the already-windowed lookup at the configured topic limit. Soft-deleted
-/// summaries are excluded (`node.deleted`
-/// check below); leaf chunks have no equivalent tombstone check here, so a
-/// dropped chunk that is still indexed can still surface in topic results.
-/// An entity-index row whose `node_id` resolves to neither a summary nor a
-/// chunk (a stale index entry) is silently skipped.
+/// summaries are excluded via `node.deleted`; leaf chunks are filtered against
+/// the fetched `dropped_chunk_ids` tombstone set. An entity-index row whose
+/// `node_id` resolves to neither a summary nor a chunk (a stale index entry) is
+/// silently skipped.
 fn resolve_topic_hits(
     config: &MemoryConfig,
     entity_id: &str,

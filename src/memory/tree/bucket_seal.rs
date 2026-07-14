@@ -436,7 +436,11 @@ pub async fn seal_one_level_with_services(
                 level: target_level,
                 force_now_ms: None,
             };
-            crate::memory::queue::enqueue_tx(&tx, &crate::memory::queue::NewJob::seal(&payload)?)?;
+            crate::memory::queue::store::enqueue_tx_with_default(
+                &tx,
+                &crate::memory::queue::NewJob::seal(&payload)?,
+                config.queue.max_attempts,
+            )?;
         }
 
         if target_level > current_max {

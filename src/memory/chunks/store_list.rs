@@ -100,13 +100,11 @@ fn append_source_scope(
             if index > 0 {
                 sql.push_str(" OR ");
             }
-            sql.push_str("source_id = ? OR source_id LIKE ? ESCAPE '\\'");
+            sql.push_str("source_id = ? OR substr(source_id, 1, length(?)) = ?");
             bound.push(Box::new(source_id.clone()));
-            let escaped = source_id
-                .replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_");
-            bound.push(Box::new(format!("mem_src:{escaped}:%")));
+            let prefix = format!("mem_src:{source_id}:");
+            bound.push(Box::new(prefix.clone()));
+            bound.push(Box::new(prefix));
         }
         sql.push(')');
     }

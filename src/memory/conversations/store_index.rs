@@ -157,15 +157,23 @@ impl ConversationStore {
 
     pub(super) fn list_threads_unlocked(&self) -> Result<Vec<ConversationThread>, String> {
         let mut index = self.thread_index_unlocked()?;
-        // Reconcile the derived stat trail against the authoritative message
-        // files. Appending a message and its compact stat event spans two files
-        // and cannot be one filesystem transaction; this check repairs either
-        // crash window instead of trusting a possibly-short stat history.
-        let thread_ids = index.keys().cloned().collect::<Vec<_>>();
+        // Reconcile only cold/recovery entries whose derived stat trail is
+        // absent. Once stats exist, routine list calls stay header-only rather
+        // than rescanning every message file.
+        let thread_ids = index
+            .iter()
+            .filter(|(_, entry)| entry.message_count.is_none() || entry.last_message_at.is_none())
+            .map(|(thread_id, _)| thread_id.clone())
+            .collect::<Vec<_>>();
         if !thread_ids.is_empty() {
             let threads_path = self.ensure_root()?.join(THREADS_FILENAME);
             for thread_id in &thread_ids {
-                let (count, last_message_at) = self.measure_messages_unlocked(thread_id)?;
+                let Ok((count, last_message_at)) = self.measure_messages_unlocked(thread_id) else {
+                    // One unreadable transcript must not make thread
+                    // navigation unavailable. Leave it unreconciled so a
+                    // later call can retry after repair.
+                    continue;
+                };
                 // Treat created_at as last_message_at when there are no
                 // messages — keeps the sort key meaningful and matches the
                 // pre-refactor semantics.
@@ -252,8 +260,19 @@ impl ConversationStore {
             Some(entry) => entry,
             None => return Ok(None),
         };
-        let (message_count, last_at) = self.measure_messages_unlocked(thread_id)?;
-        let last_message_at = last_at.unwrap_or_else(|| entry.created_at.clone());
+        let (message_count, last_message_at) = match (entry.message_count, &entry.last_message_at) {
+            (Some(count), Some(last)) => (count, last.clone()),
+            _ => match self.measure_messages_unlocked(thread_id) {
+                Ok((count, last)) => (count, last.unwrap_or_else(|| entry.created_at.clone())),
+                Err(_) => (
+                    entry.message_count.unwrap_or(0),
+                    entry
+                        .last_message_at
+                        .clone()
+                        .unwrap_or_else(|| entry.created_at.clone()),
+                ),
+            },
+        };
         Ok(Some(ConversationThread {
             id: thread_id.to_string(),
             title: entry.title.clone(),

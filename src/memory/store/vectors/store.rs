@@ -84,11 +84,8 @@ impl VectorStore {
     /// On first open the backend name and dimensions are persisted to a
     /// `store_meta` table. On subsequent opens the stored dimensions are
     /// compared against the runtime backend and an error is returned if they
-    /// mismatch (prevents silent cosine-similarity corruption from
-    /// mixed-dimension vectors) — see the private `check_or_store_meta` helper
-    /// below for known gaps in that guard (an unreadable `store_meta` row is
-    /// indistinguishable from first-open, and a corrupt stored-dims string
-    /// silently disables the check rather than failing closed).
+    /// mismatch. Metadata read errors and malformed stored dimensions fail
+    /// closed rather than being treated as a first open.
     pub fn open(db_path: &Path, backend: Arc<dyn EmbeddingBackend>) -> anyhow::Result<Self> {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -123,16 +120,9 @@ impl VectorStore {
 
     /// Persist or validate the embedding configuration in `store_meta`.
     ///
-    /// NOTE: two related gaps, both currently present:
-    /// - A failed read of the `embed_dims` row (e.g. a transient I/O error)
-    ///   collapses to `None` via `.ok()` and is treated identically to a
-    ///   genuinely first-ever open, so it silently *overwrites*
-    ///   `embed_provider`/`embed_dims` with the current runtime backend
-    ///   instead of surfacing the read failure.
-    /// - The stored dims string is parsed with `.parse().unwrap_or(0)`; a
-    ///   corrupted value collapses to `0`, and the mismatch check is skipped
-    ///   whenever either side is `0` — so a corrupt row disables the guard
-    ///   entirely instead of failing closed.
+    /// Missing metadata initializes the store. Query failures, malformed
+    /// stored dimensions, and runtime/stored dimension mismatches are returned
+    /// as errors so the compatibility guard fails closed.
     fn check_or_store_meta(
         conn: &Connection,
         backend: &dyn EmbeddingBackend,
@@ -197,11 +187,8 @@ impl VectorStore {
 
     /// Inserts with a pre-computed embedding vector (skips the embed call).
     ///
-    /// NOTE: the vector's length is never checked against the store's
-    /// configured dimensions (`store_meta.embed_dims`). A wrong-dimension
-    /// vector is stored as-is; [`cosine_similarity`] then returns `0.0` for
-    /// any query against it (length mismatch), so the row silently never
-    /// surfaces in search results rather than erroring at insert time.
+    /// The vector length is checked against the active backend dimensions and
+    /// a mismatch is rejected before any row is written.
     pub fn insert_with_vector(
         &self,
         id: &str,
@@ -441,7 +428,7 @@ pub fn vec_to_bytes(v: &[f32]) -> Vec<u8> {
 /// silently truncating corrupt trailing bytes.
 pub fn bytes_to_vec(bytes: &[u8]) -> anyhow::Result<Vec<f32>> {
     anyhow::ensure!(
-        bytes.len().is_multiple_of(4),
+        bytes.len() % 4 == 0,
         "invalid embedding blob byte length: {}",
         bytes.len()
     );

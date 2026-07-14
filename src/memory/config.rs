@@ -159,6 +159,13 @@ impl MemoryConfig {
             "tree.summary_overhead_reserve_tokens must be smaller than tree.input_token_budget"
         );
         anyhow::ensure!(
+            self.tree
+                .output_token_budget
+                .checked_add(self.tree.summary_overhead_reserve_tokens)
+                .is_some_and(|reserved| reserved < self.tree.input_token_budget),
+            "tree output and summary overhead budgets must leave positive input headroom"
+        );
+        anyhow::ensure!(
             self.tree.summary_fanout > 0,
             "tree.summary_fanout must be greater than zero"
         );

@@ -152,6 +152,7 @@ impl std::str::FromStr for MemoryCategory {
             value if value.starts_with("custom:") && value.len() > "custom:".len() => {
                 Ok(Self::Custom(value["custom:".len()..].to_string()))
             }
+            value if !value.is_empty() => Ok(Self::Custom(value.to_string())),
             _ => Err(format!("unknown memory category: {value}")),
         }
     }

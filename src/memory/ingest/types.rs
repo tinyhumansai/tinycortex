@@ -14,7 +14,12 @@ use crate::memory::queue::types::{ExtractChunkPayload, NewJob};
 pub trait TreeJobSink: Send + Sync {
     /// Enqueue an `extract_chunk` job for `chunk_id` inside `tx`. Returns true
     /// when a new job was created and false for a deliberate no-op or dedupe.
-    fn enqueue_extract_tx(&self, tx: &Transaction<'_>, chunk_id: &str) -> Result<bool>;
+    fn enqueue_extract_tx(
+        &self,
+        tx: &Transaction<'_>,
+        chunk_id: &str,
+        default_max_attempts: u32,
+    ) -> Result<bool>;
 }
 
 /// A no-op [`TreeJobSink`] that drops every job. Useful when a caller only wants
@@ -23,7 +28,12 @@ pub trait TreeJobSink: Send + Sync {
 pub struct NullJobSink;
 
 impl TreeJobSink for NullJobSink {
-    fn enqueue_extract_tx(&self, _tx: &Transaction<'_>, _chunk_id: &str) -> Result<bool> {
+    fn enqueue_extract_tx(
+        &self,
+        _tx: &Transaction<'_>,
+        _chunk_id: &str,
+        _default_max_attempts: u32,
+    ) -> Result<bool> {
         Ok(false)
     }
 }
@@ -33,11 +43,19 @@ impl TreeJobSink for NullJobSink {
 pub struct QueueJobSink;
 
 impl TreeJobSink for QueueJobSink {
-    fn enqueue_extract_tx(&self, tx: &Transaction<'_>, chunk_id: &str) -> Result<bool> {
+    fn enqueue_extract_tx(
+        &self,
+        tx: &Transaction<'_>,
+        chunk_id: &str,
+        default_max_attempts: u32,
+    ) -> Result<bool> {
         let job = NewJob::extract_chunk(&ExtractChunkPayload {
             chunk_id: chunk_id.to_string(),
         })?;
-        Ok(crate::memory::queue::store::enqueue_tx(tx, &job)?.is_some())
+        Ok(
+            crate::memory::queue::store::enqueue_tx_with_default(tx, &job, default_max_attempts)?
+                .is_some(),
+        )
     }
 }
 

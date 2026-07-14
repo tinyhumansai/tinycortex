@@ -9,9 +9,9 @@
 //! ## Loops
 //!
 //! - `run_worker`: repeatedly runs one job, sleeping between polls. Idle polls
-//!   use the configured backoff; transient SQLite errors
-//!   back off by kind (busy / I/O / disk-full) and re-poll; corruption is fatal
-//!   and returned to the host (mirroring OpenHuman's quarantine policy).
+//!   use the configured backoff; transient SQLite errors back off by kind
+//!   (busy / I/O / disk-full) and re-poll; corruption triggers database
+//!   recovery and the loop continues polling.
 //! - `run_scheduler`: on a fixed cadence, recover expired leases, enqueue
 //!   `flush_stale` (dedupe-safe), and `self_heal` transiently-failed jobs.
 //! - `run`: bootstrap once, then drive both loops concurrently until

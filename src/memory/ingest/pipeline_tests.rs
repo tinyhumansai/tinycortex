@@ -29,6 +29,7 @@ impl TreeJobSink for RecordingJobSink {
         &self,
         _tx: &rusqlite::Transaction<'_>,
         chunk_id: &str,
+        _default_max_attempts: u32,
     ) -> anyhow::Result<bool> {
         self.ids.lock().unwrap().push(chunk_id.to_string());
         Ok(true)
@@ -48,6 +49,7 @@ impl TreeJobSink for TogglingJobSink {
         &self,
         _tx: &rusqlite::Transaction<'_>,
         chunk_id: &str,
+        _default_max_attempts: u32,
     ) -> anyhow::Result<bool> {
         if self.fail.load(Ordering::SeqCst) {
             anyhow::bail!("simulated enqueue failure");

@@ -257,8 +257,14 @@ impl MemorySourcePatch {
         if self.query.is_some() && kind != SourceKind::TwitterQuery {
             return reject("query");
         }
+        if self.since_days.is_some() && kind != SourceKind::TwitterQuery {
+            return reject("since_days");
+        }
         if self.selector.is_some() && kind != SourceKind::WebPage {
             return reject("selector");
+        }
+        if self.max_items.is_some() && kind != SourceKind::RssFeed {
+            return reject("max_items");
         }
         if self.url.is_some()
             && kind != SourceKind::GithubRepo

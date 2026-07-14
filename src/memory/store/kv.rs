@@ -16,6 +16,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::memory::store::safety;
+
+fn parse_value_json(raw: &str, key: &str, context: &str) -> Result<Value, String> {
+    serde_json::from_str(raw).map_err(|error| format!("{context} JSON for key '{key}': {error}"))
+}
 use crate::memory::types::MemoryKvRecord;
 
 const SCHEMA_SQL: &str = "
@@ -245,8 +249,7 @@ impl KvStore {
         {
             let value_raw: String = row.get(1).map_err(|e| e.to_string())?;
             let key = row.get::<_, String>(0).map_err(|e| e.to_string())?;
-            let value = serde_json::from_str::<Value>(&value_raw)
-                .map_err(|e| format!("list_namespace JSON for key '{key}': {e}"))?;
+            let value = parse_value_json(&value_raw, &key, "list_namespace")?;
             out.push(json!({
                 "key": key,
                 "value": value,
@@ -291,8 +294,7 @@ impl KvStore {
         {
             let value_raw: String = row.get(1).map_err(|e| e.to_string())?;
             let key: String = row.get(0).map_err(|e| e.to_string())?;
-            let value = serde_json::from_str(&value_raw)
-                .map_err(|e| format!("records_namespace JSON for key '{key}': {e}"))?;
+            let value = parse_value_json(&value_raw, &key, "records_namespace")?;
             out.push(MemoryKvRecord {
                 namespace: Some(ns.clone()),
                 key,
@@ -321,8 +323,7 @@ impl KvStore {
         {
             let value_raw: String = row.get(1).map_err(|e| e.to_string())?;
             let key: String = row.get(0).map_err(|e| e.to_string())?;
-            let value = serde_json::from_str(&value_raw)
-                .map_err(|e| format!("records_global JSON for key '{key}': {e}"))?;
+            let value = parse_value_json(&value_raw, &key, "records_global")?;
             out.push(MemoryKvRecord {
                 namespace: None,
                 key,

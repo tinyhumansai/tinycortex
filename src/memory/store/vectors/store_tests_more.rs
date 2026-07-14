@@ -30,12 +30,14 @@ fn search_by_vector_preserves_metadata() {
 #[test]
 fn search_handles_invalid_metadata_json() {
     let store = fake_store(2);
+    store
+        .insert_with_vector("bad", "ns", "text", &[1.0, 0.0], json!({}))
+        .unwrap();
     {
         let conn = store.conn.lock();
         conn.execute(
-            "INSERT INTO vectors (id, namespace, text, embedding, metadata, created_at, updated_at)
-             VALUES ('bad', 'ns', 'text', ?1, 'not-json', 0.0, 0.0)",
-            rusqlite::params![vec_to_bytes(&[1.0, 0.0])],
+            "UPDATE vectors SET metadata = 'not-json' WHERE id = 'bad' AND namespace = 'ns'",
+            [],
         )
         .unwrap();
     }

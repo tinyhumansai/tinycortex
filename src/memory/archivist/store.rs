@@ -19,7 +19,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use sha2::{Digest, Sha256};
 
 use crate::memory::archivist::types::ArchivedTurn;
 use crate::memory::config::MemoryConfig;
@@ -42,28 +41,9 @@ fn session_dir(config: &MemoryConfig, session_id: &str) -> PathBuf {
 /// Map any non-`[A-Za-z0-9_-]` character to `_` so a session id is always a
 /// safe single path component.
 fn sanitize_session(s: &str) -> String {
-    let sanitized: String = s
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if sanitized == s && !sanitized.is_empty() {
-        return sanitized;
-    }
-
-    // Replacement alone is collision-prone (`a/b` and `a?b`). Keep a short
-    // digest of the exact machine id whenever sanitisation changed it.
-    let digest = Sha256::digest(s.as_bytes());
-    let suffix = digest[..6]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    format!("{sanitized}-{suffix}")
+    crate::memory::fsutil::sanitize_component_with_digest(s, |character| {
+        character.is_alphanumeric() || character == '-' || character == '_'
+    })
 }
 
 /// Next free sequence number for a session: one past the highest `NNNNNN.md`

@@ -376,25 +376,12 @@ pub fn persist_score(
     timestamp_ms: i64,
     tree_id: Option<&str>,
 ) -> Result<()> {
-    let row = score_row(result);
-    store::upsert_score(config, &row)?;
-
-    // INSERT OR REPLACE never deletes rows whose entity_id is absent from the
-    // new extraction. Clear for both kept and dropped results so stale rows do
-    // not survive a re-score.
-    store::clear_entity_index_for_node(config, &result.chunk_id)?;
-    if result.kept && !result.canonical_entities.is_empty() {
-        store::index_entities(
-            config,
-            &result.canonical_entities,
-            &result.chunk_id,
-            "leaf",
-            timestamp_ms,
-            tree_id,
-        )?;
-    }
-
-    Ok(())
+    crate::memory::chunks::with_connection(config, |connection| {
+        let transaction = connection.unchecked_transaction()?;
+        persist_score_tx(&transaction, result, timestamp_ms, tree_id)?;
+        transaction.commit()?;
+        Ok(())
+    })
 }
 
 /// Transactional variant of [`persist_score`] — writes the score row and

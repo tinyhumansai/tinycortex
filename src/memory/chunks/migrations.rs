@@ -4,11 +4,9 @@
 //! once per vault. Called from [`super::connection`] during DB initialisation.
 //!
 //! ## Contract
-//! Both migrations here follow the same shape: read `user_version`, bail out
-//! if it is already at/past the migration's target version, otherwise do the
-//! work and bump `user_version` inside one `unchecked_transaction`. A crash can
-//! therefore expose neither the migrated rows nor the version marker, or both,
-//! but never a split state.
+//! Both migrations are version-gated. Database-only work and its version marker
+//! share a transaction. Migrations with filesystem cleanup complete that
+//! cleanup before recording the version so an interruption remains retryable.
 //!
 //! Neither migration is exercised by an automated test in this module (audit
 //! test-coverage gap) — both are asserted only via the module's behavior at
@@ -112,16 +110,13 @@ pub(super) fn migrate_legacy_embeddings_to_sidecar(
 /// parent `mem_tree_summaries` / `mem_tree_trees` rows, so this works whether
 /// or not `ON DELETE CASCADE` is declared for a given foreign key.
 ///
-/// The on-disk `wiki/summaries/global*` / `topic-*` folder cleanup after the
-/// DB transaction is best-effort: a filesystem error there is swallowed
-/// (`let _ =`) rather than propagated, so a failed directory removal does not
-/// block the `user_version` bump — those folders may survive as harmless
-/// orphans if cleanup fails, but the DB-side purge still completes.
+/// The on-disk `wiki/summaries/global*` / `topic-*` folder cleanup happens
+/// before the version marker is committed. A cleanup failure therefore leaves
+/// the migration retryable on the next startup.
 ///
 /// # Errors
 /// Returns `Err` if any `DELETE` statement or the transaction commit fails, or
-/// if bumping `user_version` afterward fails. Does not return `Err` for
-/// filesystem cleanup failures (see above).
+/// if filesystem cleanup, bumping `user_version`, or commit fails.
 pub(super) fn purge_global_topic_trees(conn: &Connection, config: &MemoryConfig) -> Result<()> {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -163,22 +158,43 @@ pub(super) fn purge_global_topic_trees(conn: &Connection, config: &MemoryConfig)
         "DELETE FROM mem_tree_jobs WHERE kind IN ('topic_route','digest_daily')",
         [],
     )?;
+    // On-disk: drop `wiki/summaries/global*` and `topic-*` summary folders.
+    let summaries_root = content_root(config).join("wiki").join("summaries");
+    match std::fs::read_dir(&summaries_root) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry.with_context(|| {
+                    format!(
+                        "read summary directory entry in {}",
+                        summaries_root.display()
+                    )
+                })?;
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with("global") || name.starts_with("topic-") {
+                    std::fs::remove_dir_all(entry.path()).with_context(|| {
+                        format!(
+                            "remove retired summary directory {}",
+                            entry.path().display()
+                        )
+                    })?;
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "read retired summary directories in {}",
+                    summaries_root.display()
+                )
+            });
+        }
+    }
+
     tx.pragma_update(None, "user_version", GLOBAL_TOPIC_PURGE_MIGRATION_VERSION)
         .context("set PRAGMA user_version during global/topic purge")?;
     tx.commit()?;
-
-    // On-disk: drop `wiki/summaries/global*` and `topic-*` summary folders.
-    // Best-effort — a filesystem error must not abort the version bump.
-    let summaries_root = content_root(config).join("wiki").join("summaries");
-    if let Ok(entries) = std::fs::read_dir(&summaries_root) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name.starts_with("global") || name.starts_with("topic-") {
-                let _ = std::fs::remove_dir_all(entry.path());
-            }
-        }
-    }
 
     Ok(())
 }

@@ -46,8 +46,9 @@ fn list_threads_reconciles_stats_with_authoritative_message_files() {
     // Warm-up: list_threads folds the MessageAppended entries.
     let _ = store.list_threads().unwrap();
 
-    // Removing the authoritative transcript must not leave stale derived
-    // counts behind.
+    // Removing the transcript after a stats snapshot does not force routine
+    // list calls to rescan every message file. Cached navigation metadata
+    // remains available; explicit recovery can rebuild it when needed.
     let messages_dir = temp
         .path()
         .join("memory")
@@ -63,8 +64,8 @@ fn list_threads_reconciles_stats_with_authoritative_message_files() {
 
     let threads = store.list_threads().unwrap();
     assert_eq!(threads.len(), 1);
-    assert_eq!(threads[0].message_count, 0);
-    assert_eq!(threads[0].last_message_at, "2026-04-10T12:00:00Z");
+    assert_eq!(threads[0].message_count, 3);
+    assert_eq!(threads[0].last_message_at, "2026-04-10T12:03:00Z");
 }
 
 #[test]
@@ -115,11 +116,12 @@ fn backfill_writes_stats_snapshot_for_legacy_threads() {
         "expected backfilled Stats entry in threads.jsonl, got:\n{log}",
     );
 
-    // The message file remains authoritative even after a Stats snapshot.
+    // Once a Stats snapshot exists, routine reads remain header-only even if
+    // the transcript later becomes unavailable.
     std::fs::remove_file(&messages_file).unwrap();
     let threads2 = store.list_threads().unwrap();
-    assert_eq!(threads2[0].message_count, 0);
-    assert_eq!(threads2[0].last_message_at, "2026-04-10T08:00:00Z");
+    assert_eq!(threads2[0].message_count, 2);
+    assert_eq!(threads2[0].last_message_at, "2026-04-10T09:05:00Z");
 }
 
 #[test]

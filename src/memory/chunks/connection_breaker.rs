@@ -1,6 +1,5 @@
 //! Per-database circuit breaker for repeated connection-init failures.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
@@ -8,43 +7,65 @@ use parking_lot::Mutex;
 pub(crate) const CB_THRESHOLD: u32 = 3;
 pub(crate) const CB_COOLDOWN: Duration = Duration::from_secs(30);
 
+struct BreakerState {
+    consecutive_failures: u32,
+    tripped: bool,
+    last_trip: Option<Instant>,
+}
+
 pub(super) struct CircuitBreaker {
-    consecutive_failures: AtomicU32,
-    tripped: AtomicBool,
-    last_trip: Mutex<Option<Instant>>,
+    state: Mutex<BreakerState>,
 }
 
 impl CircuitBreaker {
+    /// Create a closed breaker with no recorded initialization failures.
     pub fn new() -> Self {
         Self {
-            consecutive_failures: AtomicU32::new(0),
-            tripped: AtomicBool::new(false),
-            last_trip: Mutex::new(None),
+            state: Mutex::new(BreakerState {
+                consecutive_failures: 0,
+                tripped: false,
+                last_trip: None,
+            }),
         }
     }
 
+    /// Reset failure state after a successful initialization.
+    ///
+    /// Returns `true` when this call recovered a previously tripped breaker.
     pub fn record_success(&self) -> bool {
-        self.consecutive_failures.store(0, Ordering::Relaxed);
-        *self.last_trip.lock() = None;
-        self.tripped.swap(false, Ordering::Relaxed)
+        let mut state = self.state.lock();
+        let was_tripped = state.tripped;
+        state.consecutive_failures = 0;
+        state.tripped = false;
+        state.last_trip = None;
+        was_tripped
     }
 
+    /// Record one initialization failure and trip at [`CB_THRESHOLD`].
+    ///
+    /// Returns `true` only for the failure that transitions the breaker from
+    /// closed to tripped. Further failures refresh the cooldown timestamp.
     pub fn record_failure(&self) -> bool {
-        let count = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
-        if count >= CB_THRESHOLD && !self.tripped.swap(true, Ordering::Relaxed) {
-            *self.last_trip.lock() = Some(Instant::now());
-            return true;
+        let mut state = self.state.lock();
+        state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+        let just_tripped = state.consecutive_failures >= CB_THRESHOLD && !state.tripped;
+        if state.consecutive_failures >= CB_THRESHOLD {
+            state.tripped = true;
+            state.last_trip = Some(Instant::now());
         }
-        if self.tripped.load(Ordering::Relaxed) {
-            *self.last_trip.lock() = Some(Instant::now());
-        }
-        false
+        just_tripped
     }
 
+    /// Return whether the breaker is tripped and still within its cooldown.
+    ///
+    /// Once [`CB_COOLDOWN`] elapses this returns `false`, allowing one
+    /// serialized initialization attempt; success resets the breaker and
+    /// failure refreshes the cooldown.
     pub fn is_open(&self) -> bool {
-        if !self.tripped.load(Ordering::Relaxed) {
+        let state = self.state.lock();
+        if !state.tripped {
             return false;
         }
-        matches!(*self.last_trip.lock(), Some(tripped) if tripped.elapsed() < CB_COOLDOWN)
+        matches!(state.last_trip, Some(tripped) if tripped.elapsed() < CB_COOLDOWN)
     }
 }

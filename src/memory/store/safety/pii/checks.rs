@@ -230,3 +230,7 @@ pub(super) fn valid_nino(s: &str) -> bool {
     }
     true
 }
+
+#[cfg(test)]
+#[path = "checks_tests.rs"]
+mod tests;

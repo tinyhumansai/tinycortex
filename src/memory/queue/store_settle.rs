@@ -16,14 +16,9 @@ use crate::memory::config::MemoryConfig;
 use crate::memory::queue::store::backoff_ms_with_policy;
 use crate::memory::queue::types::{Job, JobFailure, NewJob};
 
-/// Maximum lifetime of a repeatedly deferred job. Deferral is intentionally
-/// free of the handler failure budget, but it must still have a terminal bound.
-#[cfg(test)]
-pub(crate) const MAX_DEFER_AGE_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
-
 /// Mark a claimed job as `done`. Clears the lock and stamps `completed_at_ms`.
 pub fn mark_done(config: &MemoryConfig, job: &Job) -> Result<()> {
-    mark_done_with_followups(config, job, &[])
+    mark_done_with_followups(config, job, &[]).map(|_| ())
 }
 
 /// Mark a claimed job done and enqueue all of its follow-up jobs in the same
@@ -33,7 +28,7 @@ pub(crate) fn mark_done_with_followups(
     config: &MemoryConfig,
     job: &Job,
     follow_ups: &[NewJob],
-) -> Result<()> {
+) -> Result<bool> {
     let job_id = &job.id;
     let claim_attempts = job.attempts as i64;
     let claim_started_at = job.started_at_ms;
@@ -53,11 +48,15 @@ pub(crate) fn mark_done_with_followups(
         )?;
         if updated != 0 {
             for follow_up in follow_ups {
-                crate::memory::queue::store::enqueue_tx(&tx, follow_up)?;
+                crate::memory::queue::store::enqueue_tx_with_default(
+                    &tx,
+                    follow_up,
+                    config.queue.max_attempts,
+                )?;
             }
         }
         tx.commit()?;
-        Ok(())
+        Ok(updated != 0)
     })
 }
 

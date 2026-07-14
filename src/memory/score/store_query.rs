@@ -90,3 +90,7 @@ fn count_table(config: &MemoryConfig, table: &str) -> Result<u64> {
         Ok(count.max(0) as u64)
     })
 }
+
+#[cfg(test)]
+#[path = "store_query_tests.rs"]
+mod tests;

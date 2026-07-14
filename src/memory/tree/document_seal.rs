@@ -85,11 +85,13 @@ pub async fn seal_document_subtree_with_services(
     let root_level = doc_root.level;
     with_connection(config, move |connection| {
         let transaction = connection.unchecked_transaction()?;
-        let (current_root, current_max): (Option<String>, u32) = transaction.query_row(
-            "SELECT root_id, max_level FROM mem_tree_trees WHERE id = ?1",
-            [&tree.id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
+        let (current_root, current_max, status): (Option<String>, u32, String) = transaction
+            .query_row(
+                "SELECT root_id, max_level, status FROM mem_tree_trees WHERE id = ?1",
+                [&tree.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        anyhow::ensure!(status == "active", "tree '{}' is archived", tree.id);
         if current_root.as_deref() != Some(root_id.as_str()) || root_level > current_max {
             store::update_tree_after_seal_tx(
                 &transaction,
@@ -264,6 +266,16 @@ async fn seal_explicit_children(
     let staged_for_tx = staged.clone();
     with_connection(config, move |connection| {
         let transaction = connection.unchecked_transaction()?;
+        let status: String = transaction.query_row(
+            "SELECT status FROM mem_tree_trees WHERE id = ?1",
+            [&node_for_tx.tree_id],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            status == "active",
+            "tree '{}' is archived",
+            node_for_tx.tree_id
+        );
         store::insert_staged_summary_tx(
             &transaction,
             &node_for_tx,

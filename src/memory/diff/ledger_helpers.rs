@@ -19,6 +19,10 @@ pub(super) fn read_marker_ref(source_id: &str) -> String {
     format!("{READ_MARKER_PREFIX}{}", encode_source_id(source_id))
 }
 
+/// Build the snapshot commit subject and stable trailer block.
+///
+/// Labels are reduced to one safe trailer line; source identity, kind,
+/// trigger, item count, and capture time keep their machine-readable layout.
 pub(super) fn build_commit_message(
     meta: &SnapshotMeta,
     item_count: u32,
@@ -66,6 +70,9 @@ pub(super) fn parse_trailers(message: &str) -> HashMap<String, String> {
     map
 }
 
+/// Validate a source id before using it in ledger refs and trailers.
+///
+/// Empty ids and ids containing control characters are rejected.
 pub(super) fn validate_source_id(source_id: &str) -> Result<()> {
     anyhow::ensure!(!source_id.trim().is_empty(), "source id must not be blank");
     anyhow::ensure!(
@@ -75,6 +82,8 @@ pub(super) fn validate_source_id(source_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Encode one checkpoint using the stable human-readable subject and trailer
+/// schema consumed by [`checkpoint_from_message`].
 pub(super) fn checkpoint_message(
     label: &str,
     snapshot_ids: &[String],
@@ -88,6 +97,8 @@ pub(super) fn checkpoint_message(
     payload.to_string()
 }
 
+/// Decode a checkpoint from commit trailers, rejecting missing, malformed, or
+/// invalid source identity and numeric fields.
 pub(super) fn checkpoint_from_message(id: &str, message: &str) -> Result<Checkpoint> {
     let value: serde_json::Value = serde_json::from_str(message.trim())
         .with_context(|| format!("checkpoint '{id}' has invalid JSON metadata"))?;
