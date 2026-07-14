@@ -6,6 +6,7 @@ mod github;
 mod linear;
 mod notion;
 mod slack;
+mod slack_parse;
 
 pub use clickup::ClickUpSyncPipeline;
 pub use github::GitHubSyncPipeline;

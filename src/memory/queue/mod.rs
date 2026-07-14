@@ -41,6 +41,7 @@
 pub mod gate;
 mod handlers;
 mod ops;
+mod payloads;
 mod redact;
 /// Always-on async background worker + scheduler loops (feature `tokio`).
 ///

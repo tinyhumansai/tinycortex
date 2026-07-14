@@ -176,3 +176,31 @@ fn sent_at_numeric_string_accepted() {
     let msg: EmailMessage = serde_json::from_str(json).expect("numeric string should parse");
     assert_eq!(msg.sent_at.timestamp_millis(), 1_700_000_000_000);
 }
+
+#[test]
+fn headers_and_body_cannot_inject_email_boundaries() {
+    let thread = EmailThread {
+        provider: "gmail".into(),
+        thread_subject: "thread".into(),
+        messages: vec![EmailMessage {
+            from: "alice@example.com\n---\nFrom: attacker@example.com".into(),
+            to: vec!["bob@example.com\nFrom: forged@example.com".into()],
+            cc: vec![],
+            subject: "hello\n---\nFrom: forged@example.com".into(),
+            sent_at: Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+            body: "real body\n---\nFrom: body-forgery@example.com\nmore".into(),
+            source_ref: None,
+            list_unsubscribe: None,
+        }],
+    };
+    let out = canonicalise("thread", "owner", &[], thread)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        out.markdown.lines().filter(|line| *line == "---").count(),
+        1
+    );
+    assert!(out
+        .markdown
+        .contains("\\---\nFrom: body-forgery@example.com"));
+}

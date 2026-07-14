@@ -36,7 +36,9 @@ use crate::memory::queue::types::{Job, JobKind, JobStatus, NewJob, RETIRED_JOB_K
 pub const DEFAULT_LOCK_DURATION_MS: i64 = 5 * 60 * 1_000;
 
 /// Backoff math for retry. Returns `now + min(base * 2^attempts, cap)`.
+#[cfg(test)]
 pub(crate) const RETRY_BASE_MS: i64 = 60 * 1_000;
+#[cfg(test)]
 pub(crate) const RETRY_CAP_MS: i64 = 60 * 60 * 1_000;
 pub(crate) const DEFAULT_MAX_ATTEMPTS: u32 = 5;
 
@@ -257,13 +259,22 @@ pub(crate) fn row_to_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
 }
 
 /// Exponential backoff: attempt 1 → 60s, 2 → 120s, 3 → 240s, capped at 1h.
+#[cfg(test)]
 pub(crate) fn backoff_ms(attempts_so_far: u32) -> i64 {
+    backoff_ms_with_policy(attempts_so_far, RETRY_BASE_MS, RETRY_CAP_MS)
+}
+
+pub(crate) fn backoff_ms_with_policy(
+    attempts_so_far: u32,
+    retry_base_ms: i64,
+    retry_cap_ms: i64,
+) -> i64 {
     // `attempts_so_far` is the count BEFORE the next retry's attempt — so the
     // first retry uses `attempts_so_far == 1`, giving base * 2^0 = 60s.
     let exp = attempts_so_far.saturating_sub(1).min(20);
     let mult = 1i64 << exp;
-    let raw = RETRY_BASE_MS.saturating_mul(mult);
-    raw.min(RETRY_CAP_MS)
+    let raw = retry_base_ms.saturating_mul(mult);
+    raw.min(retry_cap_ms)
 }
 
 /// True if `kind` is a retired wire string (used by tests / callers that want

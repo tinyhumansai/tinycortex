@@ -4,15 +4,15 @@
 //! `memory/ingestion` pipeline. It takes raw unstructured text and recovers
 //! structured knowledge with no model calls:
 //!
-//! 1. **Chunking** — split the document into manageable pieces ([`chunking`],
-//!    [`text`]).
+//! 1. **Chunking** — split the document into manageable pieces (`chunking`,
+//!    `text`).
 //! 2. **Structured extraction** — regex rules for email headers, prefixed
-//!    fields, and explicit graph facts ([`regex`], [`parse_lines`],
-//!    [`parse_relations`]).
+//!    fields, and explicit graph facts (`regex`, `parse_lines`,
+//!    `parse_relations`).
 //! 3. **Heuristic extraction** — recipient / spatial relations over extraction
-//!    units ([`parse_units`]).
-//! 4. **Aggregation** — alias resolution, dedup, thresholding ([`alias`],
-//!    [`aggregate`], [`rules`]).
+//!    units (`parse_units`).
+//! 4. **Aggregation** — alias resolution, dedup, thresholding (`alias`,
+//!    `aggregate`, `rules`).
 //!
 //! ## Ownership boundary
 //!

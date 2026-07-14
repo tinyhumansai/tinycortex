@@ -117,15 +117,14 @@ pub enum ReembedProgress {
 /// ## Idempotency contract
 ///
 /// The queue is at-least-once: a crash or `SQLITE_BUSY` after a delegate
-/// method has run its side effect but before the caller's follow-up enqueue
-/// (or before [`store_settle::mark_done`](crate::memory::queue::store_settle::mark_done)
-/// commits) leaves the row `running` past its lease, so
+/// method has run its side effect but before parent settlement commits leaves
+/// the row `running` past its lease, so
 /// [`recover_stale_locks`](crate::memory::queue::store_settle::recover_stale_locks)
 /// puts it back to `ready` and the whole handler — including this delegate
-/// call — runs again. `extract_chunk` and `seal_document` in particular are
-/// not wrapped in a single transaction with their follow-up enqueue (see
-/// `handle_extract`, `handle_seal_document`), so implementations MUST make
-/// their side effects safe to repeat: upsert rather than insert, treat
+/// call — runs again. Follow-up jobs are committed atomically with settlement,
+/// but external/LLM delegate work cannot share that SQLite transaction.
+/// Implementations MUST therefore make their side effects safe to repeat:
+/// upsert rather than insert, treat
 /// "already applied" as success, and avoid effects that are observably wrong
 /// the second time (e.g. re-running a paid LLM call is wasteful but not
 /// incorrect; double-appending a chunk into a tree would be).
@@ -184,12 +183,53 @@ pub trait QueueDelegates: Send + Sync {
     fn has_uncovered_reembed_work(&self, config: &MemoryConfig, signature: &str) -> Result<bool>;
 }
 
+/// Handler outcome plus durable follow-up jobs. The worker commits all
+/// follow-ups in the same transaction that marks the parent job done.
+pub(crate) struct JobPlan {
+    pub outcome: JobOutcome,
+    pub follow_ups: Vec<NewJob>,
+}
+
+impl JobPlan {
+    fn done(follow_ups: Vec<NewJob>) -> Self {
+        Self {
+            outcome: JobOutcome::Done,
+            follow_ups,
+        }
+    }
+
+    fn outcome(outcome: JobOutcome) -> Self {
+        Self {
+            outcome,
+            follow_ups: Vec::new(),
+        }
+    }
+}
+
 /// Dispatch a claimed job to the matching per-kind handler.
 pub async fn handle_job(
     config: &MemoryConfig,
     job: &Job,
     delegates: &dyn QueueDelegates,
 ) -> Result<JobOutcome> {
+    let plan = plan_job(config, job, delegates).await?;
+    for follow_up in &plan.follow_ups {
+        if store::enqueue(config, follow_up)?.is_some()
+            && follow_up.kind == JobKind::ReembedBackfill
+        {
+            set_backfill_in_progress(true);
+        }
+    }
+    Ok(plan.outcome)
+}
+
+/// Plan a handler result without persisting follow-ups. Used by the worker so
+/// parent settlement and child enqueue cannot be separated by a crash.
+pub(crate) async fn plan_job(
+    config: &MemoryConfig,
+    job: &Job,
+    delegates: &dyn QueueDelegates,
+) -> Result<JobPlan> {
     match job.kind {
         JobKind::ExtractChunk => handle_extract(config, job, delegates).await,
         JobKind::AppendBuffer => handle_append_buffer(config, job, delegates).await,
@@ -218,12 +258,14 @@ async fn handle_extract(
     config: &MemoryConfig,
     job: &Job,
     delegates: &dyn QueueDelegates,
-) -> Result<JobOutcome> {
+) -> Result<JobPlan> {
     let payload: ExtractChunkPayload = parse_payload(job, "ExtractChunk")?;
     let Some(decision) = delegates.extract_chunk(config, &payload.chunk_id).await? else {
         // Chunk row vanished between enqueue and claim — nothing to do.
-        return Ok(JobOutcome::Done);
+        return Ok(JobPlan::done(Vec::new()));
     };
+
+    let mut follow_ups = Vec::new();
 
     // Admitted, flat-buffer source: enqueue the append-buffer follow-up. The
     // per-document-versioned sources (Notion) skip the flat L0 buffer — their
@@ -237,41 +279,44 @@ async fn handle_extract(
                 source_id: decision.tree_scope.clone(),
             },
         })?;
-        store::enqueue(config, &follow_up)?;
+        follow_ups.push(follow_up);
     }
 
     // Anything admitted arms the re-embed backfill so the embedding pass starts
     // promptly (extract no longer embeds inline).
     if decision.kept {
-        crate::memory::queue::ops::ensure_reembed_backfill(config, delegates)?;
+        if let Some(job) = crate::memory::queue::ops::planned_reembed_backfill(config, delegates)? {
+            follow_ups.push(job);
+        }
     }
 
-    Ok(JobOutcome::Done)
+    Ok(JobPlan::done(follow_ups))
 }
 
 async fn handle_append_buffer(
     config: &MemoryConfig,
     job: &Job,
     delegates: &dyn QueueDelegates,
-) -> Result<JobOutcome> {
+) -> Result<JobPlan> {
     let payload: AppendBufferPayload = parse_payload(job, "AppendBuffer")?;
     let Some(decision) = delegates
         .append_node(config, &payload.node, &payload.target)
         .await?
     else {
         // Missing chunk/summary, or the target topic tree was archived — drop.
-        return Ok(JobOutcome::Done);
+        return Ok(JobPlan::done(Vec::new()));
     };
 
+    let mut follow_ups = Vec::new();
     if decision.should_seal {
         let seal = SealPayload {
             tree_id: decision.tree_id,
             level: 0,
             force_now_ms: None,
         };
-        store::enqueue(config, &NewJob::seal(&seal)?)?;
+        follow_ups.push(NewJob::seal(&seal)?);
     }
-    Ok(JobOutcome::Done)
+    Ok(JobPlan::done(follow_ups))
 }
 
 /// Run the `Seal` handler for exactly one buffer level.
@@ -279,60 +324,59 @@ async fn handle_append_buffer(
 /// A cascading seal returns the parent payload so each level stays its own
 /// crash-recovery checkpoint (see [`SealPayload::dedupe_key`]).
 ///
-/// Edge-triggered gap: [`SealPayload::dedupe_key`] is scoped to
-/// `(tree_id, level)` and only suppresses duplicates while a seal for that key
-/// is `ready`/`running` (see the partial unique index documented on
-/// [`store::enqueue`]). If a new enqueue attempt for the same level arrives
-/// while a seal is still `running` and the buffer crosses its gate again
-/// afterward, the suppressed attempt is simply dropped — nothing re-checks the
-/// gate when the in-flight seal finishes, so the newly-buffered content waits
-/// for the next `flush_stale` tick (which can be hours away) instead of being
-/// sealed promptly.
+/// Settlement re-checks the live same-level buffer after releasing this job's
+/// active dedupe key. Content appended while the seal was running therefore
+/// restores a suppressed seal edge immediately when it crosses the gate.
 async fn handle_seal(
     config: &MemoryConfig,
     job: &Job,
     delegates: &dyn QueueDelegates,
-) -> Result<JobOutcome> {
+) -> Result<JobPlan> {
     let payload: SealPayload = parse_payload(job, "Seal")?;
     // Seal exactly one level. A cascading seal returns the parent payload so
     // each level stays its own crash-recovery checkpoint.
-    if let Some(parent) = delegates.seal_level(config, &payload).await? {
-        store::enqueue(config, &NewJob::seal(&parent)?)?;
-    }
-    Ok(JobOutcome::Done)
+    let follow_ups = delegates
+        .seal_level(config, &payload)
+        .await?
+        .map(|parent| NewJob::seal(&parent))
+        .transpose()?
+        .into_iter()
+        .collect();
+    Ok(JobPlan::done(follow_ups))
 }
 
 async fn handle_flush_stale(
     config: &MemoryConfig,
     job: &Job,
     delegates: &dyn QueueDelegates,
-) -> Result<JobOutcome> {
+) -> Result<JobPlan> {
     let payload: FlushStalePayload = parse_payload(job, "FlushStale")?;
     let age_secs = payload.max_age_secs.unwrap_or(L0_DEFAULT_FLUSH_AGE_SECS);
     let now_ms = chrono::Utc::now().timestamp_millis();
+    let mut follow_ups = Vec::new();
     for buf in delegates.list_stale_buffers(config, age_secs).await? {
         let seal = SealPayload {
             tree_id: buf.tree_id,
             level: buf.level,
             force_now_ms: Some(now_ms),
         };
-        store::enqueue(config, &NewJob::seal(&seal)?)?;
+        follow_ups.push(NewJob::seal(&seal)?);
     }
-    Ok(JobOutcome::Done)
+    Ok(JobPlan::done(follow_ups))
 }
 
 async fn handle_seal_document(
     config: &MemoryConfig,
     job: &Job,
     delegates: &dyn QueueDelegates,
-) -> Result<JobOutcome> {
+) -> Result<JobPlan> {
     let payload: SealDocumentPayload = parse_payload(job, "SealDocument")?;
     if payload.chunk_ids.is_empty() {
         // Empty version set — nothing to seal.
-        return Ok(JobOutcome::Done);
+        return Ok(JobPlan::done(Vec::new()));
     }
     delegates.seal_document(config, &payload).await?;
-    Ok(JobOutcome::Done)
+    Ok(JobPlan::done(Vec::new()))
 }
 
 /// Run one step of the `ReembedBackfill` chain.
@@ -350,7 +394,7 @@ async fn handle_reembed_backfill(
     config: &MemoryConfig,
     job: &Job,
     delegates: &dyn QueueDelegates,
-) -> Result<JobOutcome> {
+) -> Result<JobPlan> {
     let payload: ReembedBackfillPayload = parse_payload(job, "ReembedBackfill")?;
 
     match delegates.reembed_batch(config, &payload.signature).await? {
@@ -360,10 +404,10 @@ async fn handle_reembed_backfill(
             set_backfill_in_progress(true);
             // More rows may remain — reschedule THIS row (no re-enqueue, so the
             // per-signature dedupe key stays valid).
-            Ok(JobOutcome::Defer {
+            Ok(JobPlan::outcome(JobOutcome::Defer {
                 until_ms: chrono::Utc::now().timestamp_millis() + REEMBED_BACKFILL_REVISIT_MS,
                 reason: "re-embed backfill: batch done, more pending".to_string(),
-            })
+            }))
         }
         ReembedProgress::Wrote {
             more_pending: false,
@@ -372,7 +416,7 @@ async fn handle_reembed_backfill(
         | ReembedProgress::NoProvider
         | ReembedProgress::StaleSignature => {
             set_backfill_in_progress(false);
-            Ok(JobOutcome::Done)
+            Ok(JobPlan::done(Vec::new()))
         }
     }
 }

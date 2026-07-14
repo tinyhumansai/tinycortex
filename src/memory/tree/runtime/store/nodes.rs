@@ -24,13 +24,13 @@ pub fn write_node(config: &MemoryConfig, node: &TreeNode) -> Result<()> {
             .with_context(|| format!("create dirs for {}", parent.display()))?;
     }
     let metadata_line = match &node.metadata {
-        Some(m) => format!("metadata: {m}\n"),
+        Some(m) => format!("metadata: {}\n", yaml_string(m)),
         None => String::new(),
     };
     let frontmatter = format!(
         "---\n\
-         node_id: \"{}\"\n\
-         namespace: \"{}\"\n\
+         node_id: {}\n\
+         namespace: {}\n\
          level: {}\n\
          parent_id: {}\n\
          token_count: {}\n\
@@ -39,11 +39,11 @@ pub fn write_node(config: &MemoryConfig, node: &TreeNode) -> Result<()> {
          updated_at: {}\n\
          {}\
          ---\n\n",
-        node.node_id,
-        node.namespace,
+        yaml_string(&node.node_id),
+        yaml_string(&node.namespace),
         node.level.as_str(),
         match &node.parent_id {
-            Some(pid) => format!("\"{pid}\""),
+            Some(pid) => yaml_string(pid),
             None => "~".to_string(),
         },
         node.token_count,
@@ -58,6 +58,10 @@ pub fn write_node(config: &MemoryConfig, node: &TreeNode) -> Result<()> {
     crate::memory::fsutil::atomic_write(&path, content.as_bytes())
         .with_context(|| format!("write tree node {}", path.display()))?;
     Ok(())
+}
+
+fn yaml_string(value: &str) -> String {
+    serde_json::to_string(value).expect("serializing a string cannot fail")
 }
 
 /// Read a single tree node from its markdown file. `None` if it does not exist.
@@ -275,7 +279,9 @@ pub(crate) fn split_frontmatter(raw: &str) -> (HashMap<String, String>, String) 
             }
             if let Some(colon_pos) = line.find(':') {
                 let key = line[..colon_pos].trim().to_string();
-                let value = line[colon_pos + 1..].trim().trim_matches('"').to_string();
+                let raw_value = line[colon_pos + 1..].trim();
+                let value = serde_json::from_str::<String>(raw_value)
+                    .unwrap_or_else(|_| raw_value.trim_matches('"').to_string());
                 map.insert(key, value);
             }
         }

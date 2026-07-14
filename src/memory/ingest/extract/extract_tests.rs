@@ -6,7 +6,8 @@
 //! ownership boundary. Here we assert directly on the deterministic extractor's
 //! recovered entities, relations, preferences, and decisions.
 
-use super::{extract_document, ExtractionMode, MemoryIngestionConfig};
+use super::{extract_document, extract_enriched_document, ExtractionMode, MemoryIngestionConfig};
+use crate::memory::types::{MemoryTaint, NamespaceDocumentInput};
 
 fn fixture(path: &str) -> String {
     let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -122,4 +123,33 @@ fn sentence_mode_extraction_recovers_east_and_west_spatial_relations() {
     assert!(result.relations.iter().any(|r| {
         r.subject == "KITCHEN" && r.predicate == "EAST_OF" && r.object == "WEST ROOM"
     }));
+}
+
+#[test]
+fn enriched_document_merges_header_metadata_and_reports_counts() {
+    let input = NamespaceDocumentInput {
+        namespace: "inbox".into(),
+        key: "message-1".into(),
+        title: "Project handoff".into(),
+        content: "From: Alice Smith <alice@example.com>\nTags: launch, urgent\n\nAlice Smith owns Project Atlas.".into(),
+        source_type: "email".into(),
+        priority: "normal".into(),
+        tags: vec!["existing".into()],
+        metadata: serde_json::json!({}),
+        category: "episodic".into(),
+        session_id: None,
+        document_id: None,
+        taint: MemoryTaint::ExternalSync,
+    };
+
+    let (enriched, result) = extract_enriched_document(&input, &MemoryIngestionConfig::default());
+
+    assert_eq!(enriched.title, input.title);
+    assert!(enriched.tags.contains(&"existing".to_string()));
+    assert_eq!(result.document_id, "");
+    assert_eq!(result.namespace, "");
+    assert!(result.entity_count > 0);
+    assert_eq!(result.entity_count, result.entities.len());
+    assert_eq!(result.relation_count, result.relations.len());
+    assert_eq!(result.tags, enriched.tags);
 }

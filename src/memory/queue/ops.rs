@@ -43,16 +43,26 @@ pub fn ensure_reembed_backfill(
     config: &MemoryConfig,
     delegates: &dyn QueueDelegates,
 ) -> Result<()> {
-    let sig = delegates.active_signature(config);
-    if delegates.has_uncovered_reembed_work(config, &sig)? {
-        let job = NewJob::reembed_backfill(&ReembedBackfillPayload {
-            signature: sig.clone(),
-        })?;
+    if let Some(job) = planned_reembed_backfill(config, delegates)? {
         if store::enqueue(config, &job)?.is_some() {
             set_backfill_in_progress(true);
         }
     }
     Ok(())
+}
+
+/// Build the deduplicated re-embed follow-up without persisting it. Workers
+/// use this to commit follow-up creation atomically with parent settlement.
+pub(crate) fn planned_reembed_backfill(
+    config: &MemoryConfig,
+    delegates: &dyn QueueDelegates,
+) -> Result<Option<NewJob>> {
+    let sig = delegates.active_signature(config);
+    if delegates.has_uncovered_reembed_work(config, &sig)? {
+        let job = NewJob::reembed_backfill(&ReembedBackfillPayload { signature: sig })?;
+        return Ok(Some(job));
+    }
+    Ok(None)
 }
 
 #[cfg(test)]

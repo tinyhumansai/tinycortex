@@ -25,23 +25,22 @@ pub fn node_file_path(config: &MemoryConfig, namespace: &str, node_id: &str) -> 
     tree_dir(config, namespace).join(node_id_to_path(node_id))
 }
 
-/// Sanitise a namespace string for use as a directory name: trims whitespace,
-/// maps each of `/ \ : * ? " < > | .` to `_`, then collapses `__` runs to `_`.
-///
-/// # NOTE: not collision-free (`TR-15`)
-/// This maps distinct namespaces onto the same directory name whenever they
-/// differ only in which sanitised character produced a given `_`, e.g.
-/// `"a/b"` and `"a.b"` both sanitise to `"a_b"`. The single-pass `replace("__",
-/// "_")` also does not fully collapse triple-or-more underscore runs
-/// consistently across inputs that already contained literal underscores.
-/// Prefer length-prefixing or hex-encoding raw bytes for a collision-free
-/// mapping (as `thread_messages_path` in `conversations` already does). See
-/// `docs/spec/audit/03-tree-archivist-conversations.md`.
+/// Sanitise a namespace string for use as a directory name. Safe names retain
+/// their legacy spelling; transformed names carry a digest of the exact raw
+/// namespace so distinct machine ids cannot alias the same directory.
 fn sanitize(namespace: &str) -> String {
-    namespace
-        .trim()
-        .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|', '.'], "_")
-        .replace("__", "_")
+    let raw = namespace.trim();
+    let sanitized = raw.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|', '.'], "_");
+    if sanitized == raw {
+        return sanitized;
+    }
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(raw.as_bytes());
+    let suffix = digest[..6]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("{sanitized}-{suffix}")
 }
 
 /// Validate a namespace string, erroring on empty / dangerous input.

@@ -6,7 +6,7 @@
 //! ```
 //!
 //! Writes use the same atomic tempfile + rename contract as
-//! [`write_if_new`](crate::memory::store::content::atomic::write_if_new), with
+//! [`write_if_new`], with
 //! one important difference: we want to *append* turns to a session, so the seq
 //! is computed from the existing directory contents on each call.
 //!
@@ -19,6 +19,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
 
 use crate::memory::archivist::types::ArchivedTurn;
 use crate::memory::config::MemoryConfig;
@@ -41,7 +42,8 @@ fn session_dir(config: &MemoryConfig, session_id: &str) -> PathBuf {
 /// Map any non-`[A-Za-z0-9_-]` character to `_` so a session id is always a
 /// safe single path component.
 fn sanitize_session(s: &str) -> String {
-    s.chars()
+    let sanitized: String = s
+        .chars()
         .map(|c| {
             if c.is_alphanumeric() || c == '-' || c == '_' {
                 c
@@ -49,7 +51,19 @@ fn sanitize_session(s: &str) -> String {
                 '_'
             }
         })
-        .collect()
+        .collect();
+    if sanitized == s && !sanitized.is_empty() {
+        return sanitized;
+    }
+
+    // Replacement alone is collision-prone (`a/b` and `a?b`). Keep a short
+    // digest of the exact machine id whenever sanitisation changed it.
+    let digest = Sha256::digest(s.as_bytes());
+    let suffix = digest[..6]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("{sanitized}-{suffix}")
 }
 
 /// Next free sequence number for a session: one past the highest `NNNNNN.md`
@@ -75,10 +89,10 @@ fn next_seq(dir: &Path) -> u32 {
 /// Render a turn as a YAML front-matter block followed by its body.
 fn compose_turn(turn: &ArchivedTurn) -> String {
     let mut yaml = String::from("---\n");
-    yaml.push_str(&format!("session_id: {}\n", turn.session_id));
+    yaml.push_str(&format!("session_id: {}\n", yaml_escape(&turn.session_id)));
     yaml.push_str(&format!("seq: {}\n", turn.seq));
     yaml.push_str(&format!("timestamp_ms: {}\n", turn.timestamp_ms));
-    yaml.push_str(&format!("role: {}\n", turn.role));
+    yaml.push_str(&format!("role: {}\n", yaml_escape(&turn.role)));
     yaml.push_str(&format!("cost_microdollars: {}\n", turn.cost_microdollars));
     if let Some(lesson) = turn.lesson.as_ref() {
         yaml.push_str(&format!("lesson: {}\n", yaml_escape(lesson)));
@@ -94,18 +108,11 @@ fn compose_turn(turn: &ArchivedTurn) -> String {
     yaml
 }
 
-/// Quote any string that contains characters with YAML semantic meaning. Simple
-/// double-quote escaping is good enough for these single-line front-matter
-/// fields.
+/// Encode a string as a JSON string literal. JSON quoted scalars are valid
+/// YAML, and serde's encoder correctly escapes newlines and every control
+/// character that must not appear literally in front matter.
 fn yaml_escape(s: &str) -> String {
-    let needs_quote = s
-        .chars()
-        .any(|c| matches!(c, ':' | '#' | '\n' | '"' | '\'' | '[' | ']' | '{' | '}'));
-    if needs_quote {
-        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
-    } else {
-        s.to_string()
-    }
+    serde_json::to_string(s).expect("serializing a string cannot fail")
 }
 
 /// Append a turn to its session's archive. Returns the assigned `seq`.
@@ -115,12 +122,23 @@ fn yaml_escape(s: &str) -> String {
 pub fn record_turn(config: &MemoryConfig, mut turn: ArchivedTurn) -> Result<ArchivedTurn> {
     let dir = session_dir(config, &turn.session_id);
     fs::create_dir_all(&dir).with_context(|| format!("failed to mkdir -p {}", dir.display()))?;
-    turn.seq = next_seq(&dir);
-    let path = dir.join(format!("{:06}.md", turn.seq));
-    let bytes = compose_turn(&turn).into_bytes();
-    write_if_new(&path, &bytes)
-        .with_context(|| format!("failed to write episodic turn {}", path.display()))?;
-    Ok(turn)
+    loop {
+        turn.seq = next_seq(&dir);
+        let path = dir.join(format!("{:06}.md", turn.seq));
+        let bytes = compose_turn(&turn).into_bytes();
+        match write_if_new(&path, &bytes) {
+            Ok(true) => return Ok(turn),
+            // Another writer may have claimed the sequence after `next_seq`.
+            // `write_if_new` uses create-new semantics, so retrying computes a
+            // fresh sequence without ever overwriting the winning turn.
+            Ok(false) => continue,
+            Err(_) if path.exists() => continue,
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to write episodic turn {}", path.display()))
+            }
+        }
+    }
 }
 
 /// Read every turn for `session_id`, sorted by seq ascending. A missing session
@@ -167,11 +185,7 @@ fn parse_turn(text: &str) -> Option<ArchivedTurn> {
         };
         let k = k.trim();
         let v = v.trim();
-        let v_unquoted = v
-            .strip_prefix('"')
-            .and_then(|s| s.strip_suffix('"'))
-            .map(|s| s.replace("\\\"", "\"").replace("\\\\", "\\"))
-            .unwrap_or_else(|| v.to_string());
+        let v_unquoted = serde_json::from_str::<String>(v).unwrap_or_else(|_| v.to_string());
         match k {
             "session_id" => turn.session_id = v_unquoted,
             "seq" => turn.seq = v_unquoted.parse().unwrap_or(0),

@@ -19,7 +19,7 @@ use serde_json::Value;
 ///    message we already render directly above.
 /// 2. **Drop footer noise** — `Unsubscribe`, `View in browser`, copyright
 ///    lines, legal disclaimers, and address blocks. We cut at the first line
-///    containing any of [`FOOTER_TRIGGERS`].
+///    containing a known footer trigger.
 ///
 /// The two passes run in order so a quoted-chain preamble below a
 /// "view in browser" line still gets stripped on its own merits even if the
@@ -108,7 +108,7 @@ pub fn drop_reply_chain(s: &str) -> String {
 }
 
 /// Strip everything from the first line containing a footer trigger onward.
-/// See [`FOOTER_TRIGGERS`] for the matched list.
+/// Uses the module's known footer-trigger list.
 pub fn drop_footer_noise(s: &str) -> String {
     let mut offset = 0usize;
     for line in s.split_inclusive('\n') {

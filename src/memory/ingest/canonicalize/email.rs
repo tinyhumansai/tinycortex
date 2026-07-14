@@ -7,16 +7,9 @@
 //! rendering to strip reply chains, marketing footers, legal disclaimers, and
 //! other boilerplate.
 //!
-//! NOTE: `from`/`to`/`cc`/`subject` headers are rendered verbatim (no
-//! escaping — [`email_clean::md_escape`] exists but is not applied here) into
-//! the `---\nFrom: ...` boundary block the downstream chunker splits on
-//! (known gap, see audit finding QI-14 in
-//! `docs/spec/audit/04-queue-ingest.md`). A body or header value containing a
-//! line of the form `---` immediately followed by a `From:` line can inject a
-//! bogus message boundary and split one email into multiple spurious chunks.
-//! Callers that accept untrusted header/body content should sanitise these
-//! fields before calling [`canonicalise`] if boundary injection must be
-//! prevented.
+//! Header values collapse newlines through [`email_clean::md_escape`], and
+//! body lines equal to `---` are escaped so untrusted content cannot forge the
+//! downstream email boundary grammar.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -89,25 +82,48 @@ pub fn canonicalise(
     // boundaries so each message becomes one chunk.
     for msg in &messages {
         md.push_str("---\n");
-        md.push_str(&format!("From: {}\n", msg.from));
+        md.push_str(&format!("From: {}\n", email_clean::md_escape(&msg.from)));
         if !msg.to.is_empty() {
-            md.push_str(&format!("To: {}\n", msg.to.join(", ")));
+            md.push_str(&format!(
+                "To: {}\n",
+                email_clean::md_escape(&msg.to.join(", "))
+            ));
         }
         if !msg.cc.is_empty() {
-            md.push_str(&format!("Cc: {}\n", msg.cc.join(", ")));
+            md.push_str(&format!(
+                "Cc: {}\n",
+                email_clean::md_escape(&msg.cc.join(", "))
+            ));
         }
-        md.push_str(&format!("Subject: {}\n", msg.subject));
+        md.push_str(&format!(
+            "Subject: {}\n",
+            email_clean::md_escape(&msg.subject)
+        ));
         md.push_str(&format!("Date: {}\n", msg.sent_at.to_rfc3339()));
 
         if let Some(unsub) = &msg.list_unsubscribe {
-            md.push_str(&format!("List-Unsubscribe: {}\n", unsub));
+            md.push_str(&format!(
+                "List-Unsubscribe: {}\n",
+                email_clean::md_escape(unsub)
+            ));
         }
         md.push('\n');
         let cleaned = email_clean::clean_body(msg.body.trim());
         if cleaned.is_empty() {
             md.push('\n');
         } else {
-            md.push_str(&cleaned);
+            let safe_body = cleaned
+                .lines()
+                .map(|line| {
+                    if line.trim_end() == "---" {
+                        format!("\\{line}")
+                    } else {
+                        line.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            md.push_str(&safe_body);
         }
         md.push_str("\n\n");
     }

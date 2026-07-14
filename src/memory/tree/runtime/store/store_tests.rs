@@ -42,6 +42,22 @@ fn write_and_read_node_roundtrip() {
 }
 
 #[test]
+fn node_frontmatter_strings_escape_newlines_and_delimiters() {
+    let tmp = TempDir::new().unwrap();
+    let config = test_config(&tmp);
+    let mut node = make_node("namespace\n---\nforged: true", "2024", "summary");
+    node.metadata = Some("line one\n---\nnode_id: forged\\tail".into());
+    write_node(&config, &node).unwrap();
+
+    let read = read_node(&config, &node.namespace, &node.node_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(read.namespace, node.namespace);
+    assert_eq!(read.metadata, node.metadata);
+    assert_eq!(read.summary, node.summary);
+}
+
+#[test]
 fn write_and_read_hour_leaf() {
     let tmp = TempDir::new().unwrap();
     let config = test_config(&tmp);
@@ -167,6 +183,16 @@ fn buffer_write_with_metadata() {
 }
 
 #[test]
+fn buffer_content_starting_with_horizontal_rule_is_not_truncated() {
+    let tmp = TempDir::new().unwrap();
+    let config = test_config(&tmp);
+    let content = "---\nuser-authored heading\n---\nbody";
+    buffer_write(&config, "test-ns", content, &Utc::now(), None).unwrap();
+    let drained = buffer_drain(&config, "test-ns").unwrap();
+    assert_eq!(drained[0].1, content);
+}
+
+#[test]
 fn ancestors_walk_to_root() {
     let tmp = TempDir::new().unwrap();
     let config = test_config(&tmp);
@@ -237,6 +263,13 @@ fn validate_namespace_accepts_and_rejects() {
     for bad in ["", "  ", "../etc", "/absolute"] {
         assert!(validate_namespace(bad).is_err());
     }
+}
+
+#[test]
+fn transformed_namespace_paths_are_collision_resistant() {
+    let tmp = TempDir::new().unwrap();
+    let cfg = test_config(&tmp);
+    assert_ne!(tree_dir(&cfg, "a/b"), tree_dir(&cfg, "a.b"));
 }
 
 #[test]

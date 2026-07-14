@@ -94,25 +94,15 @@ pub fn buffer_drain(config: &MemoryConfig, namespace: &str) -> Result<Vec<(Strin
 /// Strip an optional `---\nmetadata: ...\n---\n` header written by
 /// [`buffer_write`], returning just the body.
 ///
-/// # NOTE: truncates user content that merely begins with `---` (`TR-14a`)
-/// This only checks whether the trimmed input starts with `---` — it does not
-/// verify the header actually contains a recognised `metadata:` line written
-/// by [`buffer_write`]. Raw ingested content that happens to start with a
-/// literal `---` (e.g. a markdown horizontal rule or an untrusted YAML-looking
-/// blob) has everything up to and including the next `\n---` line silently
-/// swallowed as if it were frontmatter. See
-/// `docs/spec/audit/03-tree-archivist-conversations.md`.
 fn strip_buffer_frontmatter(raw: &str) -> String {
-    let trimmed = raw.trim_start();
-    if !trimmed.starts_with("---") {
+    let Some(after_open) = raw.strip_prefix("---\nmetadata: ") else {
+        return raw.to_string();
+    };
+    let Some((metadata, body)) = after_open.split_once("\n---\n") else {
+        return raw.to_string();
+    };
+    if serde_json::from_str::<Value>(metadata).is_err() {
         return raw.to_string();
     }
-    let after_open = &trimmed[3..];
-    if let Some(close_pos) = after_open.find("\n---") {
-        after_open[close_pos + 4..]
-            .trim_start_matches('\n')
-            .to_string()
-    } else {
-        raw.to_string()
-    }
+    body.strip_prefix('\n').unwrap_or(body).to_string()
 }

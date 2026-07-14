@@ -16,12 +16,13 @@ use anyhow::{anyhow, bail, Result};
 use chrono::Utc;
 
 use crate::memory::chunks::{
-    self, chunk_markdown, claim_source_ingest_tx, delete_source_ingest, get_chunk_lifecycle_status,
-    is_source_ingested, set_chunk_lifecycle_status, set_chunk_raw_refs, upsert_staged_chunks_tx,
-    with_connection, ChunkerInput, ChunkerOptions, SourceKind, CHUNK_STATUS_PENDING_EXTRACTION,
+    self, chunk_markdown, claim_source_ingest_tx, get_chunk_lifecycle_status_tx,
+    is_source_ingested, set_chunk_lifecycle_status_tx, set_chunk_raw_refs_tx,
+    upsert_staged_chunks_tx, with_connection, ChunkerInput, ChunkerOptions, SourceKind,
+    CHUNK_STATUS_PENDING_EXTRACTION,
 };
 use crate::memory::config::MemoryConfig;
-use crate::memory::score::{persist_score, score_chunks_fast, ScoringConfig};
+use crate::memory::score::{persist_score_tx, score_chunks_fast, ScoringConfig};
 use crate::memory::store::content;
 
 use super::canonicalize::chat::{self, ChatBatch};
@@ -37,32 +38,19 @@ use super::types::{IngestOptions, IngestSummary, TreeJobSink};
 /// `source_id` is a stream identifier under which many batches accumulate) and
 /// rely on deterministic chunk ids for replay idempotency.
 ///
-/// # Atomicity / failure-mode caveats (see `docs/spec/audit/04-queue-ingest.md`)
+/// # Atomicity (see `docs/spec/audit/04-queue-ingest.md`)
 ///
-/// - **The gate is a compensated reservation (QI-1).** The document gate is
-///   claimed before asynchronous scoring so concurrent ingests cannot both
-///   proceed. Any ordinary error in a later stage releases that reservation,
-///   allowing a retry. A hard process kill in the narrow interval between the
-///   claim and persistence still requires stale-reservation recovery by the
-///   host; SQLite transactions cannot span the asynchronous scoring call.
-/// - **Step 7 (persist score → set lifecycle → enqueue) is a non-atomic,
-///   per-chunk 3-write sequence with a TOCTOU on the `prior` snapshot taken in
-///   step 4 (QI-12).** A crash between the lifecycle write and the enqueue
-///   strands the chunk at `pending_extraction` (unrecoverable for documents,
-///   given the gate caveat above); a concurrent extract worker admitting the
-///   chunk between the snapshot read and this reset can cause already-buffered
-///   or already-sealed content to flow through the summary tree a second time
-///   — the exact double-processing hazard the step-4 snapshot exists to
-///   prevent, not fully closed by it.
-/// - **Chat/email replay idempotency is weaker than the doc comment above
-///   implies (QI-13).** Chunk ids are a function of `(kind, source_id, seq,
-///   content)` where `seq` is assigned per-batch and chunk boundaries depend on
-///   greedy token packing. Any re-delivery whose batching or boundaries differ
-///   even slightly from the original (not just a byte-identical replay)
-///   produces a fresh set of chunk ids and re-flows the same messages through
-///   the tree. Callers that need exactly-once semantics under redelivery must
-///   dedupe upstream (e.g. by message content hash) rather than relying on this
-///   function.
+/// - The document gate is claimed in the same SQLite transaction as chunk,
+///   score, lifecycle, raw-reference, and extract-job persistence. Scoring and
+///   content staging happen first, so no await or filesystem operation splits
+///   the authoritative database commit.
+/// - Chunk upsert, score persistence, lifecycle transition, raw pointers, and
+///   extract-job enqueue commit in one SQLite transaction. The prior lifecycle
+///   is read inside that transaction, preventing re-ingest from resetting a
+///   chunk a worker has already admitted (QI-12).
+/// - Chat/email logical-unit ids derive from complete message content rather
+///   than batch-local sequence, so overlapping deliveries reuse persisted rows
+///   and active queue dedupe keys.
 pub async fn ingest_canonical(
     config: &MemoryConfig,
     source_id: &str,
@@ -85,60 +73,15 @@ pub async fn ingest_canonical(
         return Ok(IngestSummary::empty(source_id));
     }
 
-    // 2. Authoritative source gate (documents only). Claimed before any write
-    //    so two concurrent ingests of the same document can't both proceed.
-    //
-    //    The gate row is committed in its own transaction (staging/scoring is
-    //    async and can't hold a SQLite transaction across `.await`). To keep the
-    //    gate honest we treat it as a *reservation*: if any later stage fails we
-    //    release it (see the compensation below) so the document is never left
-    //    permanently marked ingested with zero persisted chunks — a retry can
-    //    then re-claim and finish the job.
-    let gate_key: Option<String> = if source_kind == SourceKind::Document {
-        let gate_key = match opts.gate_version_ms {
-            Some(v) => format!("{source_id}@{v}"),
-            None => source_id.to_string(),
-        };
-        let claimed = with_connection(config, |conn| {
-            let tx = conn.unchecked_transaction()?;
-            let claimed =
-                claim_source_ingest_tx(&tx, source_kind, &gate_key, Utc::now().timestamp_millis())?;
-            tx.commit()?;
-            Ok(claimed)
-        })?;
-        if !claimed {
-            return Ok(IngestSummary::already_ingested(source_id));
-        }
-        Some(gate_key)
-    } else {
-        None
-    };
-
-    // Run the remaining persist/score/enqueue stages. On any failure after the
-    // gate was claimed, release the reservation so a retry is not short-circuited.
-    let result = persist_score_enqueue(config, source_id, chunks, sink, scoring, opts).await;
-    if result.is_err() {
-        if let Some(key) = gate_key.as_deref() {
-            if let Err(cleanup_err) = delete_source_ingest(config, source_kind, key) {
-                // Best-effort: the original error is the one worth surfacing, but
-                // a failed release would leave the source wrongly gated, so make
-                // the operator aware of it.
-                eprintln!(
-                    "ingest: failed to release source gate {key} after ingest error: {cleanup_err}"
-                );
-            }
-        }
-    }
-    result
+    persist_score_enqueue(config, source_id, source_kind, chunks, sink, scoring, opts).await
 }
 
 /// Persist chunk bodies + rows, fast-score, and enqueue extract jobs.
 ///
-/// Split out from [`ingest_canonical`] so the source-gate reservation can wrap
-/// exactly this fallible tail and compensate (release the gate) on any error.
 async fn persist_score_enqueue(
     config: &MemoryConfig,
     source_id: &str,
+    source_kind: SourceKind,
     chunks: Vec<crate::memory::chunks::Chunk>,
     sink: &dyn TreeJobSink,
     scoring: &ScoringConfig,
@@ -149,31 +92,7 @@ async fn persist_score_enqueue(
     let staged = content::stage_chunks(&content_root, &chunks)
         .map_err(|e| anyhow!("stage_chunks failed: {e}"))?;
 
-    // 4. Snapshot each chunk's CURRENT lifecycle BEFORE the upsert. A chunk that
-    //    already progressed past `pending_extraction` on a prior ingest must not
-    //    be re-scheduled, or already-buffered/sealed content would flow through
-    //    the tree twice.
-    let mut prior: Vec<Option<String>> = Vec::with_capacity(chunks.len());
-    for chunk in &chunks {
-        prior.push(get_chunk_lifecycle_status(config, &chunk.id)?);
-    }
-
-    // 5. Persist chunk rows (idempotent on deterministic chunk id).
-    let chunks_written = with_connection(config, |connection| {
-        let transaction = connection.unchecked_transaction()?;
-        let count = upsert_staged_chunks_tx(&transaction, &staged)?;
-        transaction.commit()?;
-        Ok(count)
-    })?;
-
-    // 5b. Raw-archive-backed bodies: attach refs so a worker can resolve them.
-    if let Some(refs) = opts.raw_refs.as_ref() {
-        for chunk in &chunks {
-            set_chunk_raw_refs(config, &chunk.id, refs)?;
-        }
-    }
-
-    // 6. Cheap fast-score (no LLM on the ingest hot path).
+    // 4. Cheap fast-score (no LLM on the ingest hot path).
     let scores = score_chunks_fast(&chunks, scoring).await?;
     if scores.len() != chunks.len() {
         bail!(
@@ -183,30 +102,67 @@ async fn persist_score_enqueue(
         );
     }
 
-    // 7. Persist scores, mark newly-scheduled chunks pending, and enqueue an
-    //    extract job per scheduled chunk. The fast-score `kept` flag only feeds
-    //    the dropped count for reporting — final admission happens in the worker.
-    let mut chunks_dropped = 0usize;
-    let mut extract_jobs_enqueued = 0usize;
-    let mut chunk_ids = Vec::with_capacity(chunks.len());
-    for ((chunk, result), pre) in chunks.iter().zip(scores.iter()).zip(prior.iter()) {
-        chunk_ids.push(chunk.id.clone());
-        if !result.kept {
-            chunks_dropped += 1;
+    // 5. Persist the whole database tail atomically. Snapshot lifecycle before
+    // the upsert while holding this transaction; the worker cannot advance a
+    // row between the check and its guarded re-schedule.
+    let persisted = with_connection(config, |connection| {
+        let transaction = connection.unchecked_transaction()?;
+        if source_kind == SourceKind::Document {
+            let gate_key = match opts.gate_version_ms {
+                Some(version) => format!("{source_id}@{version}"),
+                None => source_id.to_string(),
+            };
+            if !claim_source_ingest_tx(
+                &transaction,
+                source_kind,
+                &gate_key,
+                Utc::now().timestamp_millis(),
+            )? {
+                return Ok(None);
+            }
+        }
+        let prior = chunks
+            .iter()
+            .map(|chunk| get_chunk_lifecycle_status_tx(&transaction, &chunk.id))
+            .collect::<Result<Vec<_>>>()?;
+        let chunks_written = upsert_staged_chunks_tx(&transaction, &staged)?;
+
+        if let Some(refs) = opts.raw_refs.as_ref() {
+            for chunk in &chunks {
+                set_chunk_raw_refs_tx(&transaction, &chunk.id, refs)?;
+            }
         }
 
-        let needs_processing =
-            matches!(pre.as_deref(), None | Some(CHUNK_STATUS_PENDING_EXTRACTION));
-        if !needs_processing {
-            continue;
+        let mut jobs = 0usize;
+        for ((chunk, result), pre) in chunks.iter().zip(scores.iter()).zip(prior.iter()) {
+            let needs_processing =
+                matches!(pre.as_deref(), None | Some(CHUNK_STATUS_PENDING_EXTRACTION));
+            if !needs_processing {
+                continue;
+            }
+            persist_score_tx(
+                &transaction,
+                result,
+                chunk.metadata.timestamp.timestamp_millis(),
+                None,
+            )?;
+            set_chunk_lifecycle_status_tx(
+                &transaction,
+                &chunk.id,
+                CHUNK_STATUS_PENDING_EXTRACTION,
+            )?;
+            jobs += usize::from(sink.enqueue_extract_tx(&transaction, &chunk.id)?);
         }
+        transaction.commit()?;
+        Ok(Some((chunks_written, jobs)))
+    })?;
 
-        let ts_ms = chunk.metadata.timestamp.timestamp_millis();
-        persist_score(config, result, ts_ms, None)?;
-        set_chunk_lifecycle_status(config, &chunk.id, CHUNK_STATUS_PENDING_EXTRACTION)?;
-        sink.enqueue_extract(&chunk.id)?;
-        extract_jobs_enqueued += 1;
-    }
+    let Some((chunks_written, extract_jobs_enqueued)) = persisted else {
+        return Ok(IngestSummary::already_ingested(source_id));
+    };
+
+    let chunks_dropped = scores.iter().filter(|result| !result.kept).count();
+    let chunk_ids = chunks.iter().map(|chunk| chunk.id.clone()).collect();
 
     Ok(IngestSummary {
         source_id: source_id.to_string(),

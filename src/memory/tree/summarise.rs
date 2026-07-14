@@ -14,10 +14,6 @@ use chrono::{DateTime, Utc};
 use crate::memory::chunks::approx_token_count;
 use crate::memory::tree::store::TreeKind;
 
-const MAX_SUMMARY_OUTPUT_TOKENS: u32 = 5_000;
-const NUM_CTX_TOKENS: u32 = 60_000;
-const OVERHEAD_RESERVE_TOKENS: u32 = 2_048;
-
 /// One contribution being folded — a raw leaf at L0→L1, or a lower-level
 /// summary at L_n→L_{n+1}.
 #[derive(Clone, Debug)]
@@ -52,8 +48,12 @@ pub struct SummaryContext<'a> {
     pub target_level: u32,
     /// Maximum approximate tokens the produced summary may occupy.
     pub token_budget: u32,
+    /// Total input/context budget available to this fold.
+    pub input_token_budget: u32,
+    /// Prompt and formatting headroom withheld from source inputs.
+    pub overhead_reserve_tokens: u32,
     /// Natural-language ask that steers the fold, for
-    /// [`TreeKind::Flavoured`](crate::memory::tree::TreeKind::Flavoured) trees.
+    /// [`TreeKind::Flavoured`] trees.
     /// When present, [`prepare_summary_prompt`] emits a flavour-directed system
     /// prompt instead of the generic folding prompt. `None` for every other
     /// tree kind.
@@ -96,13 +96,13 @@ pub fn prepare_summary_prompt(
     ctx: &SummaryContext<'_>,
     output_language: Option<&str>,
 ) -> Option<PreparedSummaryPrompt> {
-    let effective_budget = ctx.token_budget.min(MAX_SUMMARY_OUTPUT_TOKENS);
+    let effective_budget = ctx.token_budget;
     let per_input_cap = if inputs.is_empty() {
         0
     } else {
-        NUM_CTX_TOKENS
+        ctx.input_token_budget
             .saturating_sub(effective_budget)
-            .saturating_sub(OVERHEAD_RESERVE_TOKENS)
+            .saturating_sub(ctx.overhead_reserve_tokens)
             / inputs.len() as u32
     };
     let mut ordered: Vec<_> = inputs.iter().collect();

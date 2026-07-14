@@ -21,147 +21,27 @@
 //! progress events, seal-time embedding, and per-document subtree paths are not
 //! ported (deferred). Summary bodies are stored inline in `mem_tree_summaries`.
 
-use std::collections::BTreeSet;
-use std::sync::Arc;
-
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use futures::stream::{StreamExt, TryStreamExt};
 
 use crate::memory::chunks::with_connection;
 use crate::memory::config::MemoryConfig;
-use crate::memory::score::embed::Embedder;
-use crate::memory::score::extract::EntityExtractor;
-use crate::memory::score::resolver::canonicalise;
 use crate::memory::score::store::index_summary_entity_ids_tx;
 use crate::memory::store::content::{
     slugify_source_id, stage_summary_with_layout, SummaryComposeInput, SummaryDiskLayout,
     SummaryTreeKind,
 };
 use crate::memory::tree::hydrate::hydrate_inputs;
+use crate::memory::tree::label_resolver::resolve_labels;
 use crate::memory::tree::registry::new_summary_id;
 use crate::memory::tree::store::{self, Buffer, SummaryNode, Tree};
-use crate::memory::tree::summarise::{fallback_summary, Summariser, SummaryContext, SummaryInput};
+use crate::memory::tree::summarise::{fallback_summary, Summariser, SummaryContext};
+pub(crate) use crate::memory::tree::types::NoopSealObserver;
+pub use crate::memory::tree::types::{LabelStrategy, LeafRef, SealObserver, SealServices};
 
 /// Hard cap on cascade depth — guards against runaway loops if token accounting
 /// ever slips.
 const MAX_CASCADE_DEPTH: u32 = 32;
-
-/// Product callbacks around a seal. Engine state is already durable when
-/// `summary_committed` runs; hosts use it for mirrors such as wiki-git.
-pub trait SealObserver: Send + Sync {
-    fn progress(&self, _tree: &Tree, _step: &str, _level: u32, _item_count: Option<u32>) {}
-    fn summary_committed(
-        &self,
-        _tree: &Tree,
-        _node: &SummaryNode,
-        _content_path: &str,
-        _reason: &str,
-    ) -> Result<()> {
-        Ok(())
-    }
-}
-
-pub(crate) struct NoopSealObserver;
-impl SealObserver for NoopSealObserver {}
-
-/// Injected compute and product notifications used by the crate-owned seal
-/// pipeline. `embedder = None` deliberately persists a re-embeddable summary.
-pub struct SealServices<'a> {
-    pub summariser: &'a dyn Summariser,
-    pub embedder: Option<&'a dyn Embedder>,
-    pub observer: &'a dyn SealObserver,
-}
-
-/// How a sealed summary node's `entities` and `topics` fields get populated.
-#[derive(Clone)]
-pub enum LabelStrategy {
-    /// Run the extractor on the new summary's content; canonicalise the result
-    /// into `entities` (canonical_ids) and `topics` (labels).
-    ExtractFromContent(Arc<dyn EntityExtractor>),
-    /// Dedup-merge each input's `entities` and `topics` into the parent.
-    UnionFromChildren,
-    /// Leave both fields empty regardless of inputs.
-    Empty,
-}
-
-impl std::fmt::Debug for LabelStrategy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ExtractFromContent(ex) => write!(f, "ExtractFromContent({})", ex.name()),
-            Self::UnionFromChildren => f.write_str("UnionFromChildren"),
-            Self::Empty => f.write_str("Empty"),
-        }
-    }
-}
-
-/// Resolve `entities` and `topics` for a freshly-summarised node.
-async fn resolve_labels(
-    strategy: &LabelStrategy,
-    inputs: &[SummaryInput],
-    summary_content: &str,
-) -> Result<(Vec<String>, Vec<String>)> {
-    match strategy {
-        LabelStrategy::ExtractFromContent(extractor) => {
-            let extracted = extractor
-                .extract(summary_content)
-                .await
-                .context("seal-time extractor failed")?;
-            let canonical = canonicalise(&extracted);
-            let mut entities: Vec<String> = canonical
-                .into_iter()
-                .map(|c| c.canonical_id)
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            entities.sort();
-            let mut topics: Vec<String> = extracted
-                .topics
-                .into_iter()
-                .map(|t| t.label)
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            topics.sort();
-            Ok((entities, topics))
-        }
-        LabelStrategy::UnionFromChildren => {
-            let mut entities: BTreeSet<String> = BTreeSet::new();
-            let mut topics: BTreeSet<String> = BTreeSet::new();
-            for inp in inputs {
-                entities.extend(inp.entities.iter().cloned());
-                topics.extend(inp.topics.iter().cloned());
-            }
-            Ok((entities.into_iter().collect(), topics.into_iter().collect()))
-        }
-        LabelStrategy::Empty => Ok((Vec::new(), Vec::new())),
-    }
-}
-
-/// A single leaf being appended to an L0 buffer.
-#[derive(Clone, Debug)]
-pub struct LeafRef {
-    /// Persisted chunk id this leaf points at; used as the buffer `item_id` and
-    /// deduped on append.
-    pub chunk_id: String,
-    /// Chunk token count; added to the L0 buffer's `token_sum` to drive the
-    /// token-budget seal gate.
-    pub token_count: u32,
-    /// Chunk timestamp; folded into the buffer's `oldest_at` and the sealed
-    /// summary's time range.
-    pub timestamp: DateTime<Utc>,
-    /// Raw chunk text, hydrated as a summariser input at seal time.
-    pub content: String,
-    /// Canonical entity ids carried up to the parent under
-    /// [`LabelStrategy::UnionFromChildren`].
-    pub entities: Vec<String>,
-    /// Topic labels carried up to the parent under
-    /// [`LabelStrategy::UnionFromChildren`].
-    pub topics: Vec<String>,
-    /// Chunk relevance score; the sealed summary takes the max over its inputs
-    /// (clamped to `>= 0.0`).
-    pub score: f32,
-}
 
 /// Append a leaf to `tree`, sealing buffers as they fill. Returns the ids of
 /// any summaries that sealed during this call.
@@ -210,6 +90,14 @@ pub fn append_to_buffer(
 ) -> Result<()> {
     with_connection(config, |conn| {
         let tx = conn.unchecked_transaction()?;
+        let status: String = tx
+            .query_row(
+                "SELECT status FROM mem_tree_trees WHERE id = ?1",
+                rusqlite::params![tree_id],
+                |row| row.get(0),
+            )
+            .context("Failed to read tree status before append")?;
+        anyhow::ensure!(status == "active", "tree '{tree_id}' is archived");
         let mut buf = store::get_buffer_conn(&tx, tree_id, level)?;
         if buf.item_ids.iter().any(|existing| existing == item_id) {
             return Ok(()); // retry after a failed cascade — no double count
@@ -374,6 +262,8 @@ pub async fn seal_one_level_with_services(
         tree_kind: tree.kind,
         target_level,
         token_budget: budget,
+        input_token_budget: config.tree.input_token_budget,
+        overhead_reserve_tokens: config.tree.summary_overhead_reserve_tokens,
         ask: tree.ask.as_deref(),
     };
     // Treat a blank summary the same as a hard error — fall back to the
@@ -490,14 +380,14 @@ pub async fn seal_one_level_with_services(
     with_connection(config, move |conn| {
         let tx = conn.unchecked_transaction()?;
 
-        let current_max: u32 = tx
+        let (current_max, status): (u32, String) = tx
             .query_row(
-                "SELECT max_level FROM mem_tree_trees WHERE id = ?1",
+                "SELECT max_level, status FROM mem_tree_trees WHERE id = ?1",
                 rusqlite::params![&tree_id],
-                |r| r.get::<_, i64>(0),
+                |r| Ok((r.get::<_, i64>(0)?.max(0) as u32, r.get(1)?)),
             )
-            .map(|n| n.max(0) as u32)
-            .context("Failed to read current max_level for tree")?;
+            .context("Failed to read current state for tree")?;
+        anyhow::ensure!(status == "active", "tree '{tree_id}' is archived");
 
         store::insert_staged_summary_tx(&tx, &node_for_tx, Some(&staged_for_tx), &signature)?;
         index_summary_entity_ids_tx(
@@ -565,288 +455,7 @@ pub async fn seal_one_level_with_services(
 
     Ok(summary_id)
 }
-
-/// Level offset reserved for cross-document merge nodes.
-pub const MERGE_LEVEL_BASE: u32 = 1_000;
-const DOC_SUBTREE_MAX_FANIN: usize = 32;
-const DOC_SUBTREE_SEAL_CONCURRENCY: usize = 8;
-
-/// Build one immutable document-version subtree and feed its root into the
-/// shared cross-document merge tier.
-pub async fn seal_document_subtree_with_services(
-    config: &MemoryConfig,
-    tree: &Tree,
-    doc_id: &str,
-    version_ms: Option<i64>,
-    chunk_ids: &[String],
-    services: &SealServices<'_>,
-    strategy: &LabelStrategy,
-) -> Result<String> {
-    if chunk_ids.is_empty() {
-        anyhow::bail!("seal_document_subtree: empty chunk set");
-    }
-    log::debug!(
-        "[memory_tree:seal_document] enter chunks={} has_version={}",
-        chunk_ids.len(),
-        version_ms.is_some()
-    );
-    let mut level = 0;
-    let mut current_ids = chunk_ids.to_vec();
-    let doc_root = loop {
-        let batches = if level == 0 {
-            batch_leaves_by_token_budget(config, &current_ids)?
-        } else {
-            batch_by_count(&current_ids, DOC_SUBTREE_MAX_FANIN)
-        };
-        let batch_futures: Vec<_> = batches
-            .iter()
-            .map(|batch| {
-                seal_explicit_children(
-                    config, tree, level, batch, doc_id, version_ms, services, strategy,
-                )
-            })
-            .collect();
-        let nodes: Vec<SummaryNode> = futures::stream::iter(batch_futures)
-            .buffered(DOC_SUBTREE_SEAL_CONCURRENCY)
-            .try_collect()
-            .await?;
-        current_ids = nodes.iter().map(|node| node.id.clone()).collect();
-        level += 1;
-        if current_ids.len() <= 1 {
-            break nodes
-                .into_iter()
-                .next()
-                .context("document seal produced no root")?;
-        }
-    };
-
-    append_to_buffer(
-        config,
-        &tree.id,
-        MERGE_LEVEL_BASE,
-        &doc_root.id,
-        doc_root.token_count as i64,
-        doc_root.time_range_start,
-    )?;
-    let root_id = doc_root.id.clone();
-    let root_level = doc_root.level;
-    with_connection(config, move |connection| {
-        let transaction = connection.unchecked_transaction()?;
-        let (current_root, current_max): (Option<String>, u32) = transaction.query_row(
-            "SELECT root_id, max_level FROM mem_tree_trees WHERE id = ?1",
-            [&tree.id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        if current_root.as_deref() != Some(root_id.as_str()) || root_level > current_max {
-            store::update_tree_after_seal_tx(
-                &transaction,
-                &tree.id,
-                &root_id,
-                root_level,
-                Utc::now(),
-            )?;
-        }
-        transaction.commit()?;
-        Ok(())
-    })?;
-    cascade_all_from_with_services(
-        config,
-        tree,
-        MERGE_LEVEL_BASE,
-        false,
-        services,
-        strategy,
-        false,
-    )
-    .await?;
-    log::debug!("[memory_tree:seal_document] complete levels={level}");
-    Ok(doc_root.id)
-}
-
-fn batch_leaves_by_token_budget(
-    config: &MemoryConfig,
-    chunk_ids: &[String],
-) -> Result<Vec<Vec<String>>> {
-    let chunks = crate::memory::chunks::get_chunks_batch(config, chunk_ids)?;
-    let mut batches = Vec::new();
-    let mut current = Vec::new();
-    let mut tokens = 0_i64;
-    for id in chunk_ids {
-        let Some(chunk) = chunks.get(id) else {
-            continue;
-        };
-        let next = chunk.token_count as i64;
-        if !current.is_empty()
-            && (tokens + next > config.tree.input_token_budget as i64
-                || current.len() >= DOC_SUBTREE_MAX_FANIN)
-        {
-            batches.push(std::mem::take(&mut current));
-            tokens = 0;
-        }
-        current.push(id.clone());
-        tokens += next;
-    }
-    if !current.is_empty() {
-        batches.push(current);
-    }
-    if batches.is_empty() {
-        anyhow::bail!("seal_document_subtree: no resolvable chunks");
-    }
-    Ok(batches)
-}
-
-fn batch_by_count(ids: &[String], max: usize) -> Vec<Vec<String>> {
-    ids.chunks(max.max(1)).map(<[String]>::to_vec).collect()
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn seal_explicit_children(
-    config: &MemoryConfig,
-    tree: &Tree,
-    level: u32,
-    child_ids: &[String],
-    doc_id: &str,
-    version_ms: Option<i64>,
-    services: &SealServices<'_>,
-    strategy: &LabelStrategy,
-) -> Result<SummaryNode> {
-    let target_level = level + 1;
-    let inputs = hydrate_inputs(config, level, child_ids)?;
-    if inputs.is_empty() {
-        anyhow::bail!("document seal has no hydrated inputs at level {level}");
-    }
-    let time_range_start = inputs.iter().map(|i| i.time_range_start).min().unwrap();
-    let time_range_end = inputs.iter().map(|i| i.time_range_end).max().unwrap();
-    let score = inputs
-        .iter()
-        .map(|i| i.score)
-        .fold(f32::NEG_INFINITY, f32::max)
-        .max(0.0);
-    let output = if inputs.len() == 1 && inputs[0].token_count <= config.tree.output_token_budget {
-        crate::memory::tree::SummaryOutput {
-            content: inputs[0].content.clone(),
-            token_count: inputs[0].token_count,
-            ..Default::default()
-        }
-    } else {
-        let context = SummaryContext {
-            tree_id: &tree.id,
-            tree_kind: tree.kind,
-            target_level,
-            token_budget: config.tree.output_token_budget,
-            ask: tree.ask.as_deref(),
-        };
-        match services.summariser.summarise(&inputs, &context).await {
-            Ok(output) if !output.content.trim().is_empty() => output,
-            _ => fallback_summary(&inputs, context.token_budget),
-        }
-    };
-    let (entities, topics) = resolve_labels(strategy, &inputs, &output.content).await?;
-    let embedding = match services.embedder {
-        Some(embedder) if !output.content.trim().is_empty() => {
-            let input: String = output.content.chars().take(4_000).collect();
-            Some(
-                embedder
-                    .embed(&input)
-                    .await
-                    .context("embed document summary")?,
-            )
-        }
-        _ => None,
-    };
-    let now = Utc::now();
-    let node = SummaryNode {
-        id: new_summary_id(target_level),
-        tree_id: tree.id.clone(),
-        tree_kind: tree.kind,
-        level: target_level,
-        parent_id: None,
-        child_ids: child_ids.to_vec(),
-        content: output.content,
-        token_count: output.token_count,
-        entities,
-        topics,
-        time_range_start,
-        time_range_end,
-        score,
-        sealed_at: now,
-        deleted: false,
-        embedding,
-        doc_id: Some(doc_id.to_string()),
-        version_ms,
-    };
-    let summary_kind = match tree.kind {
-        crate::memory::tree::TreeKind::Source => SummaryTreeKind::Source,
-        crate::memory::tree::TreeKind::Topic => SummaryTreeKind::Topic,
-        crate::memory::tree::TreeKind::Global => SummaryTreeKind::Global,
-        crate::memory::tree::TreeKind::Flavoured => SummaryTreeKind::Flavoured,
-    };
-    let doc_slug = slugify_source_id(doc_id);
-    let staged = stage_summary_with_layout(
-        &crate::memory::chunks::content_root(config),
-        &SummaryComposeInput {
-            summary_id: &node.id,
-            tree_kind: summary_kind,
-            tree_id: &node.tree_id,
-            tree_scope: &tree.scope,
-            level: node.level,
-            child_ids: &node.child_ids,
-            child_basenames: None,
-            child_count: node.child_ids.len(),
-            time_range_start: node.time_range_start,
-            time_range_end: node.time_range_end,
-            sealed_at: node.sealed_at,
-            body: &node.content,
-        },
-        &slugify_source_id(&tree.scope),
-        SummaryDiskLayout::DocSubtree {
-            doc_slug: &doc_slug,
-            version_ms,
-        },
-    )?;
-    let signature = crate::memory::chunks::tree_active_signature(config);
-    let node_for_tx = node.clone();
-    let staged_for_tx = staged.clone();
-    with_connection(config, move |connection| {
-        let transaction = connection.unchecked_transaction()?;
-        store::insert_staged_summary_tx(
-            &transaction,
-            &node_for_tx,
-            Some(&staged_for_tx),
-            &signature,
-        )?;
-        index_summary_entity_ids_tx(
-            &transaction,
-            &node_for_tx.entities,
-            &node_for_tx.id,
-            node_for_tx.score,
-            now.timestamp_millis(),
-            Some(&node_for_tx.tree_id),
-        )?;
-        for child_id in &node_for_tx.child_ids {
-            if level == 0 {
-                transaction.execute(
-                    "UPDATE mem_tree_chunks SET parent_summary_id = ?1 WHERE id = ?2",
-                    rusqlite::params![&node_for_tx.id, child_id],
-                )?;
-            } else {
-                transaction.execute(
-                    "UPDATE mem_tree_summaries SET parent_id = ?1 WHERE id = ?2 AND parent_id IS NULL",
-                    rusqlite::params![&node_for_tx.id, child_id],
-                )?;
-            }
-        }
-        transaction.commit()?;
-        Ok(())
-    })?;
-    services.observer.summary_committed(
-        tree,
-        &node,
-        &staged.content_path,
-        "document_subtree_seal",
-    )?;
-    Ok(node)
-}
+pub use super::document_seal::{seal_document_subtree_with_services, MERGE_LEVEL_BASE};
 
 #[cfg(test)]
 #[path = "bucket_seal_label_tests.rs"]

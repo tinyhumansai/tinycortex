@@ -6,8 +6,9 @@
 //! prompt-ready markdown file: a style guide / preference profile a host can
 //! inject verbatim into a system prompt.
 //!
-//! [`compile_flavoured_root`] fetches the tree's current root [`SummaryNode`],
-//! clamps its body to [`TreeConfig::flavour_root_token_budget`] tokens, wraps it
+//! [`compile_flavoured_root`] fetches the tree's current root
+//! [`crate::memory::tree::SummaryNode`], clamps its body to
+//! [`crate::memory::config::TreeConfig::flavour_root_token_budget`] tokens, wraps it
 //! in light front-matter (ask, tree id, scope, sealed-at, evidence changelog),
 //! and stages it at a stable, overwritten-in-place path
 //! (`flavoured/<scope_slug>.md`) so hosts can read a fixed location. The engine
@@ -51,7 +52,7 @@ pub fn flavoured_root_abs_path(config: &MemoryConfig, scope: &str) -> PathBuf {
 /// profile, stage it at [`flavoured_root_rel_path`] (overwriting any prior
 /// version in place), and return the full markdown (front-matter + body).
 ///
-/// The body is the tree's root [`SummaryNode`] content clamped to
+/// The body is the tree's root [`crate::memory::tree::SummaryNode`] content clamped to
 /// [`TreeConfig::flavour_root_token_budget`](crate::memory::config::TreeConfig::flavour_root_token_budget)
 /// tokens. Before the first seal (`root_id == None`) the body is empty; the
 /// artifact is still written so hosts always find the fixed path.

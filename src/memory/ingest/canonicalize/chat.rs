@@ -14,14 +14,8 @@
 //! Reply body here.
 //! ```
 //!
-//! NOTE: `author` and `text` are rendered verbatim into the boundary line
-//! (`## <timestamp> — <author>`) with no escaping (known gap, see audit finding
-//! QI-14 in `docs/spec/audit/04-queue-ingest.md`). A message body containing a
-//! line that itself starts with `## ` is structurally indistinguishable from a
-//! new message boundary and will be split into a bogus extra chunk by the
-//! downstream Markdown chunker. Callers that accept untrusted message text
-//! should sanitise or escape leading `## ` sequences before calling
-//! [`canonicalise`] if boundary-splitting must be prevented.
+//! Header newlines are collapsed, and body lines beginning with `## ` are
+//! escaped so untrusted content cannot forge the chunker's message boundary.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -82,11 +76,25 @@ pub fn canonicalise(
     // belongs in the MD front-matter. The chunker splits this output at `## `
     // boundaries so each message becomes one chunk.
     for msg in &messages {
+        let author = msg.author.replace(['\n', '\r'], " ");
+        let body = msg
+            .text
+            .trim()
+            .lines()
+            .map(|line| {
+                if line.starts_with("## ") {
+                    format!("\\{line}")
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         md.push_str(&format!(
             "## {} — {}\n{}\n\n",
             msg.timestamp.to_rfc3339(),
-            msg.author,
-            msg.text.trim()
+            author,
+            body
         ));
     }
 

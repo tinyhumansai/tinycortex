@@ -4,10 +4,11 @@
 //! `{workspace}/memory/namespaces/{namespace}/tree/`. The folder hierarchy
 //! mirrors the time hierarchy (`root.md`, `2024/summary.md`,
 //! `2024/03/15/14.md`). Ported from OpenHuman's `tree_runtime/store.rs` with
-//! logging stripped and `Config` → [`MemoryConfig`]. Split across files to keep
-//! each under the repo's 500-line cap: [`paths`] (path/validation), [`nodes`]
-//! (node read/write + markdown parsing), [`scan`] (counts / status / collection),
-//! and [`buffer`] (ingestion buffer).
+//! logging stripped and `Config` →
+//! [`crate::memory::config::MemoryConfig`]. Split across files to keep each
+//! under the repo's 500-line cap: `paths` (path/validation), `nodes` (node
+//! read/write + markdown parsing), `scan` (counts/status/collection), and
+//! `buffer` (ingestion buffer).
 
 mod buffer;
 mod nodes;

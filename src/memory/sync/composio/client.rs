@@ -135,7 +135,6 @@ impl ComposioClient {
             .as_ref()
             .filter(|key| !key.is_empty())
             .map(|key| key.expose().to_owned())
-            .or_else(|| std::env::var("COMPOSIO_API_KEY").ok())
             .filter(|key| !key.trim().is_empty())
             .ok_or_else(|| anyhow::anyhow!("Composio direct API key is not configured"))?;
         let url = format!(

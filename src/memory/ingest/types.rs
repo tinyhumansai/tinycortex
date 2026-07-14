@@ -2,21 +2,19 @@
 //! options, and the result summary.
 
 use anyhow::Result;
+use rusqlite::Transaction;
 
 use crate::memory::chunks::RawRef;
+use crate::memory::queue::types::{ExtractChunkPayload, NewJob};
 
 /// Sink for the tree jobs the ingest path produces.
 ///
-/// The async job queue (`crate::memory::queue`) is being ported concurrently,
-/// so the ingest orchestrator does **not** hard-depend on it: every kept chunk
-/// is handed to a [`TreeJobSink`] for downstream extraction/admission/tree
-/// append/seal. A host wires the real queue behind this trait; tests use an
-/// in-memory recorder.
+/// Implementations enqueue against the caller-owned chunk-database transaction
+/// so chunk lifecycle and queue visibility commit atomically.
 pub trait TreeJobSink: Send + Sync {
-    /// Enqueue an `extract_chunk` job for `chunk_id`. The downstream worker runs
-    /// full extraction, the admission gate, buffer append, and sealing — none of
-    /// which happen on this hot path.
-    fn enqueue_extract(&self, chunk_id: &str) -> Result<()>;
+    /// Enqueue an `extract_chunk` job for `chunk_id` inside `tx`. Returns true
+    /// when a new job was created and false for a deliberate no-op or dedupe.
+    fn enqueue_extract_tx(&self, tx: &Transaction<'_>, chunk_id: &str) -> Result<bool>;
 }
 
 /// A no-op [`TreeJobSink`] that drops every job. Useful when a caller only wants
@@ -25,8 +23,21 @@ pub trait TreeJobSink: Send + Sync {
 pub struct NullJobSink;
 
 impl TreeJobSink for NullJobSink {
-    fn enqueue_extract(&self, _chunk_id: &str) -> Result<()> {
-        Ok(())
+    fn enqueue_extract_tx(&self, _tx: &Transaction<'_>, _chunk_id: &str) -> Result<bool> {
+        Ok(false)
+    }
+}
+
+/// Production sink backed by the durable SQLite queue.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct QueueJobSink;
+
+impl TreeJobSink for QueueJobSink {
+    fn enqueue_extract_tx(&self, tx: &Transaction<'_>, chunk_id: &str) -> Result<bool> {
+        let job = NewJob::extract_chunk(&ExtractChunkPayload {
+            chunk_id: chunk_id.to_string(),
+        })?;
+        Ok(crate::memory::queue::store::enqueue_tx(tx, &job)?.is_some())
     }
 }
 

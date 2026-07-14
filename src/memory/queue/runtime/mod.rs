@@ -8,16 +8,16 @@
 //!
 //! ## Loops
 //!
-//! - [`run_worker`]: repeatedly [`run_once`], sleeping between polls. Idle polls
-//!   back off by [`WorkerLoopConfig::idle_backoff`]; transient SQLite errors
+//! - `run_worker`: repeatedly runs one job, sleeping between polls. Idle polls
+//!   use the configured backoff; transient SQLite errors
 //!   back off by kind (busy / I/O / disk-full) and re-poll; corruption is fatal
 //!   and returned to the host (mirroring OpenHuman's quarantine policy).
-//! - [`run_scheduler`]: on a fixed cadence, recover expired leases, enqueue
+//! - `run_scheduler`: on a fixed cadence, recover expired leases, enqueue
 //!   `flush_stale` (dedupe-safe), and `self_heal` transiently-failed jobs.
-//! - [`run`]: [`bootstrap`] once, then drive both loops concurrently until
+//! - `run`: bootstrap once, then drive both loops concurrently until
 //!   shutdown or a fatal error.
 //!
-//! All loops observe a shared [`Shutdown`] flag between jobs and during backoff,
+//! All loops observe a shared shutdown flag between jobs and during backoff,
 //! so a triggered shutdown stops them promptly without aborting an in-flight
 //! handler.
 //!
@@ -29,7 +29,7 @@ pub mod types;
 
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tokio::time::sleep;
 
 use crate::memory::config::MemoryConfig;
@@ -65,10 +65,17 @@ pub async fn run_worker(
                 tokio::task::yield_now().await;
             }
             Ok(false) => interruptible_sleep(opts.idle_backoff, shutdown).await,
-            Err(err) => match backoff_for(&err, opts) {
-                Some(backoff) => interruptible_sleep(backoff, shutdown).await,
-                None => return Err(err),
-            },
+            Err(err) => {
+                if worker::is_sqlite_corrupt(&err) {
+                    crate::memory::chunks::recover_corrupt_db(config)
+                        .context("recover corrupt queue database")?;
+                    continue;
+                }
+                match backoff_for(&err, opts) {
+                    Some(backoff) => interruptible_sleep(backoff, shutdown).await,
+                    None => return Err(err),
+                }
+            }
         }
     }
     Ok(())
@@ -88,17 +95,23 @@ pub async fn run_scheduler(
     while !shutdown.is_triggered() {
         if let Err(err) = crate::memory::queue::store_settle::recover_stale_locks(config) {
             if worker::is_sqlite_corrupt(&err) {
-                return Err(err);
+                crate::memory::chunks::recover_corrupt_db(config)
+                    .context("recover corrupt queue database")?;
+                continue;
             }
         }
         if let Err(err) = scheduler::enqueue_flush_stale(config) {
             if worker::is_sqlite_corrupt(&err) {
-                return Err(err);
+                crate::memory::chunks::recover_corrupt_db(config)
+                    .context("recover corrupt queue database")?;
+                continue;
             }
         }
         if let Err(err) = scheduler::self_heal(config) {
             if worker::is_sqlite_corrupt(&err) {
-                return Err(err);
+                crate::memory::chunks::recover_corrupt_db(config)
+                    .context("recover corrupt queue database")?;
+                continue;
             }
         }
         interruptible_sleep(opts.tick, shutdown).await;

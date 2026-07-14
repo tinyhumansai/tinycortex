@@ -13,6 +13,25 @@ use crate::memory::tree::registry::get_or_create_tree;
 use crate::memory::tree::store::{upsert_buffer_tx, Buffer, TreeKind};
 use crate::memory::tree::summarise::ConcatSummariser;
 
+struct RejectTreeObserver {
+    tree_id: String,
+}
+
+impl crate::memory::tree::bucket_seal::SealObserver for RejectTreeObserver {
+    fn summary_committed(
+        &self,
+        tree: &crate::memory::tree::store::Tree,
+        _node: &crate::memory::tree::store::SummaryNode,
+        _content_path: &str,
+        _reason: &str,
+    ) -> anyhow::Result<()> {
+        if tree.id == self.tree_id {
+            anyhow::bail!("injected observer failure")
+        }
+        Ok(())
+    }
+}
+
 fn test_config() -> (TempDir, MemoryConfig) {
     let tmp = TempDir::new().unwrap();
     let cfg = MemoryConfig::new(tmp.path());
@@ -167,6 +186,56 @@ async fn flush_seals_multiple_distinct_trees_via_batched_lookup() {
         .unwrap();
     assert_eq!(seals, 2);
     assert_eq!(store::count_summaries(&cfg, &tree_a.id).unwrap(), 1);
+    assert_eq!(store::count_summaries(&cfg, &tree_b.id).unwrap(), 1);
+}
+
+#[tokio::test]
+async fn flush_continues_after_one_tree_fails() {
+    let (_tmp, cfg) = test_config();
+    let tree_a = get_or_create_tree(&cfg, TreeKind::Source, "slack:#poison").unwrap();
+    let tree_b = get_or_create_tree(&cfg, TreeKind::Source, "slack:#healthy").unwrap();
+    let summariser = ConcatSummariser::new();
+    let old_ts = Utc::now() - Duration::days(10);
+
+    for (src, tree) in [("slack:#poison", &tree_a), ("slack:#healthy", &tree_b)] {
+        let chunk = seed_chunk(&cfg, src, 0, src, old_ts);
+        append_leaf(
+            &cfg,
+            tree,
+            &LeafRef {
+                chunk_id: chunk.id,
+                token_count: 100,
+                timestamp: old_ts,
+                content: chunk.content,
+                entities: vec![],
+                topics: vec![],
+                score: 0.5,
+            },
+            &summariser,
+            &LabelStrategy::Empty,
+        )
+        .await
+        .unwrap();
+    }
+
+    let observer = RejectTreeObserver {
+        tree_id: tree_a.id.clone(),
+    };
+    let services = SealServices {
+        summariser: &summariser,
+        embedder: None,
+        observer: &observer,
+    };
+    let err = flush_stale_buffers_with_services(
+        &cfg,
+        Duration::days(7),
+        &services,
+        &LabelStrategy::Empty,
+    )
+    .await
+    .expect_err("one tree should report the injected failure");
+
+    assert!(format!("{err:#}").contains("injected observer failure"));
     assert_eq!(store::count_summaries(&cfg, &tree_b.id).unwrap(), 1);
 }
 

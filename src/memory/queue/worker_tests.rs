@@ -2,6 +2,7 @@ use super::*;
 use crate::memory::config::MemoryConfig;
 use crate::memory::queue::gate::DEFAULT_LLM_PERMITS;
 use crate::memory::queue::handlers::ReembedProgress;
+use crate::memory::queue::store::DEFAULT_LOCK_DURATION_MS;
 use crate::memory::queue::store::{count_by_status, enqueue, get_job};
 use crate::memory::queue::test_support::RecordingDelegates;
 use crate::memory::queue::types::{FlushStalePayload, JobStatus, NewJob, ReembedBackfillPayload};
@@ -108,6 +109,76 @@ async fn run_once_reschedules_reembed_jobs_that_defer() {
     assert!(job.started_at_ms.is_none());
     assert!(job.locked_until_ms.is_none());
     assert!(job.available_at_ms > chrono::Utc::now().timestamp_millis());
+}
+
+#[test]
+fn terminal_reembed_failure_clears_process_backfill_flag() {
+    let (_tmp, cfg) = test_config();
+    let mut new_job = NewJob::reembed_backfill(&ReembedBackfillPayload {
+        signature: "provider=test;model=terminal;dims=3".into(),
+    })
+    .unwrap();
+    new_job.max_attempts = Some(1);
+    enqueue(&cfg, &new_job).unwrap().unwrap();
+    let claimed = claim_next(&cfg, DEFAULT_LOCK_DURATION_MS).unwrap().unwrap();
+
+    crate::memory::queue::ops::set_backfill_in_progress(true);
+    settle_job(&cfg, &claimed, Err(anyhow::anyhow!("provider unavailable"))).unwrap();
+
+    assert_eq!(
+        get_job(&cfg, &claimed.id).unwrap().unwrap().status,
+        JobStatus::Failed
+    );
+    assert!(!crate::memory::queue::ops::backfill_in_progress());
+}
+
+#[test]
+fn completed_seal_rearms_same_level_when_live_buffer_still_crosses_gate() {
+    use crate::memory::chunks::with_connection;
+    use crate::memory::queue::types::SealPayload;
+
+    let (_tmp, mut cfg) = test_config();
+    cfg.tree.input_token_budget = 10;
+    let tree = crate::memory::tree::get_or_create_tree(
+        &cfg,
+        crate::memory::tree::TreeKind::Source,
+        "queue:edge",
+    )
+    .unwrap();
+    let payload = SealPayload {
+        tree_id: tree.id,
+        level: 0,
+        force_now_ms: None,
+    };
+    let original_id = enqueue(&cfg, &NewJob::seal(&payload).unwrap())
+        .unwrap()
+        .unwrap();
+    let claimed = claim_next(&cfg, DEFAULT_LOCK_DURATION_MS).unwrap().unwrap();
+
+    // Models content appended after the handler took and consumed its own
+    // snapshot, while this job's active dedupe key still suppressed producers.
+    with_connection(&cfg, |conn| {
+        conn.execute(
+            "INSERT INTO mem_tree_buffers
+                (tree_id, level, item_ids_json, token_sum, oldest_at_ms, updated_at_ms)
+             VALUES (?1, 0, '[\"late-chunk\"]', 10, 1, 1)",
+            rusqlite::params![payload.tree_id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    settle_job(&cfg, &claimed, Ok(JobOutcome::Done)).unwrap();
+
+    assert_eq!(
+        get_job(&cfg, &original_id).unwrap().unwrap().status,
+        JobStatus::Done
+    );
+    let replacement = claim_next(&cfg, DEFAULT_LOCK_DURATION_MS)
+        .unwrap()
+        .expect("same-level seal edge restored");
+    assert_eq!(replacement.kind, crate::memory::queue::types::JobKind::Seal);
+    assert_ne!(replacement.id, original_id);
 }
 
 #[tokio::test]
