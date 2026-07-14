@@ -80,9 +80,7 @@ async fn full_map_reduce_compile_offline() {
         "Always branch before writing code.",
         vec![PersonaFacet::Directives],
     );
-    fold_directives(&config, std::slice::from_ref(&directive), &asks, &summariser, &mut state)
-        .await
-        .unwrap();
+    fold_directives(std::slice::from_ref(&directive), &mut state);
 
     // Seal + compile the facet trees.
     let bodies = seal_and_collect(&config, &asks, &summariser)
@@ -90,11 +88,13 @@ async fn full_map_reduce_compile_offline() {
         .unwrap();
     assert!(bodies.contains_key(&PersonaFacet::Workflow));
     assert!(bodies.contains_key(&PersonaFacet::CodingStyle));
-    assert!(bodies.contains_key(&PersonaFacet::Directives));
+    // Directives are collected verbatim (not folded into a tree).
+    assert!(state.directives.iter().any(|d| d.contains("Always branch")));
 
     // Compile the pack.
     let mut inputs = PackInputs::new("me@example.com");
     inputs.facet_bodies = bodies;
+    inputs.directives = state.directives.clone();
     inputs.counts = state.counts.clone();
     inputs.scopes = state.scopes.iter().map(|(k, v)| (*k, v.len())).collect();
     let pack = compile_pack(&inputs);

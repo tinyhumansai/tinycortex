@@ -19,7 +19,7 @@ use git2::{DiffOptions, Repository, Sort};
 use walkdir::WalkDir;
 
 use super::super::types::{EvidenceSource, EvidenceTier, PersonaEvidence, PersonaSourceKind};
-use super::RawSession;
+use super::{keep_walk_entry, RawSession};
 
 /// Tunables for the git reader.
 #[derive(Debug, Clone)]
@@ -60,6 +60,7 @@ pub fn discover(roots: &[PathBuf]) -> Vec<PathBuf> {
         for entry in WalkDir::new(root)
             .max_depth(4)
             .into_iter()
+            .filter_entry(keep_walk_entry)
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_dir())
         {

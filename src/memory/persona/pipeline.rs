@@ -125,7 +125,7 @@ impl Pipeline<'_> {
         };
 
         // 1. Instruction files (no LLM) — highest-confidence T0 directives.
-        self.ingest_instructions(mode, &asks, &mut state, &mut report).await?;
+        self.ingest_instructions(mode, &mut state, &mut report).await?;
 
         // 2. Transcripts (Claude Code + Codex) — the digest map step.
         self.ingest_transcripts(mode, &asks, &mut state, &mut budget, &mut report).await?;
@@ -156,6 +156,8 @@ impl Pipeline<'_> {
         let asks = self.persona.asks();
         let mut bodies = BTreeMap::new();
         let mut state = ReduceState::default();
+        // Reconstruct verbatim directives from the persisted store.
+        state.directives = super::compile::read_directives(self.config);
         for facet in PersonaFacet::ALL {
             let factory = TreeFactory::flavoured(facet.tree_scope(), asks.ask(facet));
             let tree = factory.get_or_create(self.config)?;
@@ -176,8 +178,14 @@ impl Pipeline<'_> {
         bodies: BTreeMap<PersonaFacet, String>,
         state: &ReduceState,
     ) -> Result<PathBuf> {
+        // Persist the verbatim directives so a later `compile` can rebuild the
+        // Directives section without re-reading instruction files.
+        if !state.directives.is_empty() {
+            super::compile::write_directives(self.config, &state.directives)?;
+        }
         let mut inputs = PackInputs::new(self.persona.identity.clone());
         inputs.facet_bodies = bodies;
+        inputs.directives = state.directives.clone();
         inputs.counts = state.counts.clone();
         inputs.scopes = state.scopes.iter().map(|(k, v)| (*k, v.len())).collect();
         inputs.per_facet_budget = self.persona.per_facet_token_budget;
@@ -188,7 +196,6 @@ impl Pipeline<'_> {
     async fn ingest_instructions(
         &self,
         mode: RunMode,
-        asks: &FacetAsks,
         state: &mut ReduceState,
         report: &mut RunReport,
     ) -> Result<()> {
@@ -216,7 +223,7 @@ impl Pipeline<'_> {
             };
             report.evidence_units += session.evidence.len();
             report.directives_folded += session.evidence.len();
-            fold_directives(self.config, &session.evidence, asks, self.summariser, state).await?;
+            fold_directives(&session.evidence, state);
             state::record_watermark(self.store, &key, &sha).await?;
         }
         Ok(())

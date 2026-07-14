@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 use super::super::types::{EvidenceSource, EvidenceTier, PersonaEvidence, PersonaFacet, PersonaSourceKind};
-use super::RawSession;
+use super::{keep_walk_entry, RawSession};
 
 /// Filenames recognised as agent instruction files.
 const INSTRUCTION_FILENAMES: [&str; 4] = [
@@ -76,6 +76,7 @@ pub fn discover(roots: &[PathBuf], globals: &[PathBuf]) -> Vec<InstructionFile> 
         for entry in WalkDir::new(root)
             .max_depth(DEFAULT_MAX_DEPTH)
             .into_iter()
+            .filter_entry(keep_walk_entry)
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
         {

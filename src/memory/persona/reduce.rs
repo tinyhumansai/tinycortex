@@ -45,6 +45,10 @@ pub struct ReduceState {
     pub counts: BTreeMap<PersonaFacet, usize>,
     /// Distinct scopes (repos/projects) each facet was observed in.
     pub scopes: BTreeMap<PersonaFacet, std::collections::BTreeSet<String>>,
+    /// Verbatim T0 directive rules (from instruction files), deduped in order.
+    /// Kept out of the LLM fold so the compiled Directives section stays
+    /// near-verbatim regardless of the summariser (§6.5).
+    pub directives: Vec<String>,
 }
 
 impl ReduceState {
@@ -111,33 +115,20 @@ pub async fn fold_digest(
     Ok(())
 }
 
-/// Fold verbatim T0 directive evidence (from instruction files) into the
-/// `directives` tree. One leaf per rule, kept near-verbatim.
-pub async fn fold_directives(
-    config: &MemoryConfig,
-    evidence: &[PersonaEvidence],
-    asks: &FacetAsks,
-    summariser: &dyn Summariser,
-    state: &mut ReduceState,
-) -> Result<()> {
+/// Collect verbatim T0 directive evidence (from instruction files). These are
+/// *not* folded through the LLM — they flow into the pack near-verbatim so the
+/// person's explicit rules survive exactly (§6.4/§6.5). Deduped in first-seen
+/// order.
+pub fn fold_directives(evidence: &[PersonaEvidence], state: &mut ReduceState) {
     for ev in evidence {
         let scope = ev.source.scope.clone();
         let scope_label = scope.as_deref().unwrap_or("global");
-        let leaf_text = format!("[{scope_label}] {}", ev.excerpt());
-        fold_leaf(
-            config,
-            PersonaFacet::Directives,
-            &asks.ask(PersonaFacet::Directives),
-            &leaf_text,
-            ev.timestamp,
-            tier_score(ev.tier),
-            summariser,
-            state,
-        )
-        .await?;
+        let rule = format!("[{scope_label}] {}", ev.excerpt());
+        if !state.directives.contains(&rule) {
+            state.directives.push(rule);
+        }
         state.record(PersonaFacet::Directives, 1, scope.as_deref());
     }
-    Ok(())
 }
 
 /// Render a facet's observations as a leaf body.

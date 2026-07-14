@@ -32,6 +32,9 @@ pub struct PackInputs {
     pub identity: String,
     /// Compiled root body per facet (front-matter already stripped).
     pub facet_bodies: BTreeMap<PersonaFacet, String>,
+    /// Verbatim T0 directive rules for the Directives section (near-verbatim,
+    /// not LLM-folded). Rendered ahead of any distilled directives body.
+    pub directives: Vec<String>,
     /// Observation counts per facet (strength annotation).
     pub counts: BTreeMap<PersonaFacet, usize>,
     /// Distinct scope (project/repo) counts per facet (strength annotation).
@@ -48,6 +51,7 @@ impl PackInputs {
         Self {
             identity: identity.into(),
             facet_bodies: BTreeMap::new(),
+            directives: Vec::new(),
             counts: BTreeMap::new(),
             scopes: BTreeMap::new(),
             per_facet_budget: DEFAULT_PER_FACET_BUDGET,
@@ -67,7 +71,7 @@ pub fn compile_pack(inputs: &PackInputs) -> String {
     // protected — later facets are dropped before it if the ceiling is hit.
     let mut spent: u32 = estimate(&out);
     for facet in PersonaFacet::ALL {
-        let body = match inputs.facet_bodies.get(&facet) {
+        let body = match facet_body(inputs, facet) {
             Some(b) if !b.trim().is_empty() => b,
             _ => continue,
         };
@@ -98,16 +102,37 @@ pub fn compile_pack(inputs: &PackInputs) -> String {
     out.trim_end().to_string() + "\n"
 }
 
+/// Effective body for a facet. The Directives section is the verbatim T0 rules
+/// (near-verbatim) followed by any distilled directives body; every other facet
+/// is just its distilled tree body.
+fn facet_body(inputs: &PackInputs, facet: PersonaFacet) -> Option<String> {
+    if facet == PersonaFacet::Directives {
+        let mut out = String::new();
+        for rule in &inputs.directives {
+            out.push_str("- ");
+            out.push_str(rule.trim());
+            out.push('\n');
+        }
+        if let Some(b) = inputs.facet_bodies.get(&facet) {
+            if !b.trim().is_empty() {
+                out.push_str(b.trim());
+                out.push('\n');
+            }
+        }
+        return (!out.trim().is_empty()).then(|| out.trim().to_string());
+    }
+    inputs
+        .facet_bodies
+        .get(&facet)
+        .filter(|b| !b.trim().is_empty())
+        .cloned()
+}
+
 /// One-line trait summary naming the facets that carry content.
 fn header_summary(inputs: &PackInputs) -> String {
     let present: Vec<&str> = PersonaFacet::ALL
         .iter()
-        .filter(|f| {
-            inputs
-                .facet_bodies
-                .get(f)
-                .is_some_and(|b| !b.trim().is_empty())
-        })
+        .filter(|f| facet_body(inputs, **f).is_some())
         .map(|f| f.heading())
         .collect();
     if present.is_empty() {
@@ -147,6 +172,32 @@ pub fn persona_dir(config: &MemoryConfig) -> PathBuf {
 /// Absolute path of the compiled pack.
 pub fn pack_path(config: &MemoryConfig) -> PathBuf {
     persona_dir(config).join("PERSONA.md")
+}
+
+/// Path of the persisted verbatim-directives store (§6.9). One rule per line.
+pub fn directives_path(config: &MemoryConfig) -> PathBuf {
+    persona_dir(config).join("directives.md")
+}
+
+/// Persist the verbatim T0 directive rules so a later no-LLM `compile` can
+/// reconstruct the Directives section.
+pub fn write_directives(config: &MemoryConfig, directives: &[String]) -> Result<()> {
+    let path = directives_path(config);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create persona dir {}", parent.display()))?;
+    }
+    crate::memory::fsutil::atomic_write(&path, directives.join("\n").as_bytes())
+        .with_context(|| format!("write directives {}", path.display()))?;
+    Ok(())
+}
+
+/// Read the persisted verbatim directives (empty if none).
+pub fn read_directives(config: &MemoryConfig) -> Vec<String> {
+    match std::fs::read_to_string(directives_path(config)) {
+        Ok(s) => s.lines().filter(|l| !l.trim().is_empty()).map(str::to_string).collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
 /// Compile the pack and write it to [`pack_path`], returning the path.

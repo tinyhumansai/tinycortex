@@ -118,6 +118,17 @@ required-features = ["sync"]
 name = "composio_sync_live"
 required-features = ["sync"]
 
+# Persona pipeline end-to-end over fixtures against a wiremock OpenRouter.
+[[test]]
+name = "persona_e2e"
+required-features = ["persona", "providers-http", "git-diff"]
+
+# Runnable persona distillation harness (doc 06).
+# `OPENROUTER_API_KEY=... cargo run --example persona_harness --features persona,providers-http,git-diff -- backfill`
+[[example]]
+name = "persona_harness"
+required-features = ["persona", "providers-http", "git-diff"]
+
 # Runnable connection + memory-sync harness for a live Composio API key.
 # `COMPOSIO_API_KEY=... cargo run --example composio_harness --features sync`
 [[example]]

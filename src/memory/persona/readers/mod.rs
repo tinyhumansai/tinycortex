@@ -96,6 +96,30 @@ pub fn looks_like_correction(text: &str) -> bool {
         || t.contains("that's not")
 }
 
+/// Directory names pruned from `walkdir` traversals: build output, dependency
+/// caches, vendored submodules, and nested agent worktrees (which would
+/// double-count the same repo/instruction files). Keeping these out of the walk
+/// is both a large speedup and a correctness win.
+pub(crate) fn keep_walk_entry(entry: &walkdir::DirEntry) -> bool {
+    if !entry.file_type().is_dir() {
+        return true;
+    }
+    let name = entry.file_name().to_string_lossy();
+    !matches!(
+        name.as_ref(),
+        "target"
+            | "node_modules"
+            | ".git"
+            | ".venv"
+            | "venv"
+            | "dist"
+            | "build"
+            | ".cache"
+            | ".claude"
+            | "vendor"
+    )
+}
+
 /// True when a user turn is a slash-command / custom-command invocation (a
 /// habit trace, T2) — leading `/` or `$` token, e.g. `/code-review`,
 /// `$ship-and-babysit`.
