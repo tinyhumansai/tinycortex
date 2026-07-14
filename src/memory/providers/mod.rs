@@ -22,3 +22,9 @@
 /// module; the alias exists so future providers (goals **C3**/**M3**) share
 /// one client type rather than each pulling `reqwest` in independently.
 pub type HttpClient = reqwest::Client;
+
+/// OpenRouter reference provider — the crate's first concrete `ChatProvider` /
+/// `Summariser` / `EmbeddingBackend` (doc 06 §6.6). A reference implementation
+/// only; the persona pipeline depends on the traits, not on this type.
+pub mod openrouter;
+pub use openrouter::{OpenRouterConfig, OpenRouterProvider, RunUsage};

@@ -13,4 +13,4 @@ corpus/
 db/
 results/
 .claude/workflows/
-.claude/worktrees/
+.claude/worktrees/persona-workspace/

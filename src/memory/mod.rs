@@ -97,6 +97,14 @@ pub mod providers;
 #[cfg(feature = "rpc")]
 pub mod rpc;
 
+/// Persona distillation: turns local coding-agent history, instruction files,
+/// and git commits into a durable persona memory layer (doc 06).
+///
+/// Gated behind the default-off `persona` feature. Adds no new dependencies;
+/// the git-history reader additionally requires `git-diff`.
+#[cfg(feature = "persona")]
+pub mod persona;
+
 // ── Re-exports ──────────────────────────────────────────────────────────────
 pub use config::{MemoryConfig, WeightProfile};
 pub use error::{MemoryEngineResult, MemoryError as MemoryEngineError};

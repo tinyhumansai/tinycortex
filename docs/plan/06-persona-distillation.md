@@ -362,6 +362,35 @@ namespace (`persona-sync-state`, keyed `<source_kind>:<root>`):
 - **Cost assertion**: mock e2e asserts total request count and estimated
   spend stay under the configured run budget.
 
+### First live run (2026-07-14)
+
+The launch milestone (P1, P2, P5, P6, P7, P8, P9, P10) shipped and was verified
+end-to-end against this machine's real history via
+`examples/persona_harness.rs` and the OpenRouter reference provider (DeepSeek v4
+Flash + `text-embedding-3-small`). A capped `backfill` (`PERSONA_MAX_SESSIONS=40`)
+over Claude Code + Codex transcripts, the global/repo `CLAUDE.md` files, and the
+tinycortex git repo distilled **774 observations** into a 6.8 KB
+`persona/PERSONA.md` for **$0.063** (75 provider requests). The pack reproduces
+8/8 independently-known preferences with no fabrications — see
+`docs/plan/06-persona-rubric.md` for the full scorecard. Reader byte-reduction
+on the real corpus: **99.3%** (Claude Code) / **98.8%** (Codex). Known
+follow-ups: the sequential digest map dominates wall-clock (~46 min for 40
+sessions) — batch it concurrently before a full backfill; and P3 (opencode /
+Cursor) + P4 (ChatGPT / Claude.ai exports) remain as follow-on sources.
+
+Deviations from the plan as written, all documented in code:
+- `PersonaConfig` lives in `memory::persona::config` (feature-gated) rather than
+  as a field on the dependency-light core `MemoryConfig`.
+- Incremental-run state uses a persona-local `PersonaStateStore` trait mirroring
+  `sync::state::SyncStateStore` (the `sync` module is gated behind the heavy
+  reqwest feature; persona stays dependency-light).
+- Excerpt redaction uses the composite `sanitize_text` (secrets + PII) rather
+  than `redact_pii` alone, because transcripts leak tokens/keys, not just
+  formatted PII.
+- Verbatim T0 directives are collected out of the LLM fold and rendered directly
+  into the Directives section (persisted to `persona/directives.md`) so explicit
+  rules survive exactly regardless of the summariser.
+
 ## Goals
 
 ID namespace: `P*` (persona). Same `/goal` shape as the rest of this folder;
