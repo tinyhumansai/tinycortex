@@ -16,6 +16,7 @@
 //! concrete provider (the OpenRouter reference provider lives under
 //! `memory::providers`).
 
+pub mod readers;
 pub mod types;
 
 pub use types::{
