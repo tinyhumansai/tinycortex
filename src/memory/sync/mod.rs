@@ -15,8 +15,10 @@ pub use audit::{
     append_audit_entry, estimate_cost_usd, read_audit_log, RealCostAccumulator, SyncAuditEntry,
 };
 pub use composio::{
-    ClickUpSyncPipeline, ComposioClient, GitHubSyncPipeline, GmailSyncPipeline, LinearSyncPipeline,
-    NotionSyncPipeline, SlackSearchBackfillPipeline, SlackSyncPipeline,
+    create_connection_link, generate_entity_id, get_connection_status, list_auth_configs,
+    resolve_auth_config_id, status_is_active, status_is_terminal, ClickUpSyncPipeline,
+    ComposioClient, ConnectionLink, EntityStore, GitHubSyncPipeline, GmailSyncPipeline,
+    LinearSyncPipeline, NotionSyncPipeline, SlackSearchBackfillPipeline, SlackSyncPipeline,
 };
 pub use dispatcher::{SyncDispatcher, SyncRunResult};
 pub use github::GithubRepoSyncPipeline;
