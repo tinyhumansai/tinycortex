@@ -15,6 +15,7 @@ exclude = [
     "gitbooks/",
     "paper/",
     "requirements.txt",
+    "viewer/",
 ]
 
 [features]
@@ -95,6 +96,7 @@ tokio = { version = "1", features = [
 ], optional = true }
 
 [dev-dependencies]
+dotenvy = "0.15"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 wiremock = "0.6"
@@ -105,4 +107,16 @@ required-features = ["sync"]
 
 [[test]]
 name = "composio_sync_live"
+required-features = ["sync"]
+
+# Runnable connection + memory-sync harness for a live Composio API key.
+# `COMPOSIO_API_KEY=... cargo run --example composio_harness --features sync`
+[[example]]
+name = "composio_harness"
+required-features = ["sync"]
+
+# Seed a workspace with sample synced memory for the viewer (no API key needed).
+# `TINYCORTEX_WORKSPACE=/tmp/demo cargo run --example seed_memory --features sync`
+[[example]]
+name = "seed_memory"
 required-features = ["sync"]
