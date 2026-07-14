@@ -65,7 +65,7 @@ async fn full_map_reduce_compile_offline() {
 
     // Two sessions from two different scopes → cross-project strength.
     for scope in ["projA", "projB"] {
-        let digest = digest_session(&provider, &session(scope)).await;
+        let digest = digest_session(&provider, &session(scope)).await.unwrap();
         fold_digest(&config, &digest, &asks, &summariser, &mut state)
             .await
             .unwrap();
@@ -122,4 +122,24 @@ fn strip_frontmatter_removes_yaml_block() {
     let md = "---\nkind: flavoured_root\nask: \"x\"\n---\nThe body here.\n";
     assert_eq!(strip_frontmatter(md), "The body here.");
     assert_eq!(strip_frontmatter("no frontmatter"), "no frontmatter");
+}
+
+#[test]
+fn persona_chunk_id_is_content_stable_across_runs() {
+    // Same (scope, content) → same chunk id regardless of any per-run counter,
+    // so re-reading the same evidence dedupes on tree insertion.
+    let t = Utc::now();
+    let a = persona_chunk("persona/workflow", "- Commits small [t2]", t);
+    let b = persona_chunk(
+        "persona/workflow",
+        "- Commits small [t2]",
+        t + chrono::Duration::hours(3),
+    );
+    assert_eq!(a.id, b.id, "id must not depend on run order or timestamp");
+    // Different content → different id.
+    let c = persona_chunk("persona/workflow", "- Different [t2]", t);
+    assert_ne!(a.id, c.id);
+    // Different facet scope → different id.
+    let d = persona_chunk("persona/stack", "- Commits small [t2]", t);
+    assert_ne!(a.id, d.id);
 }

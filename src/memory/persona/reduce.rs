@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use sha2::{Digest, Sha256};
 
 use super::types::{DigestObservation, EvidenceTier, PersonaEvidence, PersonaFacet, SessionDigest};
 use crate::memory::chunks::{chunk_id, upsert_chunks, Chunk, Metadata, SourceKind};
@@ -35,12 +36,10 @@ impl FacetAsks {
     }
 }
 
-/// Running reduce state threaded across sessions: a monotonically increasing
-/// leaf sequence and per-facet observation counts (for the pack's strength
-/// annotations).
+/// Running reduce state threaded across sessions: per-facet observation counts
+/// (for the pack's strength annotations) and the verbatim directive set.
 #[derive(Debug, Default)]
 pub struct ReduceState {
-    seq: u32,
     /// Observation counts per facet, for "seen in N observations" annotations.
     pub counts: BTreeMap<PersonaFacet, usize>,
     /// Distinct scopes (repos/projects) each facet was observed in.
@@ -52,12 +51,6 @@ pub struct ReduceState {
 }
 
 impl ReduceState {
-    fn next_seq(&mut self) -> u32 {
-        let s = self.seq;
-        self.seq += 1;
-        s
-    }
-
     fn record(&mut self, facet: PersonaFacet, n: usize, scope: Option<&str>) {
         *self.counts.entry(facet).or_default() += n;
         if let Some(sc) = scope {
@@ -107,7 +100,6 @@ pub async fn fold_digest(
             digest_timestamp(digest),
             tier_score(top_tier),
             summariser,
-            state,
         )
         .await?;
         state.record(facet, obs.len(), scope.as_deref());
@@ -157,7 +149,6 @@ fn digest_timestamp(_digest: &SessionDigest) -> DateTime<Utc> {
 }
 
 /// Persist `leaf_text` as a chunk and append it to `facet`'s flavoured tree.
-#[allow(clippy::too_many_arguments)]
 async fn fold_leaf(
     config: &MemoryConfig,
     facet: PersonaFacet,
@@ -166,11 +157,9 @@ async fn fold_leaf(
     timestamp: DateTime<Utc>,
     score: f32,
     summariser: &dyn Summariser,
-    state: &mut ReduceState,
 ) -> Result<()> {
     let scope = facet.tree_scope();
-    let seq = state.next_seq();
-    let chunk = persona_chunk(&scope, seq, leaf_text, timestamp);
+    let chunk = persona_chunk(&scope, leaf_text, timestamp);
     upsert_chunks(config, std::slice::from_ref(&chunk))?;
 
     let leaf = LeafRef {
@@ -188,7 +177,14 @@ async fn fold_leaf(
 }
 
 /// Build a persona evidence chunk (stored as a `Document` source).
-fn persona_chunk(scope: &str, seq: u32, content: &str, timestamp: DateTime<Utc>) -> Chunk {
+///
+/// The chunk id is **content-stable**: the `seq` fed into [`chunk_id`] is
+/// derived from `(scope, content)`, not a per-run counter, so the same
+/// observation text yields the same id on every run. Tree insertion dedupes by
+/// chunk id, so re-reading the same evidence (e.g. a repo re-scanned after a
+/// budget-truncated pass) folds it at most once.
+fn persona_chunk(scope: &str, content: &str, timestamp: DateTime<Utc>) -> Chunk {
+    let seq = stable_seq(scope, content);
     Chunk {
         id: chunk_id(SourceKind::Document, scope, seq, content),
         content: content.to_string(),
@@ -207,6 +203,17 @@ fn persona_chunk(scope: &str, seq: u32, content: &str, timestamp: DateTime<Utc>)
         created_at: timestamp,
         partial_message: false,
     }
+}
+
+/// Deterministic pseudo-sequence derived from the leaf's scope + content, so a
+/// given observation maps to a stable chunk id across runs (dedup-safe).
+fn stable_seq(scope: &str, content: &str) -> u32 {
+    let mut h = Sha256::new();
+    h.update(scope.as_bytes());
+    h.update(b"\x1f");
+    h.update(content.as_bytes());
+    let d = h.finalize();
+    u32::from_le_bytes([d[0], d[1], d[2], d[3]])
 }
 
 fn estimate_tokens(text: &str) -> u32 {

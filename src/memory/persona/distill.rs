@@ -88,33 +88,38 @@ fn windows(session: &RawSession) -> Vec<String> {
     out
 }
 
-/// Digest one session into a [`SessionDigest`] via the chat provider. Soft-falls
-/// back to an empty digest on any failure so the pipeline never aborts.
-pub async fn digest_session(provider: &dyn ChatProvider, session: &RawSession) -> SessionDigest {
+/// Digest one session into a [`SessionDigest`] via the chat provider.
+///
+/// Distinguishes two failure modes so the pipeline can checkpoint correctly:
+/// - **Provider/transport failure** (a `chat_for_json` error — budget exhausted,
+///   401/403, transport) → returns `Err`. The caller must NOT commit the
+///   session's cursor, so the evidence is re-attempted on the next run.
+/// - **Model produced no usable output** (a valid call whose response wasn't
+///   parseable JSON, or yielded zero observations) → returns `Ok` with an empty
+///   digest. Re-running would reproduce it, so the cursor IS committed.
+pub async fn digest_session(
+    provider: &dyn ChatProvider,
+    session: &RawSession,
+) -> Result<SessionDigest> {
     if session.is_empty() {
-        return SessionDigest::empty(session.source.clone());
+        return Ok(SessionDigest::empty(session.source.clone()));
     }
     let mut observations: Vec<DigestObservation> = Vec::new();
     for window in windows(session) {
-        match digest_window(provider, session, &window).await {
-            Ok(mut obs) => observations.append(&mut obs),
-            Err(e) => {
-                log::warn!(
-                    "[persona] digest failed for {} ({}): {e:#}",
-                    session.source.kind.as_str(),
-                    session.source.session_id.as_deref().unwrap_or("?")
-                );
-                // soft fallback: skip this window
-            }
-        }
+        // A hard provider failure bubbles up (the whole session is retried next
+        // run); a soft parse failure yields an empty window and is tolerated.
+        let obs = digest_window(provider, session, &window).await?;
+        observations.extend(obs);
     }
-    SessionDigest {
+    Ok(SessionDigest {
         source: session.source.clone(),
         observations,
-    }
+    })
 }
 
-/// One window → observations. Errors bubble so the caller can soft-fall back.
+/// One window → observations. A `chat_for_json` failure bubbles up as `Err`
+/// (hard, non-committable); an unparseable-but-received response degrades to an
+/// empty window (`Ok(vec![])`) since retrying reproduces it.
 async fn digest_window(
     provider: &dyn ChatProvider,
     session: &RawSession,
@@ -128,7 +133,17 @@ async fn digest_window(
         max_tokens: Some(DIGEST_MAX_OUTPUT_TOKENS),
     };
     let raw = provider.chat_for_json(&prompt).await?;
-    let parsed: RawDigest = parse_digest(&raw)?;
+    let parsed: RawDigest = match parse_digest(&raw) {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!(
+                "[persona] digest parse failed for {} ({}): {e:#}",
+                session.source.kind.as_str(),
+                session.source.session_id.as_deref().unwrap_or("?")
+            );
+            return Ok(Vec::new());
+        }
+    };
     Ok(parsed
         .observations
         .into_iter()

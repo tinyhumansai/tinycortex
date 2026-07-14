@@ -47,7 +47,7 @@ async fn parses_observations_from_json() {
         body: Ok(body.into()),
     };
     let session = session_with(&[("commit small and often", EvidenceTier::T2)]);
-    let digest = digest_session(&provider, &session).await;
+    let digest = digest_session(&provider, &session).await.unwrap();
     assert_eq!(digest.observations.len(), 2);
     assert_eq!(digest.observations[0].facet, PersonaFacet::Workflow);
     assert_eq!(digest.observations[1].facet, PersonaFacet::CodingStyle);
@@ -61,7 +61,7 @@ async fn tolerates_prose_wrapped_json() {
         body: Ok(body.into()),
     };
     let session = session_with(&[("cargo test", EvidenceTier::T2)]);
-    let digest = digest_session(&provider, &session).await;
+    let digest = digest_session(&provider, &session).await.unwrap();
     assert_eq!(digest.observations.len(), 1);
     assert_eq!(digest.observations[0].facet, PersonaFacet::Stack);
 }
@@ -70,15 +70,19 @@ async fn tolerates_prose_wrapped_json() {
 async fn soft_falls_back_on_error_and_bad_json() {
     let session = session_with(&[("x", EvidenceTier::T2)]);
 
+    // A hard provider failure surfaces as Err (so the caller won't commit the
+    // cursor and the session is retried next run).
     let failing = MockChat {
         body: Err("402 requires more credits".into()),
     };
-    assert!(digest_session(&failing, &session).await.is_empty());
+    assert!(digest_session(&failing, &session).await.is_err());
 
+    // A received-but-unparseable response is a soft failure: Ok + empty digest
+    // (re-running reproduces it, so the cursor may commit).
     let garbage = MockChat {
         body: Ok("not json at all".into()),
     };
-    assert!(digest_session(&garbage, &session).await.is_empty());
+    assert!(digest_session(&garbage, &session).await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -87,7 +91,10 @@ async fn empty_session_yields_empty_digest() {
         body: Ok("{\"observations\":[]}".into()),
     };
     let session = RawSession::new(EvidenceSource::new(PersonaSourceKind::Codex));
-    assert!(digest_session(&provider, &session).await.is_empty());
+    assert!(digest_session(&provider, &session)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -102,7 +109,7 @@ async fn drops_unusable_observations() {
         body: Ok(body.into()),
     };
     let session = session_with(&[("db", EvidenceTier::T2)]);
-    let digest = digest_session(&provider, &session).await;
+    let digest = digest_session(&provider, &session).await.unwrap();
     assert_eq!(digest.observations.len(), 1);
     assert_eq!(digest.observations[0].observation, "Prefers Postgres");
 }

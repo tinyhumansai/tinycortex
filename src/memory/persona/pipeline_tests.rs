@@ -27,6 +27,18 @@ impl ChatProvider for MockChat {
     }
 }
 
+/// A provider that always hard-fails (e.g. budget exhausted / auth error).
+struct FailChat;
+#[async_trait]
+impl ChatProvider for FailChat {
+    fn name(&self) -> &str {
+        "fail"
+    }
+    async fn chat_for_json(&self, _p: &ChatPrompt) -> anyhow::Result<String> {
+        anyhow::bail!("503 upstream unavailable")
+    }
+}
+
 fn user_turn(session: &str, ts: &str, text: &str) -> String {
     format!(
         r#"{{"type":"user","isSidechain":false,"cwd":"/work/demo","sessionId":"{session}","timestamp":"{ts}","message":{{"role":"user","content":"{text}"}}}}"#
@@ -100,15 +112,15 @@ async fn backfill_then_incremental_resume() {
     assert!(pack.contains("## Directives"));
     assert!(pack.contains("Always branch before writing code."));
 
-    // Incremental: nothing changed → everything skipped, no new digests.
+    // Incremental: transcripts are cursor-skipped (no new digests). Instruction
+    // files are always re-read (cheap, no LLM) so edits/removals are reflected.
     let report2 = pipeline.run(RunMode::Incremental).await.unwrap();
     assert_eq!(report2.sessions_processed, 0, "unchanged → no re-digest");
     assert!(
-        report2.sessions_skipped >= 3,
-        "2 transcripts + 1 instruction skipped"
+        report2.sessions_skipped >= 2,
+        "the 2 transcripts are skipped"
     );
-    // Even though the instruction file was cursor-skipped, the persisted
-    // verbatim directives must still appear in the recompiled pack.
+    // Directives are rebuilt from the re-read instruction file and still appear.
     let pack2 = std::fs::read_to_string(report2.pack_path.as_ref().unwrap()).unwrap();
     assert!(pack2.contains("Always branch before writing code."));
 }
@@ -155,4 +167,90 @@ async fn compile_only_reassembles_without_llm() {
     let pack = std::fs::read_to_string(path).unwrap();
     assert!(pack.contains("# Persona: me@example.com"));
     assert!(pack.contains("## Directives"));
+}
+
+#[tokio::test]
+async fn hard_provider_failure_does_not_commit_cursor() {
+    // A hard provider failure must NOT checkpoint the transcript, so a later run
+    // with a working provider re-processes it (evidence isn't lost).
+    let (ws, _src, cfg, persona) = setup();
+    let summariser = ConcatSummariser::new();
+    let store = FileStateStore::open_in_workspace(ws.path()).unwrap();
+
+    let failing = FailChat;
+    let first = Pipeline {
+        config: &cfg,
+        persona: &persona,
+        provider: &failing,
+        summariser: &summariser,
+        store: &store,
+    }
+    .run(RunMode::Backfill)
+    .await
+    .unwrap();
+    assert_eq!(first.sessions_processed, 0, "all digests failed");
+    assert_eq!(first.sessions_failed, 2, "both transcripts failed");
+    assert_eq!(first.observations, 0);
+    // Instruction directives still land (no LLM needed).
+    let pack = std::fs::read_to_string(first.pack_path.as_ref().unwrap()).unwrap();
+    assert!(pack.contains("Always branch before writing code."));
+
+    // A working provider re-processes the un-committed transcripts.
+    let good = MockChat;
+    let second = Pipeline {
+        config: &cfg,
+        persona: &persona,
+        provider: &good,
+        summariser: &summariser,
+        store: &store,
+    }
+    .run(RunMode::Incremental)
+    .await
+    .unwrap();
+    assert_eq!(second.sessions_processed, 2, "failed sessions were retried");
+    assert!(second.observations >= 2);
+}
+
+#[tokio::test]
+async fn removed_directive_drops_out_on_rerun() {
+    // Editing an instruction file (removing a rule) must drop the stale rule
+    // from the pack — directives are rebuilt fresh, not appended.
+    let (ws, src, cfg, persona) = setup();
+    let provider = MockChat;
+    let summariser = ConcatSummariser::new();
+    let store = FileStateStore::open_in_workspace(ws.path()).unwrap();
+    let claude_md = src.path().join("proj/CLAUDE.md");
+
+    let first = Pipeline {
+        config: &cfg,
+        persona: &persona,
+        provider: &provider,
+        summariser: &summariser,
+        store: &store,
+    }
+    .run(RunMode::Backfill)
+    .await
+    .unwrap();
+    let pack1 = std::fs::read_to_string(first.pack_path.as_ref().unwrap()).unwrap();
+    assert!(pack1.contains("Always branch before writing code."));
+    assert!(pack1.contains("Commit regularly."));
+
+    // Remove the "Commit regularly." rule and re-run incrementally.
+    std::fs::write(&claude_md, "- Always branch before writing code.\n").unwrap();
+    let second = Pipeline {
+        config: &cfg,
+        persona: &persona,
+        provider: &provider,
+        summariser: &summariser,
+        store: &store,
+    }
+    .run(RunMode::Incremental)
+    .await
+    .unwrap();
+    let pack2 = std::fs::read_to_string(second.pack_path.as_ref().unwrap()).unwrap();
+    assert!(pack2.contains("Always branch before writing code."));
+    assert!(
+        !pack2.contains("Commit regularly."),
+        "removed directive must not persist:\n{pack2}"
+    );
 }

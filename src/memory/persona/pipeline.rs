@@ -62,6 +62,9 @@ pub struct RunReport {
     pub evidence_units: usize,
     /// Digest calls that produced at least one observation.
     pub digests: usize,
+    /// Sessions whose digest hit a hard provider failure (cursor NOT committed;
+    /// retried next run).
+    pub sessions_failed: usize,
     /// Observations distilled.
     pub observations: usize,
     /// Per-facet observation counts (facet wire-string → count).
@@ -119,10 +122,6 @@ impl Pipeline<'_> {
     pub async fn run(&self, mode: RunMode) -> Result<RunReport> {
         let asks = self.persona.asks();
         let mut state = ReduceState::default();
-        // Seed verbatim directives from the persisted store so an incremental
-        // run (which cursor-skips unchanged instruction files) still emits the
-        // Directives section. fold_directives dedups on re-read.
-        state.directives = super::compile::read_directives(self.config);
         let mut budget = Budget::from(self.persona);
         let mut report = RunReport {
             mode: mode.as_str().to_string(),
@@ -130,8 +129,10 @@ impl Pipeline<'_> {
         };
 
         // 1. Instruction files (no LLM) — highest-confidence T0 directives.
-        self.ingest_instructions(mode, &mut state, &mut report)
-            .await?;
+        // Always re-read the full set every run (cheap, no LLM) so edits and
+        // removals are reflected — directives are rebuilt fresh, never seeded
+        // from a stale persisted copy.
+        self.ingest_instructions(&mut state, &mut report).await?;
 
         // 2. Transcripts (Claude Code + Codex) — the digest map step.
         self.ingest_transcripts(mode, &asks, &mut state, &mut budget, &mut report)
@@ -203,7 +204,6 @@ impl Pipeline<'_> {
 
     async fn ingest_instructions(
         &self,
-        mode: RunMode,
         state: &mut ReduceState,
         report: &mut RunReport,
     ) -> Result<()> {
@@ -219,12 +219,8 @@ impl Pipeline<'_> {
                 Err(_) => continue,
             };
             let sha = instruction::content_sha(&bytes);
-            if mode == RunMode::Incremental
-                && state::watermark_unchanged(self.store, &key, &sha).await?
-            {
-                report.sessions_skipped += 1;
-                continue;
-            }
+            // Re-read every run so removed/edited rules drop out of the freshly
+            // rebuilt directive set (dedup keeps repeats collapsed). No LLM cost.
             let session = match instruction::read_file(&file) {
                 Ok(s) => s,
                 Err(_) => continue,
@@ -317,19 +313,30 @@ impl Pipeline<'_> {
             return Ok(());
         }
         let concurrency = self.persona.digest_concurrency.max(1);
-        let digests: Vec<SessionDigest> = stream::iter(selected.iter())
+        let results: Vec<Result<SessionDigest>> = stream::iter(selected.iter())
             .map(|p| digest_session(self.provider, &p.session))
             .buffered(concurrency)
             .collect()
             .await;
-        for (p, digest) in selected.iter().zip(digests) {
+        for (p, result) in selected.iter().zip(results) {
+            let digest = match result {
+                Ok(d) => d,
+                Err(e) => {
+                    // Hard provider failure: do NOT commit the cursor, so this
+                    // session is re-attempted on the next run.
+                    log::warn!("[persona] digest failed, cursor not committed: {e:#}");
+                    report.sessions_failed += 1;
+                    continue;
+                }
+            };
             report.sessions_processed += 1;
             if !digest.is_empty() {
                 report.digests += 1;
                 report.observations += digest.observations.len();
                 fold_digest(self.config, &digest, asks, self.summariser, state).await?;
             }
-            // Commit the cursor/watermark now that the session is folded.
+            // Commit the cursor/watermark now that the session is folded (a valid
+            // empty digest still commits — retrying would reproduce it).
             if let Some((key, value)) = &p.commit {
                 self.store.set(state::NAMESPACE, key, value).await?;
             }
