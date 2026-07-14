@@ -23,6 +23,7 @@ jobs:
           # This job executes repo code (cargo build/test); don't persist the
           # token in git config.
           persist-credentials: false
+          submodules: true
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -70,6 +71,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          submodules: true
 
       - uses: dtolnay/rust-toolchain@stable
 
