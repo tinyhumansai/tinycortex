@@ -16,6 +16,7 @@ use super::types::{EvidenceSource, PersonaEvidence};
 
 pub mod claude_code;
 pub mod codex;
+pub mod instruction;
 
 mod jsonl;
 
