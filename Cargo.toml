@@ -49,6 +49,15 @@ sync = ["dep:reqwest", "dep:tracing", "tokio"]
 # (serde is already a core dependency).
 rpc = []
 
+# Persona distillation surface (`memory::persona`): ingests local coding-agent
+# history, instruction files, and git commits into a durable persona memory
+# layer (doc 06). Adds NO new dependencies — readers reuse `serde_json`,
+# `walkdir`, `rusqlite`, `sha2` from core; the git-history reader additionally
+# requires the `git-diff` feature. A live run also wants `providers-http` for
+# the OpenRouter reference provider, but the pipeline depends only on the
+# `ChatProvider` / `Summariser` / `EmbeddingBackend` traits.
+persona = []
+
 [dependencies]
 anyhow = "1"
 log = "0.4"
