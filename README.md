@@ -16,7 +16,7 @@
 
 The human brain is a master at compression. It doesn't try to remember every passing detail; instead it aggressively prunes noise to keep a sharp, focused, easily accessible recall of what truly matters. Traditional AI memory systems do the opposite — they try to remember _everything_ and retrieve whatever is _similar_. But similar doesn't mean important. The result? Your AI drowns in stale, irrelevant context that degrades every response.
 
-**TinyCortex** takes the brain's approach: it **intelligently forgets noise**. A multi-signal admission gate drops low-value content at ingest, and retrieval applies exponential time-decay so stale memories fade from recall while fresh, high-signal knowledge ranks first. The result is a memory engine that stays lean and focused instead of drowning in stale context.
+**TinyCortex** takes the brain's approach: it **intelligently forgets noise**. A multi-signal admission gate drops low-value content at ingest. Retrieval provides semantic, keyword, graph, summary-tree, and freshness-scoring building blocks so hosts can choose an explicit ranking policy instead of treating every stored item as equally useful.
 
 The hosted TinyCortex platform has been evaluated on [RAGAS](https://www.ragas.io/), TemporalBench, [BABILong](https://github.com/booydar/babilong/), and [Vending-Bench](https://andonlabs.com/evals/vending-bench-2) — see [Benchmarks](#-benchmarks) below for the reported results and what you can reproduce from this repo.
 
@@ -26,7 +26,7 @@ The hosted TinyCortex platform has been evaluated on [RAGAS](https://www.ragas.i
 
 ## Intelligent Noise Filtering
 
-Every chunk passes a multi-signal admission gate at ingest — low-value content is dropped before it ever pollutes the store — and retrieval ranking applies exponential time-decay (7-day half-life by default) so stale memories fade from recall. The store stays lean on its own — no manual cleanup.
+Every chunk passes a multi-signal admission gate at ingest, so low-value content is dropped before it pollutes the store. The retrieval module exposes exponential freshness decay (7-day half-life by default) as a composable signal; built-in tree queries use semantic similarity or recency unless the host applies the hybrid composer.
 
 ![Interaction graph highlighting important knowledge](docs/images/gif/AppleEmailGraph.gif)
 
@@ -42,7 +42,7 @@ Markdown files are the source of truth. SQLite chunk rows, summary trees, vector
 
 ## Recency-Weighted Recall
 
-Retrieval blends keyword relevance, vector similarity, graph proximity, and freshness into a single explainable score, so what comes back is a focused slice of long-term history rather than a noisy dump. Summary-tree hotness tracking promotes frequently written topics into their own trees. (The fully proactive "conscious recall" experience — surfacing memories without an explicit query — is part of the hosted TinyCortex platform, built on these primitives.)
+TinyCortex exposes keyword relevance, vector similarity, graph proximity, freshness, and an explainable hybrid-score composer. These are policy primitives rather than a hidden global ranking rule: hosts can apply the supplied `WeightProfile`, while the built-in source/topic/global queries use their documented semantic or recency ordering. Summary-tree hotness tracking promotes frequently written topics into their own trees. (The fully proactive "conscious recall" experience — surfacing memories without an explicit query — is part of the hosted TinyCortex platform, built on these primitives.)
 
 # ⚡ Getting Started
 
@@ -68,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     // Recall it with a keyword query.
-    let hits = store.search(MemoryQuery::text("theme preference")).await?;
+    let hits = store.search(MemoryQuery::text("dark mode")).await?;
     for hit in hits {
         println!("{:.3}  {}", hit.score, hit.record.content);
     }
@@ -76,7 +76,15 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-The `InMemoryMemoryStore` is the simple reference backend. The full engine — content store, chunking, scoring, summary trees, vector/keyword/graph/hybrid retrieval, the diff ledger, and the async job queue — lives under the [`memory`](https://docs.rs/tinycortex/latest/tinycortex/memory/) module. See the **[documentation](https://tinyhumans.gitbook.io/tinycortex/)** for the architecture, concepts, and end-to-end ingest walkthroughs.
+The `InMemoryMemoryStore` is the simple reference backend. The full engine — content store, chunking, scoring, summary trees, and vector/keyword/graph retrieval primitives — lives under the [`memory`](https://docs.rs/tinycortex/latest/tinycortex/memory/) module. Optional surfaces require Cargo features:
+
+| Feature | Enables |
+| --- | --- |
+| `tokio` | Always-on queue worker and scheduler loops |
+| `git-diff` | Git-backed snapshots, checkpoints, and read markers |
+| `sync` | Composio and workspace synchronization pipelines |
+
+See the **[documentation](https://tinyhumans.gitbook.io/tinycortex/)** for the architecture, concepts, and end-to-end ingest walkthroughs.
 
 # 🧩 How It Works
 
@@ -96,12 +104,12 @@ source payload
 | ----------------------------- | -------------------------------------------------------------------------------------------- |
 | **Storage primitives**        | Markdown content store, SQLite chunks, summary trees, vector DB, KV, entity index            |
 | **Ingest**                    | Canonicalize → chunk → score → embed → tree                                                  |
-| **Retrieval**                 | Vector, keyword, graph, tree drill-down, and hybrid search with explainable score breakdowns |
-| **Diff**                      | Git-backed source snapshots, checkpoints, and read-markers for change awareness              |
+| **Retrieval**                 | Vector, keyword, graph, tree drill-down, and composable hybrid-score primitives               |
+| **Diff** (`git-diff`)         | Git-backed source snapshots, checkpoints, and read-markers for change awareness              |
 | **Entities & Graph**          | Entity markdown files + a co-occurrence graph derived from the entity index                  |
 | **Goals / Tool Memory**       | Compact long-term goal list and durable tool-scoped rules                                    |
 | **Conversations / Archivist** | Transcript storage and conversion of turns into summary-tree leaves                          |
-| **Queue**                     | Async jobs: extract, append, seal, flush-stale, re-embed, seal-document                      |
+| **Queue**                     | Durable jobs; optional `tokio` feature adds always-on worker/scheduler loops                  |
 
 Full details live in the **[documentation](https://tinyhumans.gitbook.io/tinycortex/)**.
 
@@ -138,7 +146,9 @@ See [`benchmarks/`](./benchmarks/README.md) for the full reported tables and for
 
 # 🤝 Contributing
 
-TinyCortex is built in Rust (2021 edition). Clone the repo and:
+TinyCortex is built in Rust (2021 edition). Clone the repo, then run
+`./scripts/setup.sh` once and `./scripts/test.sh` for the full local CI suite.
+The underlying commands are:
 
 ```bash
 cargo test     # run unit + integration tests
