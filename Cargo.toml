@@ -120,6 +120,13 @@ required-features = ["persona", "providers-http", "git-diff"]
 name = "persona_harness"
 required-features = ["persona", "providers-http", "git-diff"]
 
+# Persona decision agent: algorithmic BM25 retrieval + a tinyagents LLM pass
+# over the distilled persona memory layer (doc 06 follow-on).
+# `OPENROUTER_API_KEY=... cargo run --example persona_agent --features persona -- "<question>"`
+[[example]]
+name = "persona_agent"
+required-features = ["persona"]
+
 # Runnable connection + memory-sync harness for a live Composio API key.
 # `COMPOSIO_API_KEY=... cargo run --example composio_harness --features sync`
 [[example]]
