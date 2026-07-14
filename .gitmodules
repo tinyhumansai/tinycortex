@@ -1,0 +1,3 @@
+[submodule "vendor/tinyagents"]
+	path = vendor/tinyagents
+	url = https://github.com/tinyhumansai/tinyagents.git
