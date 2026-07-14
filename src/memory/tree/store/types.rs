@@ -34,6 +34,11 @@ pub enum TreeKind {
     Topic,
     /// Cross-source daily digest tree.
     Global,
+    /// Ask-driven "flavoured" tree. Every summarisation step is steered by a
+    /// natural-language ask (persisted on [`Tree::ask`]) and the root compiles
+    /// into a single prompt-ready markdown profile. `scope` encodes the ask
+    /// slug (e.g. `"tweet-style"`). See `docs/spec/flavoured-trees.md`.
+    Flavoured,
 }
 
 impl TreeKind {
@@ -43,6 +48,7 @@ impl TreeKind {
             Self::Source => "source",
             Self::Topic => "topic",
             Self::Global => "global",
+            Self::Flavoured => "flavoured",
         }
     }
 
@@ -52,6 +58,7 @@ impl TreeKind {
             "source" => Ok(Self::Source),
             "topic" => Ok(Self::Topic),
             "global" => Ok(Self::Global),
+            "flavoured" => Ok(Self::Flavoured),
             other => Err(format!("unknown tree kind: {other}")),
         }
     }
@@ -119,6 +126,11 @@ pub struct Tree {
     pub created_at: DateTime<Utc>,
     /// Timestamp of the most recent seal, or `None` if nothing has sealed yet.
     pub last_sealed_at: Option<DateTime<Utc>>,
+    /// Natural-language ask that steers every summarisation step, for
+    /// [`TreeKind::Flavoured`] trees. `None` for source/topic/global trees,
+    /// which summarise with the generic folding prompt.
+    #[serde(default)]
+    pub ask: Option<String>,
 }
 
 /// A sealed summary node — one level above raw leaves.

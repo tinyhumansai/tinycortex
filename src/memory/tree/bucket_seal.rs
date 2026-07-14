@@ -359,6 +359,7 @@ pub async fn seal_one_level_with_services(
         tree_kind: tree.kind,
         target_level,
         token_budget: budget,
+        ask: tree.ask.as_deref(),
     };
     // Treat a blank summary the same as a hard error — fall back to the
     // deterministic concat so we never persist `content = ""`.
@@ -418,6 +419,7 @@ pub async fn seal_one_level_with_services(
         crate::memory::tree::TreeKind::Source => SummaryTreeKind::Source,
         crate::memory::tree::TreeKind::Topic => SummaryTreeKind::Topic,
         crate::memory::tree::TreeKind::Global => SummaryTreeKind::Global,
+        crate::memory::tree::TreeKind::Flavoured => SummaryTreeKind::Flavoured,
     };
     let child_basenames = if target_level == 1 {
         Some(
@@ -717,6 +719,7 @@ async fn seal_explicit_children(
             tree_kind: tree.kind,
             target_level,
             token_budget: config.tree.output_token_budget,
+            ask: tree.ask.as_deref(),
         };
         match services.summariser.summarise(&inputs, &context).await {
             Ok(output) if !output.content.trim().is_empty() => output,
@@ -761,6 +764,7 @@ async fn seal_explicit_children(
         crate::memory::tree::TreeKind::Source => SummaryTreeKind::Source,
         crate::memory::tree::TreeKind::Topic => SummaryTreeKind::Topic,
         crate::memory::tree::TreeKind::Global => SummaryTreeKind::Global,
+        crate::memory::tree::TreeKind::Flavoured => SummaryTreeKind::Flavoured,
     };
     let doc_slug = slugify_source_id(doc_id);
     let staged = stage_summary_with_layout(

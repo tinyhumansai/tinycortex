@@ -260,6 +260,9 @@ fn apply_schema(conn: &Connection) -> Result<()> {
     )?;
     add_column_if_missing(conn, "mem_tree_jobs", "failure_reason", "TEXT")?;
     add_column_if_missing(conn, "mem_tree_jobs", "failure_class", "TEXT")?;
+    // Ask/flavour instruction for flavoured trees (issue #68). Nullable; NULL for
+    // source/topic/global trees.
+    add_column_if_missing(conn, "mem_tree_trees", "ask", "TEXT")?;
     Ok(())
 }
 

@@ -13,6 +13,21 @@ use crate::memory::tree::store::{self, Tree, TreeKind, TreeStatus};
 /// Generic get-or-create. Returns the existing tree for `(kind, scope)` or
 /// inserts a fresh one, recovering from a `UNIQUE` race by re-querying.
 pub fn get_or_create_tree(config: &MemoryConfig, kind: TreeKind, scope: &str) -> Result<Tree> {
+    get_or_create_tree_with_ask(config, kind, scope, None)
+}
+
+/// Get-or-create variant that stamps a natural-language `ask` on the row when a
+/// fresh tree is inserted. Used by [`crate::memory::tree::TreeFactory::flavoured`].
+///
+/// The `ask` is only applied at insert time; an existing `(kind, scope)` row is
+/// returned unchanged (its stored ask wins), so re-instantiating a flavoured
+/// factory never rewrites the ask of a live tree.
+pub fn get_or_create_tree_with_ask(
+    config: &MemoryConfig,
+    kind: TreeKind,
+    scope: &str,
+    ask: Option<&str>,
+) -> Result<Tree> {
     if let Some(existing) = store::get_tree_by_scope(config, kind, scope)? {
         return Ok(existing);
     }
@@ -26,6 +41,7 @@ pub fn get_or_create_tree(config: &MemoryConfig, kind: TreeKind, scope: &str) ->
         status: TreeStatus::Active,
         created_at: Utc::now(),
         last_sealed_at: None,
+        ask: ask.map(str::to_string),
     };
     match store::insert_tree(config, &tree) {
         Ok(()) => Ok(tree),

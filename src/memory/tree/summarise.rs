@@ -52,6 +52,12 @@ pub struct SummaryContext<'a> {
     pub target_level: u32,
     /// Maximum approximate tokens the produced summary may occupy.
     pub token_budget: u32,
+    /// Natural-language ask that steers the fold, for
+    /// [`TreeKind::Flavoured`](crate::memory::tree::TreeKind::Flavoured) trees.
+    /// When present, [`prepare_summary_prompt`] emits a flavour-directed system
+    /// prompt instead of the generic folding prompt. `None` for every other
+    /// tree kind.
+    pub ask: Option<&'a str>,
 }
 
 /// Output of a summarise call.
@@ -123,12 +129,26 @@ pub fn prepare_summary_prompt(
         .filter(|language| !language.trim().is_empty())
         .map(|language| format!("\nWrite the summary in {language}."))
         .unwrap_or_default();
-    Some(PreparedSummaryPrompt {
-        system: format!(
+    let system = match ctx.ask.map(str::trim).filter(|ask| !ask.is_empty()) {
+        // Flavour-directed fold: the produced summary is a running *profile*
+        // answering the ask, distilled from the evidence and the prior profile.
+        Some(ask) => format!(
+            "You are distilling evidence into a profile that answers this ask:\n{ask}\n\n\
+             The inputs below are evidence (and, where present, the current profile). \
+             Merge them into one updated profile.\n\
+             Keep it prescriptive and concrete — describe the patterns, not the individual items.\n\
+             Aim for ~{effective_budget} tokens or fewer.\n\
+             Output only the profile prose — no preamble, no JSON, no markdown headings.{language}"
+        ),
+        // Generic fold used by source/topic/global trees.
+        None => format!(
             "You are folding multiple notes into one compact summary.\n\
              Aim for ~{effective_budget} tokens or fewer. Capture key facts, decisions, and entities.\n\
              Output only the summary prose — no preamble, no JSON, no markdown headings.{language}"
         ),
+    };
+    Some(PreparedSummaryPrompt {
+        system,
         user,
         effective_budget,
     })

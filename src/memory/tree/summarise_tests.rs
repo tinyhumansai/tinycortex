@@ -50,6 +50,7 @@ async fn concat_summariser_matches_fallback() {
         tree_kind: TreeKind::Source,
         target_level: 1,
         token_budget: 10_000,
+        ask: None,
     };
     let out = ConcatSummariser::new()
         .summarise(&inputs, &ctx)
@@ -71,6 +72,7 @@ fn provider_prompt_is_priority_ordered_language_aware_and_budgeted() {
         tree_kind: TreeKind::Source,
         target_level: 1,
         token_budget: 9_000,
+        ask: None,
     };
     let prompt = prepare_summary_prompt(&[low, high], &context, Some("French")).unwrap();
     assert!(prompt.user.starts_with("[high]"));

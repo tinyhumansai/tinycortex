@@ -154,7 +154,8 @@ CREATE TABLE IF NOT EXISTS mem_tree_trees (
     max_level              INTEGER NOT NULL DEFAULT 0,
     status                 TEXT NOT NULL DEFAULT 'active',
     created_at_ms          INTEGER NOT NULL,
-    last_sealed_at_ms      INTEGER
+    last_sealed_at_ms      INTEGER,
+    ask                    TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mem_tree_trees_kind_scope
