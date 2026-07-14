@@ -30,6 +30,7 @@ the first migration goal, not an afterthought.
 | [03-testing-benchmarks.md](03-testing-benchmarks.md) | Unit + e2e testing strategy, retrieval-effectiveness harness, benchmarking |
 | [04-openhuman-integration.md](04-openhuman-integration.md) | Pluggability design and phased, non-breaking adoption inside OpenHuman |
 | [05-openhuman-compat-matrix.md](05-openhuman-compat-matrix.md) | Living checklist of every OpenHuman feature surface (sources, Obsidian vault/wiki, credentials, controllers) and its TinyCortex status — the companion tracker to doc 04 |
+| [06-persona-distillation.md](06-persona-distillation.md) | Persona memory layer: ingest coding-agent transcripts (Claude Code, Codex, opencode, Cursor, ChatGPT/Claude exports), CLAUDE.md/AGENTS.md files, and git history; distill coding style & personality via LLM map–reduce into a 5–10k-token injectable pack |
 
 ## Goal format (`/goal` compatible)
 
@@ -47,7 +48,8 @@ Definition of done: <one/two sentences, verifiable>
 ```
 
 ID namespaces: `M*` migration, `C*` crate completion, `T*` testing/benchmarks,
-`I*` OpenHuman integration, `X*` compatibility-matrix tracking stubs (doc 05).
+`I*` OpenHuman integration, `X*` compatibility-matrix tracking stubs (doc 05),
+`P*` persona distillation (doc 06).
 Work each goal on its own feature branch with
 small conventional commits, and keep `cargo fmt` + `cargo test` green at every
 checkpoint.

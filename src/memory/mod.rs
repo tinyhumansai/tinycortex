@@ -42,7 +42,7 @@
 //!   [`types::MemoryTaint::ExternalSync`] — the more restrictive setting — so
 //!   policy gates never under-trust content of unknown provenance.
 //! - **Feature-gated modules add no default-build cost.** `diff`, `providers`,
-//!   and `rpc` are compiled out entirely unless their feature is enabled (see
+//!   and `persona` are compiled out entirely unless their feature is enabled (see
 //!   the crate-level feature-flag docs in `lib.rs`); code in this module must
 //!   not assume they are present.
 
@@ -81,6 +81,22 @@ pub mod sync;
 pub mod tool_memory;
 pub mod tree;
 
+// ── Feature-gated boundary surfaces ─────────────────────────────────────────
+/// reqwest-based embedding / LLM HTTP providers.
+///
+/// Gated behind the `providers-http` feature (implies `tokio`). Reserves the
+/// HTTP provider seam and gates the reqwest dependency; the concrete providers
+/// land with goals C3/M3.
+#[cfg(feature = "providers-http")]
+pub mod providers;
+
+/// Persona distillation: turns local coding-agent history, instruction files,
+/// and git commits into a durable persona memory layer (doc 06).
+///
+/// Gated behind the default-off `persona` feature. Adds no new dependencies;
+/// the git-history reader additionally requires `git-diff`.
+#[cfg(feature = "persona")]
+pub mod persona;
 // ── Re-exports ──────────────────────────────────────────────────────────────
 pub use config::{MemoryConfig, WeightProfile};
 pub use error::{MemoryEngineResult, MemoryError as MemoryEngineError};
