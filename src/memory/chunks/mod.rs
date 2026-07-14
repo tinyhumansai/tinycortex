@@ -108,6 +108,7 @@ pub use store::{
     CHUNK_STATUS_BUFFERED, CHUNK_STATUS_DROPPED, CHUNK_STATUS_PENDING_EXTRACTION,
     CHUNK_STATUS_SEALED, RAW_FILE_GATE_KIND,
 };
+pub(crate) use store_delete::remove_unreferenced_content_files;
 pub use store_delete::{
     delete_chunks_by_owner, delete_chunks_by_source, delete_chunks_by_source_prefix,
     delete_orphaned_source_tree,

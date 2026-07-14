@@ -162,6 +162,11 @@ async fn persist_score_enqueue(
     })?;
 
     let Some((chunks_written, extract_jobs_enqueued)) = persisted else {
+        let staged_paths = staged
+            .iter()
+            .map(|chunk| chunk.content_path.clone())
+            .collect::<Vec<_>>();
+        chunks::remove_unreferenced_content_files(config, &staged_paths)?;
         return Ok(IngestSummary::already_ingested(source_id));
     };
 

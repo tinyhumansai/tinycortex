@@ -401,3 +401,40 @@ pub(super) fn remove_chunk_content_files(config: &MemoryConfig, content_paths: &
         let _ = std::fs::remove_file(&path);
     }
 }
+
+/// Remove staged chunk files that have no committed chunk or summary pointer.
+///
+/// Used after a document-ingest gate race: the losing writer may have staged
+/// bodies before discovering the committed winner. Paths referenced by the
+/// winner are preserved.
+pub(crate) fn remove_unreferenced_content_files(
+    config: &MemoryConfig,
+    content_paths: &[String],
+) -> Result<()> {
+    let mut unique = content_paths
+        .iter()
+        .filter(|path| !path.is_empty())
+        .cloned()
+        .collect::<HashSet<_>>();
+    if unique.is_empty() {
+        return Ok(());
+    }
+    with_connection(config, |connection| {
+        unique.retain(|path| {
+            connection
+                .query_row(
+                    "SELECT NOT EXISTS (
+                         SELECT 1 FROM mem_tree_chunks WHERE content_path = ?1
+                         UNION ALL
+                         SELECT 1 FROM mem_tree_summaries WHERE content_path = ?1
+                     )",
+                    [path],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap_or(false)
+        });
+        Ok(())
+    })?;
+    remove_chunk_content_files(config, &unique.into_iter().collect::<Vec<_>>());
+    Ok(())
+}

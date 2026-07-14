@@ -41,10 +41,12 @@ pub(crate) type ScoredHit = (RetrievalHit, Option<Vec<f32>>);
 
 /// Retrieve summary hits from the selected source trees.
 ///
-/// `limit` defaults to 10 when 0. When `query` is `Some`, the (inert-in-tests)
-/// `embedder` is used to semantically rerank; otherwise ordering is
-/// newest-first. See the module-level NOTE for the cost profile of
-/// `time_window_days`.
+/// `limit` defaults to 10 when 0 and is capped to the configured public limit.
+/// The internal `usize::MAX` sentinel bypasses that cap so callers that apply a
+/// narrower scope afterward can collect the complete candidate set first.
+/// When `query` is `Some`, the (inert-in-tests) `embedder` is used to
+/// semantically rerank; otherwise ordering is newest-first. See the
+/// module-level NOTE for the cost profile of `time_window_days`.
 pub async fn query_source(
     config: &MemoryConfig,
     source_id: Option<&str>,
@@ -55,7 +57,9 @@ pub async fn query_source(
     limit: usize,
 ) -> Result<QueryResponse> {
     let limits = &config.retrieval.limits;
-    let limit = if limit == 0 {
+    let limit = if limit == usize::MAX {
+        usize::MAX
+    } else if limit == 0 {
         limits.default_limit
     } else {
         limit.min(limits.max_limit)

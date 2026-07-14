@@ -35,13 +35,21 @@ async fn blank_query_is_empty_without_opening_storage() {
 
 #[tokio::test]
 async fn dense_fallback_filters_scope_before_limit() {
-    let (_temp, config) = test_config();
-    for (id, scope) in [("allowed", "slack:#allowed"), ("denied", "slack:#denied")] {
+    let (_temp, mut config) = test_config();
+    config.retrieval.limits.max_limit = 1;
+    for (id, scope, timestamp) in [
+        ("allowed", "slack:#allowed", fixed_ts()),
+        (
+            "denied",
+            "slack:#denied",
+            fixed_ts() + chrono::Duration::seconds(1),
+        ),
+    ] {
         let tree_id = format!("tree-{id}");
         insert_tree_row(&config, &source_tree(&tree_id, scope, Some(id), 1));
         insert_summary(
             &config,
-            &summary_node(id, &tree_id, 1, None, &[], id, fixed_ts()),
+            &summary_node(id, &tree_id, 1, None, &[], id, timestamp),
         );
     }
     let scope = HashSet::from(["slack:#allowed".to_string()]);

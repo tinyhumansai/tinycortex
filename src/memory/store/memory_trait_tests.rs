@@ -45,6 +45,36 @@ async fn headline_memory_contract_supports_upsert_recall_and_taint() {
 }
 
 #[tokio::test]
+async fn blank_recall_query_returns_no_unrelated_memories() {
+    let store = InMemoryMemoryStore::new();
+    store
+        .store(
+            "agent",
+            "secret",
+            "unrelated memory",
+            MemoryCategory::Core,
+            None,
+        )
+        .await
+        .unwrap();
+
+    for query in ["", "   \n\t"] {
+        assert!(store
+            .recall(
+                query,
+                10,
+                RecallOpts {
+                    namespace: Some("agent"),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[tokio::test]
 async fn memory_contract_filters_lists_summarises_and_forgets() {
     let store = InMemoryMemoryStore::new();
     store

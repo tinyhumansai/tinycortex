@@ -199,6 +199,11 @@ async fn second_document_ingest_with_same_source_id_is_short_circuited() {
     .unwrap();
     assert!(!first.already_ingested);
     assert!(first.chunks_written >= 1);
+    let staged_files_before = walkdir::WalkDir::new(crate::memory::chunks::content_root(&cfg))
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .count();
 
     // Even with completely different content under the same source_id the second
     // ingest must write nothing: documents are append-only and source_id is the
@@ -223,6 +228,15 @@ async fn second_document_ingest_with_same_source_id_is_short_circuited() {
     assert!(second.chunk_ids.is_empty());
 
     assert_eq!(count_chunks(&cfg).unwrap(), first.chunks_written as u64);
+    let staged_files_after = walkdir::WalkDir::new(crate::memory::chunks::content_root(&cfg))
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .count();
+    assert_eq!(
+        staged_files_after, staged_files_before,
+        "a losing gate attempt must reclaim its unreferenced staged bodies"
+    );
 }
 
 #[tokio::test]

@@ -125,6 +125,9 @@ impl Memory for InMemoryMemoryStore {
         limit: usize,
         opts: RecallOpts<'_>,
     ) -> Result<Vec<MemoryEntry>> {
+        if query.trim().is_empty() {
+            return Ok(Vec::new());
+        }
         let namespace = opts.namespace.unwrap_or(GLOBAL_NAMESPACE);
         let records = self
             .records
