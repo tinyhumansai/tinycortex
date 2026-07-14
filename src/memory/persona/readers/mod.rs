@@ -18,6 +18,11 @@ pub mod claude_code;
 pub mod codex;
 pub mod instruction;
 
+/// Git commit-history reader — requires the heavy `git2` dependency, so it is
+/// gated behind the `git-diff` feature (doc 06 §6.3).
+#[cfg(feature = "git-diff")]
+pub mod git_history;
+
 mod jsonl;
 
 /// A logical session's worth of extracted, redacted evidence plus the byte
