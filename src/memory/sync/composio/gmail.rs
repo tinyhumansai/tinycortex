@@ -29,7 +29,11 @@ impl GmailSyncPipeline {
             client,
             connection_id: connection_id.into(),
             max_pages: 10,
-            page_size: 50,
+            // Gmail fetches full message payloads (`include_payload: true`), so a
+            // large page overflows Composio's tool-response size cap with HTTP
+            // 413. 25 full messages/request stays comfortably under it; callers
+            // needing more throughput can raise it via `with_limits`.
+            page_size: 25,
             query_override: None,
         }
     }
