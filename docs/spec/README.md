@@ -20,6 +20,10 @@ carries `file:line` evidence.
 | [audit/06-contracts-config-api.md](audit/06-contracts-config-api.md) | Crate-wide contracts, config, feature gates, README/doc claims, hygiene |
 | [improvement-plan.md](improvement-plan.md) | Phased remediation plan across all findings |
 | [configurable-store.md](configurable-store.md) | Spec: pluggable storage backend so agents can be hosted server-side |
+| [audit/07-modularity-boundaries.md](audit/07-modularity-boundaries.md) | Unix-philosophy decomposition: module coupling, persistence ownership, god files |
+| [audit/08-configurability.md](audit/08-configurability.md) | Library configurability: config coverage, hardcoded tunables, env-var hygiene |
+| [audit/09-verification-infrastructure.md](audit/09-verification-infrastructure.md) | Per-block verifiability: test coverage map, CI feature matrix, setup/test scripts |
+| [audit/10-simplification-dead-weight.md](audit/10-simplification-dead-weight.md) | Duplication, dead/speculative code, dependency weight, error/async story |
 
 ## Executive summary
 
@@ -59,6 +63,35 @@ Separately, [configurable-store.md](configurable-store.md) specs the work to
 make the storage backend configurable (local-first vs. server-hosted), which
 today is blocked by two parallel store contracts (`Memory` has no production
 implementor; everything real is hardwired to filesystem + SQLite).
+
+## Second audit (2026-07-14): simplification & trustworthy building blocks
+
+Audits 07–10 (baseline `main` @ `1a3fcc5`, full suite green) take a different
+lens from 01–06: not bugs, but **architecture** — how to make the crate
+simpler, more configurable as a library, and decomposed into small,
+independently verifiable building blocks (Unix philosophy). Headline
+conclusions:
+
+1. **One shared database is the central coupling.** `chunks/` owns the
+   connection and a 15-table schema for tree/queue/score/graph/retrieval;
+   module boundaries are not persistence boundaries, and siblings bind to each
+   other's deep internals rather than facades (MB-1..MB-3). A second,
+   cleanly-decomposed persistence stack under `store/` is mostly unused.
+2. **Config that lies.** `sync.interval_secs` is silently floored to 24h,
+   summariser constants shadow and contradict `TreeConfig`, and library code
+   reads `COMPOSIO_API_KEY` from the process env (CF-1..CF-3). Retrieval and
+   queue/retry tuning is entirely module constants (CF-5, CF-6).
+3. **Verification gaps cluster where trust is lowest.** The `sync` feature is
+   missing from the CI matrix, feature builds are only `cargo check`ed, the
+   smoke test doesn't touch the real engine, and there are no setup/test
+   scripts at all (VF-1..VF-5).
+4. **Meaningful dead weight.** A git dependency (`tinyagents`) that blocks
+   crates.io publishing, two placeholder feature modules, a flagship async
+   `Memory` trait with zero production impls, atomic-write implemented eight
+   times, and four dependencies with one call site each (SW-1..SW-6).
+
+Finding IDs: `MB-*` modularity, `CF-*` configurability, `VF-*` verification,
+`SW-*` simplification.
 
 ## Severity conventions
 
