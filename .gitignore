@@ -4,6 +4,7 @@ target/
 .DS_Store
 .DS_Store
 .env
+.composio-harness.json
 .github/scripts/secrets.json
 .ipynb_checkpoints/
 .venv

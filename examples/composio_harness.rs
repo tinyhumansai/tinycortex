@@ -22,6 +22,17 @@
 //! API (`GET /connected_accounts`). This proves the key is live and discovers
 //! which toolkits are connected together with their `connected_account_id`s.
 //!
+//! ### Phase 1.5 — Login / connect flow
+//! When you request specific toolkits with `COMPOSIO_TOOLKITS` and one of them
+//! has no ACTIVE connected account (discovery found none, or its status is a
+//! terminal FAILED/EXPIRED/REVOKED), the harness initiates a Composio Connect
+//! link for it: it resolves the toolkit's auth-config id (or an explicit
+//! `COMPOSIO_<TOOLKIT>_AUTH_CONFIG_ID`), creates a connection scoped to a
+//! remembered per-toolkit entity id, prints the OAuth URL for you to open, then
+//! polls until the account is ACTIVE (or times out) before syncing it. This
+//! step is skipped entirely when `COMPOSIO_TOOLKITS` is unset, so the default
+//! run stays non-interactive and CI-safe.
+//!
 //! ### Phase 2 — Memory sync
 //! For every discovered toolkit that TinyCortex has a pipeline for (Gmail,
 //! GitHub, Linear, Notion, ClickUp, Slack), the harness runs `tick()` twice
@@ -34,11 +45,21 @@
 //! ## Environment
 //! - `COMPOSIO_API_KEY`            (required) direct-mode API key.
 //! - `COMPOSIO_BASE_URL`           override the API base (default v3 backend).
-//! - `COMPOSIO_ENTITY_ID`          Composio `user_id` scoping accounts.
-//! - `COMPOSIO_TOOLKITS`           comma list restricting which toolkits to sync.
+//! - `COMPOSIO_ENTITY_ID`          Composio `user_id` scoping accounts. When the
+//!   connect flow mints a new connection it uses this if set, else a generated
+//!   `tinycortex-<uuid>` remembered per toolkit in `.composio-harness.json`.
+//! - `COMPOSIO_TOOLKITS`           comma list restricting which toolkits to sync;
+//!   also the set the connect flow may log in when not already active.
 //! - `COMPOSIO_MAX_ITEMS`          per-toolkit ingest cap (default 25).
 //! - `COMPOSIO_<TOOLKIT>_CONNECTION_ID`  pin/override a connection id, e.g.
 //!   `COMPOSIO_GMAIL_CONNECTION_ID`. Also seeds a toolkit if discovery is empty.
+//! - `COMPOSIO_<TOOLKIT>_AUTH_CONFIG_ID`  pin the auth-config id used when
+//!   initiating a login for that toolkit, e.g. `COMPOSIO_GMAIL_AUTH_CONFIG_ID`.
+//!   When unset the harness looks one up via `GET /auth_configs`.
+//! - `COMPOSIO_CALLBACK_URL`       optional OAuth callback/redirect passed to the
+//!   connect link.
+//! - `COMPOSIO_CONNECT_TIMEOUT_SECS`  how long to poll a pending login for
+//!   `ACTIVE` before failing (default 120).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -48,13 +69,21 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tinycortex::memory::config::{ComposioMode, ComposioSyncConfig, MemoryConfig, SecretString};
 use tinycortex::memory::sync::{
-    ClickUpSyncPipeline, ComposioClient, GitHubSyncPipeline, GmailSyncPipeline, LinearSyncPipeline,
-    NotionSyncPipeline, SkillDocSink, SkillDocument, SlackSyncPipeline, SyncContext, SyncEvent,
-    SyncEventSink, SyncPipeline, SyncState, SyncStateStore,
+    create_connection_link, get_connection_status, list_auth_configs, resolve_auth_config_id,
+    status_is_active, status_is_terminal, ClickUpSyncPipeline, ComposioClient, EntityStore,
+    GitHubSyncPipeline, GmailSyncPipeline, LinearSyncPipeline, NotionSyncPipeline, SkillDocSink,
+    SkillDocument, SlackSyncPipeline, SyncContext, SyncEvent, SyncEventSink, SyncPipeline,
+    SyncState, SyncStateStore,
 };
 
 const DEFAULT_BASE_URL: &str = "https://backend.composio.dev/api/v3";
 const DEFAULT_MAX_ITEMS: u32 = 25;
+/// Local, gitignored file remembering the entity id (`user_id`) per toolkit.
+const ENTITY_STORE_FILE: &str = ".composio-harness.json";
+/// How long to poll a pending connection for `ACTIVE` before giving up.
+const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 120;
+/// Seconds between connection-status polls.
+const CONNECT_POLL_INTERVAL_SECS: u64 = 3;
 
 /// Toolkits with a TinyCortex sync pipeline, in a stable report order.
 const SUPPORTED_TOOLKITS: &[&str] = &["gmail", "github", "linear", "notion", "clickup", "slack"];
@@ -234,6 +263,97 @@ async fn discover_connections(
         });
     }
     Ok(connections)
+}
+
+/// Phase 1.5: drive a Composio Connect login for one toolkit and return an
+/// ACTIVE connection, or an error carrying manual next steps.
+///
+/// Resolves an auth-config id (explicit override or `GET /auth_configs`),
+/// creates a connect link scoped to `entity_id`, prints the OAuth URL, then
+/// polls `GET /connected_accounts/{id}` until the account is ACTIVE, hits a
+/// terminal failure, or `timeout` elapses. Never prints secrets.
+#[allow(clippy::too_many_arguments)]
+async fn connect_toolkit(
+    http: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    toolkit: &str,
+    entity_id: &str,
+    auth_config_override: Option<&str>,
+    callback_url: Option<&str>,
+    timeout: std::time::Duration,
+) -> anyhow::Result<Connection> {
+    // 1. Resolve the auth-config id for this toolkit.
+    let auth_config_id = match auth_config_override {
+        Some(id) => id.to_owned(),
+        None => {
+            let list = list_auth_configs(http, base_url, api_key, Some(toolkit)).await?;
+            resolve_auth_config_id(&list, toolkit).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no auth config found for '{toolkit}'. Create one in the Composio dashboard \
+                     or set COMPOSIO_{}_AUTH_CONFIG_ID.",
+                    toolkit.to_ascii_uppercase()
+                )
+            })?
+        }
+    };
+    println!("  auth config: {auth_config_id}");
+
+    // 2. Create the Composio Connect link.
+    let link = create_connection_link(
+        http,
+        base_url,
+        api_key,
+        &auth_config_id,
+        entity_id,
+        callback_url,
+    )
+    .await?;
+
+    // 3. Prompt the user to complete the browser login.
+    match &link.redirect_url {
+        Some(url) => {
+            println!("  action required — open this URL to authorize {toolkit}, then return here:");
+            println!("    {url}");
+        }
+        None => println!("  no browser step reported for {toolkit}; waiting for activation…"),
+    }
+    println!(
+        "  polling connection {} for up to {}s…",
+        link.connected_account_id,
+        timeout.as_secs()
+    );
+
+    // 4. Poll until ACTIVE / terminal / timeout.
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match get_connection_status(http, base_url, api_key, &link.connected_account_id).await {
+            Ok(Some(status)) if status_is_active(&status) => {
+                println!("  {toolkit} connection is ACTIVE.");
+                return Ok(Connection {
+                    toolkit: toolkit.to_owned(),
+                    connection_id: link.connected_account_id,
+                    status: Some(status),
+                });
+            }
+            Ok(Some(status)) if status_is_terminal(&status) => {
+                anyhow::bail!("{toolkit} login ended in terminal state {status}; re-run to retry.")
+            }
+            Ok(Some(status)) => println!("    status: {status} …"),
+            Ok(None) => println!("    status: (unknown) …"),
+            // A transient poll error shouldn't abort the whole wait.
+            Err(error) => println!("    poll error: {error}"),
+        }
+        if std::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "timed out waiting for {toolkit} to become ACTIVE after {}s. Finish the login in \
+                 the browser, then re-run — the entity id is remembered in {}.",
+                timeout.as_secs(),
+                ENTITY_STORE_FILE
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(CONNECT_POLL_INTERVAL_SECS)).await;
+    }
 }
 
 fn build_pipeline(
@@ -446,7 +566,9 @@ async fn run() -> anyhow::Result<()> {
     }
 
     // Keep only toolkits we can actually sync, honouring an optional filter, and
-    // collapse to one connection per toolkit (the first discovered).
+    // collapse to one connection per toolkit (the first discovered). A
+    // connection whose status is a terminal failure is treated as absent so the
+    // connect flow can re-establish it.
     let mut selected: Vec<Connection> = Vec::new();
     for connection in connections {
         if !SUPPORTED_TOOLKITS.contains(&connection.toolkit.as_str()) {
@@ -458,6 +580,9 @@ async fn run() -> anyhow::Result<()> {
         {
             continue;
         }
+        if connection.status.as_deref().is_some_and(status_is_terminal) {
+            continue;
+        }
         if selected
             .iter()
             .any(|kept| kept.toolkit == connection.toolkit)
@@ -465,6 +590,60 @@ async fn run() -> anyhow::Result<()> {
             continue;
         }
         selected.push(connection);
+    }
+
+    // ── Phase 1.5: login/connect flow for requested-but-missing toolkits ────
+    // Only runs for explicitly requested toolkits so the default (no filter)
+    // run stays non-interactive. Each new login reuses/records a per-toolkit
+    // entity id so re-runs don't orphan connections.
+    if let Some(requested) = toolkit_filter.as_ref() {
+        let store_path = std::env::current_dir()
+            .unwrap_or_default()
+            .join(ENTITY_STORE_FILE);
+        let mut entity_store = EntityStore::load(&store_path);
+        let connect_timeout = std::time::Duration::from_secs(
+            env_opt("COMPOSIO_CONNECT_TIMEOUT_SECS")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(DEFAULT_CONNECT_TIMEOUT_SECS),
+        );
+        let callback_url = env_opt("COMPOSIO_CALLBACK_URL");
+
+        for toolkit in requested {
+            if !SUPPORTED_TOOLKITS.contains(&toolkit.as_str()) {
+                continue;
+            }
+            if selected.iter().any(|kept| kept.toolkit == *toolkit) {
+                continue;
+            }
+            println!("\n── Phase 1.5: connecting {toolkit} ───────────────────────────");
+            let toolkit_entity = match entity_store.entity_id_for(toolkit, entity_id.as_deref()) {
+                Ok(id) => id,
+                Err(error) => {
+                    println!("  could not persist entity id for {toolkit}: {error}");
+                    continue;
+                }
+            };
+            println!("  entity id: {toolkit_entity} (stored in {ENTITY_STORE_FILE})");
+            let auth_config_override = env_opt(&format!(
+                "COMPOSIO_{}_AUTH_CONFIG_ID",
+                toolkit.to_ascii_uppercase()
+            ));
+            match connect_toolkit(
+                &http,
+                &base_url,
+                &api_key,
+                toolkit,
+                &toolkit_entity,
+                auth_config_override.as_deref(),
+                callback_url.as_deref(),
+                connect_timeout,
+            )
+            .await
+            {
+                Ok(connection) => selected.push(connection),
+                Err(error) => println!("  connect failed for {toolkit}: {error}"),
+            }
+        }
     }
 
     if selected.is_empty() {
