@@ -39,6 +39,9 @@
 //! - `COMPOSIO_MAX_ITEMS`          per-toolkit ingest cap (default 25).
 //! - `COMPOSIO_<TOOLKIT>_CONNECTION_ID`  pin/override a connection id, e.g.
 //!   `COMPOSIO_GMAIL_CONNECTION_ID`. Also seeds a toolkit if discovery is empty.
+//! - `TINYCORTEX_WORKSPACE`        when set, persist ingested documents (via
+//!   `KvSkillDocSink`) and a `sync_manifest.json` run manifest into this
+//!   workspace directory so the memory viewer can inspect what sync produced.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -48,9 +51,9 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tinycortex::memory::config::{ComposioMode, ComposioSyncConfig, MemoryConfig, SecretString};
 use tinycortex::memory::sync::{
-    ClickUpSyncPipeline, ComposioClient, GitHubSyncPipeline, GmailSyncPipeline, LinearSyncPipeline,
-    NotionSyncPipeline, SkillDocSink, SkillDocument, SlackSyncPipeline, SyncContext, SyncEvent,
-    SyncEventSink, SyncPipeline, SyncState, SyncStateStore,
+    ClickUpSyncPipeline, ComposioClient, GitHubSyncPipeline, GmailSyncPipeline, KvSkillDocSink,
+    LinearSyncPipeline, NotionSyncPipeline, SkillDocSink, SkillDocument, SlackSyncPipeline,
+    SyncContext, SyncEvent, SyncEventSink, SyncPipeline, SyncState, SyncStateStore,
 };
 
 const DEFAULT_BASE_URL: &str = "https://backend.composio.dev/api/v3";
@@ -377,6 +380,61 @@ fn print_report(reports: &[ToolkitReport]) {
     }
 }
 
+/// Persist captured skill documents into `workspace` via the durable
+/// [`KvSkillDocSink`], and drop a JSON run manifest (per-toolkit results plus
+/// the full sync-event stream) at `<workspace>/sync_manifest.json`. This is
+/// what the memory viewer reads to show what a sync run ingested.
+async fn persist_to_workspace(
+    workspace: &str,
+    captures: &Arc<Captures>,
+    reports: &[ToolkitReport],
+) -> anyhow::Result<()> {
+    let root = std::path::Path::new(workspace);
+    let sink = KvSkillDocSink::open_in_workspace(root)?;
+    let docs = captures.documents.lock().unwrap().clone();
+    let stored = docs.len();
+    for doc in docs {
+        sink.store(doc).await?;
+    }
+
+    let toolkits: Vec<Value> = reports
+        .iter()
+        .map(|report| {
+            serde_json::json!({
+                "toolkit": report.toolkit,
+                "connectionId": report.connection_id,
+                "ingested": report.ingested,
+                "actions": report.actions,
+                "costUsd": report.cost_usd,
+                "docsStored": report.docs_stored,
+                "taintOk": report.taint_ok,
+                "cursorAdvanced": report.cursor_advanced,
+                "idempotency": report.idempotency,
+                "passed": report.passed(),
+                "error": report.error,
+            })
+        })
+        .collect();
+    let events = serde_json::to_value(&*captures.events.lock().unwrap())?;
+    let manifest = serde_json::json!({
+        "toolkits": toolkits,
+        "events": events,
+        "documentsPersisted": stored,
+    });
+    let manifest_path = root.join("sync_manifest.json");
+    if let Some(parent) = manifest_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+
+    println!(
+        "\nPersisted {stored} document(s) to {} and a run manifest to {}.",
+        root.join(tinycortex::memory::sync::SKILL_DOCS_DB).display(),
+        manifest_path.display()
+    );
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
@@ -407,6 +465,9 @@ async fn run() -> anyhow::Result<()> {
             .filter(|item| !item.is_empty())
             .collect()
     });
+    // When set, persist ingested documents + a run manifest into this workspace
+    // so the memory viewer (or any host) can inspect what sync produced.
+    let workspace = env_opt("TINYCORTEX_WORKSPACE");
 
     let http = reqwest::Client::new();
 
@@ -512,6 +573,12 @@ async fn run() -> anyhow::Result<()> {
         "\nSummary: {passed}/{} toolkit(s) passed, {total_docs} document(s) ingested into memory.",
         reports.len()
     );
+
+    if let Some(workspace) = workspace.as_deref() {
+        if let Err(error) = persist_to_workspace(workspace, &captures, &reports).await {
+            eprintln!("warning: could not persist to workspace {workspace}: {error}");
+        }
+    }
 
     if passed == reports.len() {
         println!("HARNESS PASS");
