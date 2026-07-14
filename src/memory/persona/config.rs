@@ -105,6 +105,11 @@ pub struct PersonaConfig {
     /// Git reader tunables.
     #[serde(default)]
     pub git: PersonaGitConfig,
+    /// Max digest (LLM map) calls in flight at once. The map step is network-
+    /// bound and dominates wall-clock, so digests run concurrently (folds stay
+    /// serial). Order is preserved so trees still fold oldest-first.
+    #[serde(default = "default_digest_concurrency")]
+    pub digest_concurrency: usize,
 }
 
 fn default_per_facet_budget() -> u32 {
@@ -112,6 +117,9 @@ fn default_per_facet_budget() -> u32 {
 }
 fn default_total_budget() -> u32 {
     DEFAULT_TOTAL_MAX
+}
+fn default_digest_concurrency() -> usize {
+    8
 }
 
 impl PersonaConfig {
@@ -137,6 +145,7 @@ impl PersonaConfig {
             total_token_budget: DEFAULT_TOTAL_MAX,
             run_budget: PersonaRunBudget::default(),
             git: PersonaGitConfig::default(),
+            digest_concurrency: default_digest_concurrency(),
         }
     }
 

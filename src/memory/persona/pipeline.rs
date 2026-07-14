@@ -21,10 +21,11 @@ use super::readers::{claude_code, codex, instruction, RawSession};
 use super::reduce::{fold_digest, fold_directives, seal_and_collect, FacetAsks, ReduceState};
 use super::state::PersonaStateStore;
 use super::state::{self, file_key, file_unchanged, record_file};
-use super::types::PersonaFacet;
+use super::types::{PersonaFacet, SessionDigest};
 use crate::memory::config::MemoryConfig;
 use crate::memory::score::extract::ChatProvider;
 use crate::memory::tree::Summariser;
+use futures::stream::{self, StreamExt};
 
 /// Run mode (§6.7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,6 +259,10 @@ impl Pipeline<'_> {
         // Oldest-first for chronological folding.
         files.sort_by_key(|(p, _)| file_mtime_ms(p));
 
+        // Read (cheap I/O, serial) into a pending list, then digest concurrently
+        // + fold serially below. Cursors are committed only AFTER a session is
+        // digested, so a budget-truncated file is re-processed on resume.
+        let mut pending: Vec<Pending> = Vec::new();
         for (path, kind) in files {
             report.files_seen += 1;
             let key = file_key(kind, &path);
@@ -269,24 +274,65 @@ impl Pipeline<'_> {
                 Ok(s) => s,
                 Err(_) => continue,
             };
-            record_file(self.store, &key, &path).await?;
             if session.is_empty() {
+                // Nothing to digest — record the cursor now so we don't re-read.
+                record_file(self.store, &key, &path).await?;
                 continue;
             }
             report.evidence_units += session.evidence.len();
+            let commit = state::FileCursor::of(&path)
+                .and_then(|c| serde_json::to_value(c).ok())
+                .map(|v| (key, v));
+            pending.push(Pending { session, commit });
+        }
+        self.digest_and_fold(pending, asks, state, budget, report)
+            .await
+    }
+
+    /// Digest the `pending` sessions concurrently (the network-bound map step)
+    /// and fold the results serially into the facet trees (SQLite writes must
+    /// stay serial). Order is preserved (`buffered`, not `buffer_unordered`) so
+    /// trees fold oldest-first. Selection honours the shared run budget; each
+    /// selected session's cursor is committed only after it is folded, so a
+    /// budget-truncated tail is re-processed on the next run.
+    async fn digest_and_fold(
+        &self,
+        pending: Vec<Pending>,
+        asks: &FacetAsks,
+        state: &mut ReduceState,
+        budget: &mut Budget,
+        report: &mut RunReport,
+    ) -> Result<()> {
+        // Select within budget up front.
+        let mut selected: Vec<Pending> = Vec::new();
+        for p in pending {
             if budget.exhausted() {
                 report.budget_hit = true;
                 break;
             }
             budget.charge();
-            let digest = digest_session(self.provider, &session).await;
+            selected.push(p);
+        }
+        if selected.is_empty() {
+            return Ok(());
+        }
+        let concurrency = self.persona.digest_concurrency.max(1);
+        let digests: Vec<SessionDigest> = stream::iter(selected.iter())
+            .map(|p| digest_session(self.provider, &p.session))
+            .buffered(concurrency)
+            .collect()
+            .await;
+        for (p, digest) in selected.iter().zip(digests) {
             report.sessions_processed += 1;
-            if digest.is_empty() {
-                continue;
+            if !digest.is_empty() {
+                report.digests += 1;
+                report.observations += digest.observations.len();
+                fold_digest(self.config, &digest, asks, self.summariser, state).await?;
             }
-            report.digests += 1;
-            report.observations += digest.observations.len();
-            fold_digest(self.config, &digest, asks, self.summariser, state).await?;
+            // Commit the cursor/watermark now that the session is folded.
+            if let Some((key, value)) = &p.commit {
+                self.store.set(state::NAMESPACE, key, value).await?;
+            }
         }
         Ok(())
     }
@@ -312,6 +358,11 @@ impl Pipeline<'_> {
         };
         let author_hash = author_set_hash(&self.persona.author_emails);
 
+        // Read all qualifying repos into a pending list (serial, cheap), then
+        // digest concurrently + fold serially. A repo's HEAD watermark is
+        // attached to the LAST of its sessions, so it is only committed once the
+        // whole repo has been folded (a budget-truncated repo re-scans next run).
+        let mut pending: Vec<Pending> = Vec::new();
         for repo in git_history::discover(&self.persona.project_roots) {
             report.files_seen += 1;
             let head = match git_head_sha(&repo) {
@@ -329,26 +380,32 @@ impl Pipeline<'_> {
                 Ok(s) => s,
                 Err(_) => continue,
             };
-            for session in sessions {
+            for session in &sessions {
                 report.evidence_units += session.evidence.len();
-                if budget.exhausted() {
-                    report.budget_hit = true;
-                    break;
-                }
-                budget.charge();
-                let digest = digest_session(self.provider, &session).await;
-                report.sessions_processed += 1;
-                if digest.is_empty() {
-                    continue;
-                }
-                report.digests += 1;
-                report.observations += digest.observations.len();
-                fold_digest(self.config, &digest, asks, self.summariser, state).await?;
             }
-            state::record_watermark(self.store, &key, &head).await?;
+            if sessions.is_empty() {
+                // No author commits — watermark immediately (nothing to digest).
+                state::record_watermark(self.store, &key, &head).await?;
+                continue;
+            }
+            let head_value = serde_json::Value::String(head);
+            let last = sessions.len() - 1;
+            for (i, session) in sessions.into_iter().enumerate() {
+                let commit = (i == last).then(|| (key.clone(), head_value.clone()));
+                pending.push(Pending { session, commit });
+            }
         }
-        Ok(())
+        self.digest_and_fold(pending, asks, state, budget, report)
+            .await
     }
+}
+
+/// A read-but-not-yet-digested session plus an optional state commit (cursor or
+/// watermark) applied only after the session is folded — so a budget-truncated
+/// session is re-processed on the next run.
+struct Pending {
+    session: RawSession,
+    commit: Option<(String, serde_json::Value)>,
 }
 
 /// Dispatch to the right transcript reader by source-kind tag.
