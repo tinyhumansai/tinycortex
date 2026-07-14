@@ -277,6 +277,147 @@ function parseFrontMatter(raw: string): { frontMatter: Record<string, string>; b
   return { frontMatter, body: match[2] };
 }
 
+// ── Memory graph (summary tree hierarchy) ───────────────────────────────────
+//
+// Nodes: a synthetic root hub (when >1 tree), one `source` node per tree, every
+// `summary` node, and the leaf `chunk`s referenced by the lowest summaries.
+// Edges are the parent→child hierarchy derived from each summary's child ids
+// (which point at child summaries or, at the lowest level, at chunks) plus a
+// tree→root-summary link. This mirrors OpenHuman's `tree` graph mode.
+
+export type GraphNodeKind = "root" | "source" | "summary" | "chunk";
+
+export type GraphNode = {
+  id: string;
+  kind: GraphNodeKind;
+  label: string;
+  level?: number;
+  treeKind?: string;
+  childCount?: number;
+  detail?: string;
+};
+
+export type GraphEdge = { from: string; to: string };
+
+export type MemoryGraphData = {
+  available: boolean;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  treeCount: number;
+  summaryCount: number;
+  chunkCount: number;
+};
+
+function firstLine(text: string, max = 48): string {
+  const line = (text ?? "").split("\n").find((l) => l.trim().length > 0) ?? "";
+  const trimmed = line.trim();
+  return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed || "(empty)";
+}
+
+export function memoryGraph(workspace: string): MemoryGraphData {
+  const empty: MemoryGraphData = {
+    available: false,
+    nodes: [],
+    edges: [],
+    treeCount: 0,
+    summaryCount: 0,
+    chunkCount: 0,
+  };
+  const db = openReadonly(storePaths(workspace).chunksDb);
+  if (!db) return empty;
+  try {
+    const trees = db
+      .prepare("SELECT id, kind, scope, root_id FROM mem_tree_trees")
+      .all() as { id: string; kind: string; scope: string; root_id: string | null }[];
+    const summaries = db
+      .prepare(
+        "SELECT id, tree_id, level, parent_id, child_ids_json, content FROM mem_tree_summaries WHERE deleted = 0",
+      )
+      .all() as {
+      id: string;
+      tree_id: string;
+      level: number;
+      parent_id: string | null;
+      child_ids_json: string;
+      content: string;
+    }[];
+
+    if (trees.length === 0 && summaries.length === 0) return empty;
+
+    const summaryIds = new Set(summaries.map((s) => s.id));
+    const nodes: GraphNode[] = [];
+    const edges: GraphEdge[] = [];
+    const multi = trees.length > 1;
+
+    const treeIds = new Set(trees.map((t) => t.id));
+    if (multi) nodes.push({ id: "__root__", kind: "root", label: "memory" });
+    for (const t of trees) {
+      nodes.push({ id: t.id, kind: "source", label: t.scope, treeKind: t.kind });
+      if (multi) edges.push({ from: "__root__", to: t.id });
+    }
+
+    const childChunkIds = new Set<string>();
+    for (const s of summaries) {
+      const children = parseTags(s.child_ids_json); // reuse JSON-array parser
+      nodes.push({
+        id: s.id,
+        kind: "summary",
+        level: s.level,
+        label: firstLine(s.content),
+        childCount: children.length,
+        detail: s.content,
+      });
+      // Attach every top-level summary (no parent) to its source node, so a tree
+      // that sealed more than one top summary stays one connected component.
+      if (!s.parent_id && treeIds.has(s.tree_id)) {
+        edges.push({ from: s.tree_id, to: s.id });
+      }
+      for (const c of children) {
+        edges.push({ from: s.id, to: c });
+        if (!summaryIds.has(c)) childChunkIds.add(c);
+      }
+    }
+
+    if (childChunkIds.size > 0) {
+      const ids = [...childChunkIds];
+      const found = new Map<string, string>();
+      const CHUNK_BATCH = 400;
+      for (let i = 0; i < ids.length; i += CHUNK_BATCH) {
+        const batch = ids.slice(i, i + CHUNK_BATCH);
+        const placeholders = batch.map(() => "?").join(",");
+        const rows = db
+          .prepare(
+            `SELECT id, substr(content, 1, 160) AS preview FROM mem_tree_chunks WHERE id IN (${placeholders})`,
+          )
+          .all(...batch) as { id: string; preview: string }[];
+        for (const r of rows) found.set(r.id, r.preview);
+      }
+      for (const id of ids) {
+        const preview = found.get(id);
+        nodes.push({
+          id,
+          kind: "chunk",
+          label: preview ? firstLine(preview, 40) : id.slice(0, 12),
+          detail: preview ?? undefined,
+        });
+      }
+    }
+
+    return {
+      available: true,
+      nodes,
+      edges,
+      treeCount: trees.length,
+      summaryCount: summaries.length,
+      chunkCount: childChunkIds.size,
+    };
+  } catch {
+    return empty;
+  } finally {
+    db.close();
+  }
+}
+
 // ── Overview aggregate ──────────────────────────────────────────────────────
 
 export type Overview = {

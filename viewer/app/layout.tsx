@@ -30,6 +30,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               items={[
                 { href: "/", label: "Overview" },
                 { href: "/docs", label: "Skill docs", count: docs.length },
+                { href: "/graph", label: "Memory graph" },
                 { href: "/tree", label: "Memory tree", count: chunks.total },
                 { href: "/entities", label: "Entities", count: entities.length },
                 { href: "/runs", label: "Sync runs" },

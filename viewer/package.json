@@ -11,12 +11,14 @@
   },
   "dependencies": {
     "better-sqlite3": "^11.8.1",
+    "d3-force": "^3.0.0",
     "next": "^15.1.6",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
+    "@types/d3-force": "^3.0.10",
     "@types/node": "^22.10.7",
     "@types/react": "^19.0.7",
     "@types/react-dom": "^19.0.3",

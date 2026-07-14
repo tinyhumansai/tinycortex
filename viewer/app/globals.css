@@ -356,3 +356,114 @@ pre.content {
 .back:hover {
   color: var(--accent);
 }
+
+/* ── Memory graph ─────────────────────────────────────────────────────────── */
+
+:root {
+  --graph-edge: rgba(120, 120, 135, 0.35);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --graph-edge: rgba(150, 150, 170, 0.22);
+  }
+}
+
+.graphwrap {
+  position: relative;
+  height: calc(100vh - 150px);
+  min-height: 460px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  touch-action: none;
+  cursor: grab;
+}
+
+.graphwrap svg {
+  display: block;
+}
+
+.graphwrap svg text {
+  user-select: none;
+}
+
+.graphtip {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  max-width: 340px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 9px 12px;
+  box-shadow: var(--shadow);
+  pointer-events: none;
+}
+
+.graphtip-kind {
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  margin-bottom: 3px;
+}
+
+.graphtip-label {
+  font-size: 12.5px;
+  line-height: 1.35;
+  max-height: 6.5em;
+  overflow: hidden;
+}
+
+.graphfit {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 14px;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+}
+
+.graphfit:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.graphlegend {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  display: flex;
+  gap: 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 14px;
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.graphlegend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.graphlegend i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+}
