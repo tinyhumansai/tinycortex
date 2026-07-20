@@ -14,6 +14,6 @@ pub use connect::{
 pub use gmail::GmailSyncPipeline;
 pub use orchestrator::{run_incremental_sync, IncrementalSource, PageFetch, SyncItem, SyncScope};
 pub use providers::{
-    ClickUpSyncPipeline, GitHubSyncPipeline, LinearSyncPipeline, NotionSyncPipeline,
-    SlackSearchBackfillPipeline, SlackSyncPipeline,
+    ClickUpSyncPipeline, GitHubSyncPipeline, JiraSyncPipeline, LinearSyncPipeline,
+    NotionSyncPipeline, SlackSearchBackfillPipeline, SlackSyncPipeline,
 };

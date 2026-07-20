@@ -48,6 +48,7 @@ pub fn memory_sync_defaults_for_toolkit(toolkit: &str) -> (Option<u32>, Option<u
         "slack" => (Some(50), Some(14)),
         "notion" => (Some(30), Some(30)),
         "linear" => (Some(50), Some(30)),
+        "jira" => (Some(50), Some(30)),
         "clickup" => (Some(50), Some(30)),
         "github" => (Some(50), Some(30)),
         // Generic fallback for any toolkit not listed above.
