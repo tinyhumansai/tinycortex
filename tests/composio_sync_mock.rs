@@ -6,10 +6,10 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tinycortex::memory::config::{ComposioMode, ComposioSyncConfig, MemoryConfig, SecretString};
 use tinycortex::memory::sync::{
-    ClickUpSyncPipeline, ComposioClient, GitHubSyncPipeline, GmailSyncPipeline, LinearSyncPipeline,
-    NotionSyncPipeline, SkillDocSink, SkillDocument, SlackSearchBackfillPipeline,
-    SlackSyncPipeline, SyncContext, SyncEvent, SyncEventSink, SyncPipeline, SyncStage, SyncState,
-    SyncStateStore,
+    AsanaSyncPipeline, ClickUpSyncPipeline, ComposioClient, GitHubSyncPipeline, GmailSyncPipeline,
+    LinearSyncPipeline, NotionSyncPipeline, SkillDocSink, SkillDocument,
+    SlackSearchBackfillPipeline, SlackSyncPipeline, SyncContext, SyncEvent, SyncEventSink,
+    SyncPipeline, SyncStage, SyncState, SyncStateStore,
 };
 use wiremock::matchers::{body_partial_json, header, method, path, path_regex};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -444,6 +444,65 @@ async fn clickup_pages_each_workspace_with_resolved_user() {
         captures.documents.lock().unwrap()[0].metadata["workspace_id"],
         "ws-1"
     );
+}
+
+#[tokio::test]
+async fn asana_enumerates_projects_and_stores_stable_task_documents() {
+    let server = MockServer::start().await;
+    Mock::given(path("/tools/execute/ASANA_GET_MULTIPLE_WORKSPACES"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "successful": true,
+            "data": {"data": [{"gid": "ws-9", "name": "Acme"}]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/tools/execute/ASANA_GET_MULTIPLE_PROJECTS"))
+        .and(body_partial_json(
+            serde_json::json!({"arguments": {"workspace": "ws-9"}}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "successful": true,
+            "data": {"data": [{"gid": "proj-1", "name": "Launch"}]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/tools/execute/ASANA_GET_MULTIPLE_TASKS"))
+        .and(body_partial_json(
+            serde_json::json!({"arguments": {"project": "proj-1"}}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "successful": true,
+            "data": {"data": [
+                {"gid": "task-1", "name": "Ship sync", "modified_at": "2026-05-02T10:00:00.000Z"}
+            ]}
+        })))
+        .mount(&server)
+        .await;
+    let (captures, context) = test_context();
+    let pipeline = AsanaSyncPipeline::new(
+        ComposioClient::new(direct_config(server.uri(), "key")),
+        "asana-conn",
+    );
+    let outcome = pipeline.tick(&test_config(), &context).await.unwrap();
+    assert_eq!(outcome.records_ingested, 1);
+    assert_eq!(outcome.actions_called, 3);
+    {
+        let docs = captures.documents.lock().unwrap();
+        assert_eq!(docs[0].document_id, "asana:task-1");
+        assert_eq!(docs[0].metadata["taint"], "external_sync");
+        assert_eq!(docs[0].metadata["path_scope"], "asana/project/proj-1");
+        assert_eq!(docs[0].metadata["workspace_id"], "ws-9");
+    }
+    let state = SyncState::load(captures.as_ref(), "asana", "asana-conn")
+        .await
+        .unwrap();
+    assert!(state.is_synced("task-1@2026-05-02T10:00:00.000Z"));
+    assert_eq!(state.cursor.as_deref(), Some("2026-05-02T10:00:00.000Z"));
+
+    // Re-sync must be idempotent: the same stable id is suppressed by dedup.
+    let second = pipeline.tick(&test_config(), &context).await.unwrap();
+    assert_eq!(second.records_ingested, 0);
+    assert_eq!(captures.documents.lock().unwrap().len(), 1);
 }
 
 struct SlackHistory;
