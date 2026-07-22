@@ -27,7 +27,7 @@
 //!    dates-of-birth all require NER/LLM and are NOT addressed here. This
 //!    module is honest about its scope.
 
-use regex::{Regex, RegexSet};
+use regex::Regex;
 use std::sync::LazyLock;
 
 use super::{SanitizationReport, Sanitized};
@@ -137,30 +137,230 @@ static RRN_RE: LazyLock<Regex> =
 static EMAIL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b").expect("email"));
 
-// Cheap whole-text pre-filter so we skip the per-pattern scans entirely on
-// PII-free text. Each entry roughly corresponds to one of the patterns above.
-static SCREEN: LazyLock<RegexSet> = LazyLock::new(|| {
-    RegexSet::new([
-        r"\d{11,}",                               // any long digit run → CPF/CNPJ/CC/Aadhaar/IBAN
-        r"\d{3}\.\d{3}\.\d{3}-\d{2}",             // CPF
-        r"\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}",       // CNPJ
-        r"\d{2}-\d{8}-\d",                        // CUIT
-        r"(?i)[A-Z]{3,4}\d{6}",                   // RFC / general alphanumeric ID
-        r"(?:マイナンバー|個人番号|My\s?Number)", // JP keyword
-        r"\+\d{7}",                               // E.164
-        r"\(?[2-9]\d{2}\)?[\s.\-]\d{3}[\s.\-]\d{4}", // NANP (parens optional)
-        r"\d{3}-\d{2}-\d{4}",                     // SSN
-        r"\b[A-Z]{2}\d{2}[A-Z0-9]",               // IBAN prefix
-        r"\d{4}[\s\-]\d{4}[\s\-]\d{4}",           // Aadhaar formatted
-        r"(?i)aadhaar|aadhar|आधार|uidai",         // Aadhaar keyword
-        r"(?i)[A-Z]{5}\d{4}[A-Z]",                // PAN-IN
-        r"(?i)[A-Z]{2}\d{6}[A-D]",                // NINO
-        r"\b\d{8}[A-Z]\b",                        // DNI
-        r"(?i)[XYZ]\d{7}[A-Z]",                   // NIE
-        r"\d{6}-[1-4]\d{6}",                      // RRN
-    ])
-    .expect("screen regex set")
-});
+// ---------- Byte-oriented candidate pre-filter ----------
+//
+// Replaces the always-resident combined `RegexSet` (one shared NFA plus a
+// per-thread lazy-DFA cache in *every* process/thread) with a single cheap pass
+// over the raw bytes. The scan derives per-class candidate flags from a handful
+// of structural signals — digit-run lengths, punctuation presence, uppercase /
+// alpha presence, `+`, and case-insensitive keyword probes (including the
+// non-Latin Aadhaar `आधार` and My-Number `マイナンバー` / `個人番号` keywords).
+// Each flag then decides whether that class's precise validation regex is worth
+// compiling and running; the precise `Regex`es stay `LazyLock`, so a class that
+// never sees a candidate is never compiled at all. At 100–1000 concurrent
+// agents that turns "combined NFA + N thread-local DFA caches resident forever"
+// into "only the regexes a workload actually needs, compiled on first hit".
+//
+// Correctness: every flag is a NECESSARY CONDITION of the class's *precise*
+// regex, so a flag can only over-fire (harmless — the precise regex then simply
+// fails to match), never under-fire on real PII. Consequently, whenever a
+// precise pattern would have matched under the old code path, its flag is set
+// and it still runs — output is unchanged. The union of the flags is a superset
+// of the old `SCREEN` set (pinned by `prefilter_is_superset_of_legacy_screen`).
+// The two phone classes intentionally gate on the *screen*-entry necessary
+// condition (an internal `digit sep digit` separator) rather than the looser
+// precise regex, faithfully preserving the documented "a bare 10-digit NANP run
+// is never reached" behavior — see `redact_pii_does_not_reach_bare_10_digit_nanp_today`.
+
+/// Per-class candidate flags produced by [`scan_candidates`]. A set flag means
+/// "run this class's precise regex"; an unset flag means the class cannot
+/// possibly match, so its regex is skipped (and never compiled).
+#[derive(Default, Clone, Copy)]
+struct Candidates {
+    cpf_fmt: bool,
+    cnpj_fmt: bool,
+    cuit: bool,
+    iban: bool,
+    cc: bool,
+    cnpj_bare: bool,
+    cpf_bare: bool,
+    aadhaar_fmt: bool,
+    aadhaar_kw: bool,
+    dni: bool,
+    nie: bool,
+    nino: bool,
+    ssn: bool,
+    rrn: bool,
+    rfc: bool,
+    pan_in: bool,
+    phone_e164: bool,
+    phone_nanp: bool,
+    mynumber: bool,
+}
+
+impl Candidates {
+    /// True if any class is a candidate — i.e. the text is worth a precise pass.
+    fn any(&self) -> bool {
+        self.cpf_fmt
+            || self.cnpj_fmt
+            || self.cuit
+            || self.iban
+            || self.cc
+            || self.cnpj_bare
+            || self.cpf_bare
+            || self.aadhaar_fmt
+            || self.aadhaar_kw
+            || self.dni
+            || self.nie
+            || self.nino
+            || self.ssn
+            || self.rrn
+            || self.rfc
+            || self.pan_in
+            || self.phone_e164
+            || self.phone_nanp
+            || self.mynumber
+    }
+}
+
+/// Case-insensitive (ASCII-only case folding) substring test over raw bytes.
+/// Non-ASCII bytes compare exactly, so this also serves as an exact matcher for
+/// the multibyte Devanagari / Japanese keyword needles.
+fn contains_ci(hay: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if hay.len() < needle.len() {
+        return false;
+    }
+    hay.windows(needle.len())
+        .any(|w| w.iter().zip(needle).all(|(a, b)| a.eq_ignore_ascii_case(b)))
+}
+
+/// Aadhaar keyword needles — ASCII forms plus Devanagari `आधार`.
+const AADHAAR_KEYWORDS: &[&[u8]] = &[b"aadhaar", b"aadhar", b"uidai", b"uid", "आधार".as_bytes()];
+/// My-Number keyword needles — ASCII forms plus Japanese literals.
+const MYNUMBER_KEYWORDS: &[&[u8]] = &[
+    b"mynumber",
+    b"my number",
+    "マイナンバー".as_bytes(),
+    "個人番号".as_bytes(),
+];
+
+/// Single linear pass over the bytes deriving every per-class candidate flag.
+///
+/// Only ASCII structural bytes carry signal here; multibyte UTF-8 lead /
+/// continuation bytes are all `>= 0x80`, so scanning `as_bytes()` for ASCII
+/// digits/punctuation/letters is boundary-safe. Keyword probes run over the
+/// same byte slice so the non-Latin needles match verbatim.
+fn scan_candidates(text: &str) -> Candidates {
+    let bytes = text.as_bytes();
+
+    let mut total_digits: usize = 0;
+    let mut max_digit_run: usize = 0;
+    let mut cur_run: usize = 0;
+    let mut has_dot = false;
+    let mut has_dash = false;
+    let mut has_slash = false;
+    let mut has_space = false;
+    let mut has_upper = false;
+    let mut has_alpha = false;
+    let mut has_xyz = false;
+    let mut has_plus = false;
+    // NANP-style "separated group" signal: some `[digit or ')'] [sep] [digit]`
+    // window exists (sep ∈ space/tab/./-). This is the necessary condition of
+    // the old SCREEN NANP entry, which required internal separators — keeping
+    // bare separator-less 10-digit runs out of the phone path.
+    let mut nanp_sep = false;
+
+    for (i, &b) in bytes.iter().enumerate() {
+        if b.is_ascii_digit() {
+            total_digits += 1;
+            cur_run += 1;
+            if cur_run > max_digit_run {
+                max_digit_run = cur_run;
+            }
+        } else {
+            cur_run = 0;
+            match b {
+                b'.' => has_dot = true,
+                b'-' => has_dash = true,
+                b'/' => has_slash = true,
+                b' ' | b'\t' => has_space = true,
+                b'+' => has_plus = true,
+                b'A'..=b'Z' => {
+                    has_upper = true;
+                    has_alpha = true;
+                    if matches!(b, b'X' | b'Y' | b'Z') {
+                        has_xyz = true;
+                    }
+                }
+                b'a'..=b'z' => {
+                    has_alpha = true;
+                    if matches!(b, b'x' | b'y' | b'z') {
+                        has_xyz = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if matches!(b, b' ' | b'\t' | b'.' | b'-') && i > 0 && i + 1 < bytes.len() {
+            let prev = bytes[i - 1];
+            let next = bytes[i + 1];
+            if (prev.is_ascii_digit() || prev == b')') && next.is_ascii_digit() {
+                nanp_sep = true;
+            }
+        }
+    }
+
+    let has_digit = total_digits > 0;
+    let aadhaar_kw = AADHAAR_KEYWORDS.iter().any(|kw| contains_ci(bytes, kw));
+    let mynumber = MYNUMBER_KEYWORDS.iter().any(|kw| contains_ci(bytes, kw));
+
+    let cand = Candidates {
+        // Formatted CPF `\d{3}\.\d{3}\.\d{3}-\d{2}` — needs digits, `.`, `-`.
+        cpf_fmt: has_digit && has_dot && has_dash,
+        // Formatted CNPJ `\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}` — adds `/`.
+        cnpj_fmt: has_digit && has_dot && has_slash && has_dash,
+        // CUIT `\d{2}-\d{8}-\d` — needs digits and `-`.
+        cuit: has_digit && has_dash,
+        // IBAN `[A-Z]{2}\d{2}…` — case-sensitive uppercase letters and digits.
+        iban: has_upper && has_digit,
+        // Credit card `(?:\d[\s\-]?){13,19}` — at least 13 digits total.
+        cc: total_digits >= 13,
+        // Bare CNPJ `\d{14}` — a 14-long digit run.
+        cnpj_bare: max_digit_run >= 14,
+        // Bare CPF `\d{11}` — an 11-long digit run.
+        cpf_bare: max_digit_run >= 11,
+        // Formatted Aadhaar `\d{4}[\s-]\d{4}[\s-]\d{4}` — 12 digits + space/dash.
+        aadhaar_fmt: total_digits >= 12 && (has_space || has_dash),
+        // Keyword-gated Aadhaar — keyword suffices (precise regex checks digits).
+        aadhaar_kw,
+        // Spain DNI `\d{8}[A-Z]` — 8-run plus a letter.
+        dni: max_digit_run >= 8 && has_alpha,
+        // Spain NIE `[XYZ]\d{7}[A-Z]` — X/Y/Z, 7-run, letter.
+        nie: has_xyz && max_digit_run >= 7 && has_alpha,
+        // UK NINO `[A-Z]{2}\d{6}[A-D]` — letters and a 6-run.
+        nino: max_digit_run >= 6 && has_alpha,
+        // US SSN `\d{3}-\d{2}-\d{4}` — digits and `-`.
+        ssn: has_digit && has_dash,
+        // Korea RRN `\d{6}-[1-4]\d{6}` — a 6-run and `-`.
+        rrn: max_digit_run >= 6 && has_dash,
+        // Mexico RFC `[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}` — a 6-run (leading class may
+        // be all non-ASCII `Ñ`, so gate on the digit run alone, not on letters).
+        rfc: max_digit_run >= 6,
+        // India PAN `[A-Z]{5}\d{4}[A-Z]` — letters and a 4-run.
+        pan_in: max_digit_run >= 4 && has_alpha,
+        // E.164 `\+\d{7,15}` — a `+` and a 7+ digit run.
+        phone_e164: has_plus && max_digit_run >= 7,
+        // NANP — screen-entry necessary condition (internal separator).
+        phone_nanp: nanp_sep,
+        // My Number — keyword suffices (precise regex checks the 12 digits).
+        mynumber,
+    };
+
+    log::trace!(
+        "[pii] scan_candidates bytes={} digits={} max_run={} nanp_sep={} any={}",
+        bytes.len(),
+        total_digits,
+        max_digit_run,
+        nanp_sep,
+        cand.any()
+    );
+
+    cand
+}
 
 // ---------- Public API ----------
 
@@ -174,26 +374,38 @@ static SCREEN: LazyLock<RegexSet> = LazyLock::new(|| {
 pub fn redact_pii(text: &str) -> Sanitized<String> {
     let mut report = SanitizationReport::default();
 
-    // Fast path: no candidate at all.
-    if !SCREEN.is_match(text) {
-        // Even the screen might miss normalized inputs; check normalized too.
+    // Fast path: cheap byte pre-filter on the raw text. Fullwidth / Arabic-Indic
+    // digits and folded punctuation only surface after normalization, so a clean
+    // raw scan still re-checks the normalized view before declaring the text PII-
+    // free (mirrors the old two-phase SCREEN check).
+    let raw_cand = scan_candidates(text);
+    if !raw_cand.any() {
         let nview = NormalizedView::build(text);
-        if !SCREEN.is_match(&nview.normalized) {
+        let ncand = scan_candidates(&nview.normalized);
+        if !ncand.any() {
+            log::trace!(
+                "[pii] redact_pii: no candidate before or after normalization (len={})",
+                text.len()
+            );
             return Sanitized {
                 value: text.to_string(),
                 report,
             };
         }
+        log::debug!("[pii] redact_pii: candidate surfaced only after normalization");
         return splice_redactions(
             text,
             &nview,
-            collect_redactions(&nview.normalized),
+            collect_redactions(&nview.normalized, &ncand),
             &mut report,
         );
     }
 
     let nview = NormalizedView::build(text);
-    let redactions = collect_redactions(&nview.normalized);
+    // Gate on candidates from the NORMALIZED text — the precise regexes run
+    // against it, so normalization-induced classes (folded digits) are included.
+    let ncand = scan_candidates(&nview.normalized);
+    let redactions = collect_redactions(&nview.normalized, &ncand);
     splice_redactions(text, &nview, redactions, &mut report)
 }
 
@@ -213,13 +425,22 @@ pub fn redact_pii(text: &str) -> Sanitized<String> {
 /// replace bytes inside a string, not reject the whole write.
 pub fn has_likely_pii(value: &str) -> bool {
     let nview = NormalizedView::build(value);
-    SCREEN.is_match(&nview.normalized) && !collect_strict_redactions(&nview.normalized).is_empty()
+    let cand = scan_candidates(&nview.normalized);
+    if !cand.any() {
+        return false;
+    }
+    !collect_strict_redactions(&nview.normalized, &cand).is_empty()
 }
 
 /// True when `value` contains an ordinary email address. Kept separate from
 /// [`has_likely_pii`] because scanner-built identifiers may legitimately
 /// contain email-like `@` segments.
 pub fn has_likely_email(value: &str) -> bool {
+    // Cheap gate: every email requires an `@`. Skip compiling the regex when
+    // the byte is absent (the common namespace/key case).
+    if !value.as_bytes().contains(&b'@') {
+        return false;
+    }
     EMAIL_RE.is_match(value)
 }
 
@@ -232,8 +453,8 @@ struct Hit {
     token: &'static str,
 }
 
-fn collect_redactions(norm: &str) -> Vec<Hit> {
-    collect_redactions_inner(norm, true)
+fn collect_redactions(norm: &str, cand: &Candidates) -> Vec<Hit> {
+    collect_redactions_inner(norm, cand, true)
 }
 
 /// Variant of [`collect_redactions`] that omits bare-numeric patterns
@@ -244,54 +465,89 @@ fn collect_redactions(norm: &str) -> Vec<Hit> {
 /// where rejection on such a hit alone would have too many false
 /// positives on scanner-built identifiers (WhatsApp group JIDs
 /// `<phone>-<unix>@g.us`, timestamps, padded counters).
-fn collect_strict_redactions(norm: &str) -> Vec<Hit> {
-    collect_redactions_inner(norm, false)
+fn collect_strict_redactions(norm: &str, cand: &Candidates) -> Vec<Hit> {
+    collect_redactions_inner(norm, cand, false)
 }
 
-fn collect_redactions_inner(norm: &str, include_bare_numeric: bool) -> Vec<Hit> {
+/// Run only the precise regexes whose class was flagged by [`scan_candidates`].
+/// Priority order (and therefore overlap-resolution) is byte-identical to the
+/// unconditional version; the `if cand.*` guards only decide whether each class
+/// runs, so a flagged class produces exactly the hits it always did.
+fn collect_redactions_inner(norm: &str, cand: &Candidates, include_bare_numeric: bool) -> Vec<Hit> {
     let mut hits: Vec<Hit> = Vec::new();
 
     // Priority order: most specific / highest-confidence first.
-    push_checksum(&mut hits, norm, &CPF_FMT_RE, PII_CPF, |s| {
-        valid_cpf(digits(s).as_slice())
-    });
-    push_checksum(&mut hits, norm, &CNPJ_FMT_RE, PII_CNPJ, |s| {
-        valid_cnpj(digits(s).as_slice())
-    });
-    push_checksum(&mut hits, norm, &CUIT_RE, PII_CUIT, |s| {
-        valid_cuit(digits(s).as_slice())
-    });
-
-    // IBAN before credit card: CC can match an IBAN tail of all digits.
-    push_checksum(&mut hits, norm, &IBAN_RE, PII_IBAN, valid_iban);
-
-    if include_bare_numeric {
-        // Credit card before bare CPF/CNPJ to avoid catching a 13-19 digit run as CPF/CNPJ.
-        push_checksum(&mut hits, norm, &CC_RE, PII_CC, valid_luhn);
-
-        push_checksum(&mut hits, norm, &CNPJ_BARE_RE, PII_CNPJ, |s| {
-            valid_cnpj(digits(s).as_slice())
-        });
-        push_checksum(&mut hits, norm, &CPF_BARE_RE, PII_CPF, |s| {
+    if cand.cpf_fmt {
+        push_checksum(&mut hits, norm, &CPF_FMT_RE, PII_CPF, |s| {
             valid_cpf(digits(s).as_slice())
         });
     }
+    if cand.cnpj_fmt {
+        push_checksum(&mut hits, norm, &CNPJ_FMT_RE, PII_CNPJ, |s| {
+            valid_cnpj(digits(s).as_slice())
+        });
+    }
+    if cand.cuit {
+        push_checksum(&mut hits, norm, &CUIT_RE, PII_CUIT, |s| {
+            valid_cuit(digits(s).as_slice())
+        });
+    }
 
-    push_checksum(&mut hits, norm, &AADHAAR_FMT_RE, PII_AADHAAR, |s| {
-        valid_verhoeff(digits(s).as_slice())
-    });
+    // IBAN before credit card: CC can match an IBAN tail of all digits.
+    if cand.iban {
+        push_checksum(&mut hits, norm, &IBAN_RE, PII_IBAN, valid_iban);
+    }
+
+    if include_bare_numeric {
+        // Credit card before bare CPF/CNPJ to avoid catching a 13-19 digit run as CPF/CNPJ.
+        if cand.cc {
+            push_checksum(&mut hits, norm, &CC_RE, PII_CC, valid_luhn);
+        }
+        if cand.cnpj_bare {
+            push_checksum(&mut hits, norm, &CNPJ_BARE_RE, PII_CNPJ, |s| {
+                valid_cnpj(digits(s).as_slice())
+            });
+        }
+        if cand.cpf_bare {
+            push_checksum(&mut hits, norm, &CPF_BARE_RE, PII_CPF, |s| {
+                valid_cpf(digits(s).as_slice())
+            });
+        }
+    }
+
+    if cand.aadhaar_fmt {
+        push_checksum(&mut hits, norm, &AADHAAR_FMT_RE, PII_AADHAAR, |s| {
+            valid_verhoeff(digits(s).as_slice())
+        });
+    }
     // Keyword-gated Aadhaar redacts only the captured 12-digit group.
-    push_captured(&mut hits, norm, &AADHAAR_KW_RE, PII_AADHAAR, |digits_str| {
-        valid_verhoeff(digits(digits_str).as_slice())
-    });
+    if cand.aadhaar_kw {
+        push_captured(&mut hits, norm, &AADHAAR_KW_RE, PII_AADHAAR, |digits_str| {
+            valid_verhoeff(digits(digits_str).as_slice())
+        });
+    }
 
-    push_checksum(&mut hits, norm, &DNI_RE, PII_DNI, valid_dni_es);
-    push_checksum(&mut hits, norm, &NIE_RE, PII_DNI, valid_nie_es);
-    push_checksum(&mut hits, norm, &NINO_RE, PII_NINO, valid_nino);
-    push_checksum(&mut hits, norm, &SSN_RE, PII_SSN, valid_ssn);
-    push_simple(&mut hits, norm, &RRN_RE, PII_RRN);
-    push_simple(&mut hits, norm, &RFC_RE, PII_RFC);
-    push_simple(&mut hits, norm, &PAN_IN_RE, PII_PAN_IN);
+    if cand.dni {
+        push_checksum(&mut hits, norm, &DNI_RE, PII_DNI, valid_dni_es);
+    }
+    if cand.nie {
+        push_checksum(&mut hits, norm, &NIE_RE, PII_DNI, valid_nie_es);
+    }
+    if cand.nino {
+        push_checksum(&mut hits, norm, &NINO_RE, PII_NINO, valid_nino);
+    }
+    if cand.ssn {
+        push_checksum(&mut hits, norm, &SSN_RE, PII_SSN, valid_ssn);
+    }
+    if cand.rrn {
+        push_simple(&mut hits, norm, &RRN_RE, PII_RRN);
+    }
+    if cand.rfc {
+        push_simple(&mut hits, norm, &RFC_RE, PII_RFC);
+    }
+    if cand.pan_in {
+        push_simple(&mut hits, norm, &PAN_IN_RE, PII_PAN_IN);
+    }
 
     if include_bare_numeric {
         // Phones: E.164 first (more specific), then NANP. Both are bare-numeric
@@ -300,14 +556,25 @@ fn collect_redactions_inner(norm: &str, include_bare_numeric: bool) -> Vec<Hit> 
         // Strict callers (boundary checks like `has_likely_pii`) exclude these
         // so scanner-built namespace/key values (WhatsApp JIDs
         // `<phone>-<unix>@g.us`, telegram numeric peer IDs) don't get rejected.
-        push_simple(&mut hits, norm, &PHONE_E164_RE, PII_PHONE);
-        push_simple(&mut hits, norm, &PHONE_NANP_RE, PII_PHONE);
+        if cand.phone_e164 {
+            push_simple(&mut hits, norm, &PHONE_E164_RE, PII_PHONE);
+        }
+        if cand.phone_nanp {
+            push_simple(&mut hits, norm, &PHONE_NANP_RE, PII_PHONE);
+        }
     }
 
     // My Number — captured digit group only, keyword remains visible.
-    push_captured(&mut hits, norm, &MYNUM_RE, PII_MYNUM, |_| true);
+    if cand.mynumber {
+        push_captured(&mut hits, norm, &MYNUM_RE, PII_MYNUM, |_| true);
+    }
 
     dedupe_overlaps(&mut hits);
+    log::debug!(
+        "[pii] collect_redactions strict={} hits={}",
+        !include_bare_numeric,
+        hits.len()
+    );
     hits
 }
 
