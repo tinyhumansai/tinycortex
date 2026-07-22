@@ -64,9 +64,10 @@ serde_json = "1"
 schemars = "1"
 sha2 = "0.10"
 thiserror = "2"
-# Kept in lockstep with OpenHuman's vendored TinyAgents checkout. Initialize it
-# after cloning with `git submodule update --init vendor/tinyagents`.
-tinyagents = { version = "2", path = "vendor/tinyagents" }
+# Kept in lockstep with OpenHuman's vendored TinyAgents checkout. Downstream
+# workspaces can now replace this crates.io source with their own shared patch,
+# preserving a single TinyAgents trait identity across the dependency graph.
+tinyagents = "2.1"
 toml = "0.8"
 uuid = { version = "1", features = ["serde", "v4"] }
 walkdir = "2"
@@ -100,6 +101,12 @@ dotenvy = "0.15"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 wiremock = "0.6"
+
+# Standalone TinyCortex development still uses the pinned nested submodule.
+# Cargo ignores dependency-local patches when TinyCortex is consumed by a host,
+# allowing that host's crates.io patch to select its canonical TinyAgents copy.
+[patch.crates-io]
+tinyagents = { path = "vendor/tinyagents" }
 
 [[test]]
 name = "composio_sync_mock"
