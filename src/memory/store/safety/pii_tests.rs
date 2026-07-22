@@ -75,6 +75,16 @@ fn my_number_redacted_with_keyword() {
 fn bare_12_digits_without_keyword_kept() {
     unchanged("Order 123456789012 shipped today.");
 }
+#[test]
+fn my_number_keyword_tab_separator_redacted() {
+    // `My\s?Number` accepts any single `\s`; the byte prefilter must recognise a
+    // tab-separated keyword, not just a literal space.
+    redacts("My\tNumber 123456789012", PII_MYNUM);
+}
+#[test]
+fn my_number_keyword_newline_separator_redacted() {
+    redacts("My\nNumber 123456789012", PII_MYNUM);
+}
 
 // --- E.164 + NANP phone ---
 #[test]
@@ -92,6 +102,13 @@ fn nanp_with_country_code_redacted() {
 #[test]
 fn nanp_invalid_area_code_kept() {
     unchanged("score 115-555-0123 ish");
+}
+#[test]
+fn nanp_bare_country_code_redacted() {
+    // Separator-less `1`+10-digit NANP: the old SCREEN reached PHONE_NANP_RE via
+    // the `\d{11,}` run; the prefilter must keep gating this through the phone
+    // class (the bare-CPF checksum rejects it, so nothing else redacts it).
+    redacts("12025551234", PII_PHONE);
 }
 
 // --- SSN ---
@@ -147,6 +164,12 @@ fn aadhaar_keyword_bare_redacted() {
 #[test]
 fn aadhaar_invalid_verhoeff_kept() {
     unchanged("Random 2341 2341 2345 nope");
+}
+#[test]
+fn aadhaar_formatted_newline_separator_redacted() {
+    // AADHAAR_FMT_RE separates groups with `[\s-]`; a newline-separated Aadhaar
+    // (no keyword, no dash) must still flag the formatted class in the prefilter.
+    redacts("2341\n2341\n2346", PII_AADHAAR);
 }
 
 // --- PAN-IN ---
@@ -494,6 +517,11 @@ fn prefilter_is_superset_of_legacy_screen() {
         "マイナンバー: 123456789012",
         "個人番号 123456789012",
         "My Number 123456789012",
+        // Whitespace-separator variants the precise regexes accept via `\s`.
+        "My\tNumber 123456789012",
+        "My\nNumber 123456789012",
+        "2341\n2341\n2346",
+        "12025551234",
         "phone +15551234567",
         "call 415-555-0123 thanks",
         "+1 (212) 555-7890",
