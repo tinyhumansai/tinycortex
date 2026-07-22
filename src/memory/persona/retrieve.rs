@@ -1,6 +1,6 @@
 //! Algorithmic (no-LLM) retrieval over the persona memory layer (doc 06).
 //!
-//! The persona pipeline folds distilled [`DigestObservation`]s into per-facet
+//! The persona pipeline folds distilled [`DigestObservation`](super::types::DigestObservation)s into per-facet
 //! flavoured trees, but it *also* persists every observation leaf verbatim as a
 //! `Document` chunk (`owner = "persona"`, `source_id = "persona/<facet>"`) — see
 //! [`reduce::fold_leaf`](super::reduce). Those leaves are the richest, most
