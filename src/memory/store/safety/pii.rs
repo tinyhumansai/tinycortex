@@ -27,7 +27,7 @@
 //!    dates-of-birth all require NER/LLM and are NOT addressed here. This
 //!    module is honest about its scope.
 
-use regex::{Regex, RegexSet};
+use regex::Regex;
 use std::sync::LazyLock;
 
 use super::{SanitizationReport, Sanitized};
@@ -137,30 +137,12 @@ static RRN_RE: LazyLock<Regex> =
 static EMAIL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b").expect("email"));
 
-// Cheap whole-text pre-filter so we skip the per-pattern scans entirely on
-// PII-free text. Each entry roughly corresponds to one of the patterns above.
-static SCREEN: LazyLock<RegexSet> = LazyLock::new(|| {
-    RegexSet::new([
-        r"\d{11,}",                               // any long digit run → CPF/CNPJ/CC/Aadhaar/IBAN
-        r"\d{3}\.\d{3}\.\d{3}-\d{2}",             // CPF
-        r"\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}",       // CNPJ
-        r"\d{2}-\d{8}-\d",                        // CUIT
-        r"(?i)[A-Z]{3,4}\d{6}",                   // RFC / general alphanumeric ID
-        r"(?:マイナンバー|個人番号|My\s?Number)", // JP keyword
-        r"\+\d{7}",                               // E.164
-        r"\(?[2-9]\d{2}\)?[\s.\-]\d{3}[\s.\-]\d{4}", // NANP (parens optional)
-        r"\d{3}-\d{2}-\d{4}",                     // SSN
-        r"\b[A-Z]{2}\d{2}[A-Z0-9]",               // IBAN prefix
-        r"\d{4}[\s\-]\d{4}[\s\-]\d{4}",           // Aadhaar formatted
-        r"(?i)aadhaar|aadhar|आधार|uidai",         // Aadhaar keyword
-        r"(?i)[A-Z]{5}\d{4}[A-Z]",                // PAN-IN
-        r"(?i)[A-Z]{2}\d{6}[A-D]",                // NINO
-        r"\b\d{8}[A-Z]\b",                        // DNI
-        r"(?i)[XYZ]\d{7}[A-Z]",                   // NIE
-        r"\d{6}-[1-4]\d{6}",                      // RRN
-    ])
-    .expect("screen regex set")
-});
+// ---------- Byte-oriented candidate pre-filter ----------
+//
+// The single cheap byte pass that replaces the always-resident combined
+// `RegexSet`. Lives in its own module — see `prefilter.rs` for the full rationale.
+mod prefilter;
+use prefilter::{scan_candidates, Candidates};
 
 // ---------- Public API ----------
 
@@ -174,26 +156,38 @@ static SCREEN: LazyLock<RegexSet> = LazyLock::new(|| {
 pub fn redact_pii(text: &str) -> Sanitized<String> {
     let mut report = SanitizationReport::default();
 
-    // Fast path: no candidate at all.
-    if !SCREEN.is_match(text) {
-        // Even the screen might miss normalized inputs; check normalized too.
+    // Fast path: cheap byte pre-filter on the raw text. Fullwidth / Arabic-Indic
+    // digits and folded punctuation only surface after normalization, so a clean
+    // raw scan still re-checks the normalized view before declaring the text PII-
+    // free (mirrors the old two-phase SCREEN check).
+    let raw_cand = scan_candidates(text);
+    if !raw_cand.any() {
         let nview = NormalizedView::build(text);
-        if !SCREEN.is_match(&nview.normalized) {
+        let ncand = scan_candidates(&nview.normalized);
+        if !ncand.any() {
+            log::trace!(
+                "[pii] redact_pii: no candidate before or after normalization (len={})",
+                text.len()
+            );
             return Sanitized {
                 value: text.to_string(),
                 report,
             };
         }
+        log::debug!("[pii] redact_pii: candidate surfaced only after normalization");
         return splice_redactions(
             text,
             &nview,
-            collect_redactions(&nview.normalized),
+            collect_redactions(&nview.normalized, &ncand),
             &mut report,
         );
     }
 
     let nview = NormalizedView::build(text);
-    let redactions = collect_redactions(&nview.normalized);
+    // Gate on candidates from the NORMALIZED text — the precise regexes run
+    // against it, so normalization-induced classes (folded digits) are included.
+    let ncand = scan_candidates(&nview.normalized);
+    let redactions = collect_redactions(&nview.normalized, &ncand);
     splice_redactions(text, &nview, redactions, &mut report)
 }
 
@@ -213,13 +207,22 @@ pub fn redact_pii(text: &str) -> Sanitized<String> {
 /// replace bytes inside a string, not reject the whole write.
 pub fn has_likely_pii(value: &str) -> bool {
     let nview = NormalizedView::build(value);
-    SCREEN.is_match(&nview.normalized) && !collect_strict_redactions(&nview.normalized).is_empty()
+    let cand = scan_candidates(&nview.normalized);
+    if !cand.any() {
+        return false;
+    }
+    !collect_strict_redactions(&nview.normalized, &cand).is_empty()
 }
 
 /// True when `value` contains an ordinary email address. Kept separate from
 /// [`has_likely_pii`] because scanner-built identifiers may legitimately
 /// contain email-like `@` segments.
 pub fn has_likely_email(value: &str) -> bool {
+    // Cheap gate: every email requires an `@`. Skip compiling the regex when
+    // the byte is absent (the common namespace/key case).
+    if !value.as_bytes().contains(&b'@') {
+        return false;
+    }
     EMAIL_RE.is_match(value)
 }
 
@@ -232,8 +235,8 @@ struct Hit {
     token: &'static str,
 }
 
-fn collect_redactions(norm: &str) -> Vec<Hit> {
-    collect_redactions_inner(norm, true)
+fn collect_redactions(norm: &str, cand: &Candidates) -> Vec<Hit> {
+    collect_redactions_inner(norm, cand, true)
 }
 
 /// Variant of [`collect_redactions`] that omits bare-numeric patterns
@@ -244,54 +247,89 @@ fn collect_redactions(norm: &str) -> Vec<Hit> {
 /// where rejection on such a hit alone would have too many false
 /// positives on scanner-built identifiers (WhatsApp group JIDs
 /// `<phone>-<unix>@g.us`, timestamps, padded counters).
-fn collect_strict_redactions(norm: &str) -> Vec<Hit> {
-    collect_redactions_inner(norm, false)
+fn collect_strict_redactions(norm: &str, cand: &Candidates) -> Vec<Hit> {
+    collect_redactions_inner(norm, cand, false)
 }
 
-fn collect_redactions_inner(norm: &str, include_bare_numeric: bool) -> Vec<Hit> {
+/// Run only the precise regexes whose class was flagged by [`scan_candidates`].
+/// Priority order (and therefore overlap-resolution) is byte-identical to the
+/// unconditional version; the `if cand.*` guards only decide whether each class
+/// runs, so a flagged class produces exactly the hits it always did.
+fn collect_redactions_inner(norm: &str, cand: &Candidates, include_bare_numeric: bool) -> Vec<Hit> {
     let mut hits: Vec<Hit> = Vec::new();
 
     // Priority order: most specific / highest-confidence first.
-    push_checksum(&mut hits, norm, &CPF_FMT_RE, PII_CPF, |s| {
-        valid_cpf(digits(s).as_slice())
-    });
-    push_checksum(&mut hits, norm, &CNPJ_FMT_RE, PII_CNPJ, |s| {
-        valid_cnpj(digits(s).as_slice())
-    });
-    push_checksum(&mut hits, norm, &CUIT_RE, PII_CUIT, |s| {
-        valid_cuit(digits(s).as_slice())
-    });
-
-    // IBAN before credit card: CC can match an IBAN tail of all digits.
-    push_checksum(&mut hits, norm, &IBAN_RE, PII_IBAN, valid_iban);
-
-    if include_bare_numeric {
-        // Credit card before bare CPF/CNPJ to avoid catching a 13-19 digit run as CPF/CNPJ.
-        push_checksum(&mut hits, norm, &CC_RE, PII_CC, valid_luhn);
-
-        push_checksum(&mut hits, norm, &CNPJ_BARE_RE, PII_CNPJ, |s| {
-            valid_cnpj(digits(s).as_slice())
-        });
-        push_checksum(&mut hits, norm, &CPF_BARE_RE, PII_CPF, |s| {
+    if cand.cpf_fmt {
+        push_checksum(&mut hits, norm, &CPF_FMT_RE, PII_CPF, |s| {
             valid_cpf(digits(s).as_slice())
         });
     }
+    if cand.cnpj_fmt {
+        push_checksum(&mut hits, norm, &CNPJ_FMT_RE, PII_CNPJ, |s| {
+            valid_cnpj(digits(s).as_slice())
+        });
+    }
+    if cand.cuit {
+        push_checksum(&mut hits, norm, &CUIT_RE, PII_CUIT, |s| {
+            valid_cuit(digits(s).as_slice())
+        });
+    }
 
-    push_checksum(&mut hits, norm, &AADHAAR_FMT_RE, PII_AADHAAR, |s| {
-        valid_verhoeff(digits(s).as_slice())
-    });
+    // IBAN before credit card: CC can match an IBAN tail of all digits.
+    if cand.iban {
+        push_checksum(&mut hits, norm, &IBAN_RE, PII_IBAN, valid_iban);
+    }
+
+    if include_bare_numeric {
+        // Credit card before bare CPF/CNPJ to avoid catching a 13-19 digit run as CPF/CNPJ.
+        if cand.cc {
+            push_checksum(&mut hits, norm, &CC_RE, PII_CC, valid_luhn);
+        }
+        if cand.cnpj_bare {
+            push_checksum(&mut hits, norm, &CNPJ_BARE_RE, PII_CNPJ, |s| {
+                valid_cnpj(digits(s).as_slice())
+            });
+        }
+        if cand.cpf_bare {
+            push_checksum(&mut hits, norm, &CPF_BARE_RE, PII_CPF, |s| {
+                valid_cpf(digits(s).as_slice())
+            });
+        }
+    }
+
+    if cand.aadhaar_fmt {
+        push_checksum(&mut hits, norm, &AADHAAR_FMT_RE, PII_AADHAAR, |s| {
+            valid_verhoeff(digits(s).as_slice())
+        });
+    }
     // Keyword-gated Aadhaar redacts only the captured 12-digit group.
-    push_captured(&mut hits, norm, &AADHAAR_KW_RE, PII_AADHAAR, |digits_str| {
-        valid_verhoeff(digits(digits_str).as_slice())
-    });
+    if cand.aadhaar_kw {
+        push_captured(&mut hits, norm, &AADHAAR_KW_RE, PII_AADHAAR, |digits_str| {
+            valid_verhoeff(digits(digits_str).as_slice())
+        });
+    }
 
-    push_checksum(&mut hits, norm, &DNI_RE, PII_DNI, valid_dni_es);
-    push_checksum(&mut hits, norm, &NIE_RE, PII_DNI, valid_nie_es);
-    push_checksum(&mut hits, norm, &NINO_RE, PII_NINO, valid_nino);
-    push_checksum(&mut hits, norm, &SSN_RE, PII_SSN, valid_ssn);
-    push_simple(&mut hits, norm, &RRN_RE, PII_RRN);
-    push_simple(&mut hits, norm, &RFC_RE, PII_RFC);
-    push_simple(&mut hits, norm, &PAN_IN_RE, PII_PAN_IN);
+    if cand.dni {
+        push_checksum(&mut hits, norm, &DNI_RE, PII_DNI, valid_dni_es);
+    }
+    if cand.nie {
+        push_checksum(&mut hits, norm, &NIE_RE, PII_DNI, valid_nie_es);
+    }
+    if cand.nino {
+        push_checksum(&mut hits, norm, &NINO_RE, PII_NINO, valid_nino);
+    }
+    if cand.ssn {
+        push_checksum(&mut hits, norm, &SSN_RE, PII_SSN, valid_ssn);
+    }
+    if cand.rrn {
+        push_simple(&mut hits, norm, &RRN_RE, PII_RRN);
+    }
+    if cand.rfc {
+        push_simple(&mut hits, norm, &RFC_RE, PII_RFC);
+    }
+    if cand.pan_in {
+        push_simple(&mut hits, norm, &PAN_IN_RE, PII_PAN_IN);
+    }
 
     if include_bare_numeric {
         // Phones: E.164 first (more specific), then NANP. Both are bare-numeric
@@ -300,14 +338,25 @@ fn collect_redactions_inner(norm: &str, include_bare_numeric: bool) -> Vec<Hit> 
         // Strict callers (boundary checks like `has_likely_pii`) exclude these
         // so scanner-built namespace/key values (WhatsApp JIDs
         // `<phone>-<unix>@g.us`, telegram numeric peer IDs) don't get rejected.
-        push_simple(&mut hits, norm, &PHONE_E164_RE, PII_PHONE);
-        push_simple(&mut hits, norm, &PHONE_NANP_RE, PII_PHONE);
+        if cand.phone_e164 {
+            push_simple(&mut hits, norm, &PHONE_E164_RE, PII_PHONE);
+        }
+        if cand.phone_nanp {
+            push_simple(&mut hits, norm, &PHONE_NANP_RE, PII_PHONE);
+        }
     }
 
     // My Number — captured digit group only, keyword remains visible.
-    push_captured(&mut hits, norm, &MYNUM_RE, PII_MYNUM, |_| true);
+    if cand.mynumber {
+        push_captured(&mut hits, norm, &MYNUM_RE, PII_MYNUM, |_| true);
+    }
 
     dedupe_overlaps(&mut hits);
+    log::debug!(
+        "[pii] collect_redactions strict={} hits={}",
+        !include_bare_numeric,
+        hits.len()
+    );
     hits
 }
 
@@ -414,79 +463,10 @@ fn splice_redactions(
 
 // ---------- Unicode normalization for matching ----------
 
-struct NormalizedView {
-    normalized: String,
-    // For each byte offset i in `normalized`, `byte_map[i]` is the byte offset
-    // in the original string where the corresponding char *starts*.
-    // The last entry maps the normalized length to the original length, so
-    // `norm_to_orig(normalized.len())` is well-defined.
-    byte_map: Vec<usize>,
-}
-
-impl NormalizedView {
-    fn build(original: &str) -> Self {
-        let mut normalized = String::with_capacity(original.len());
-        let mut byte_map: Vec<usize> = Vec::with_capacity(original.len() + 1);
-        for (idx, ch) in original.char_indices() {
-            if is_zero_width(ch) {
-                continue;
-            }
-            let mapped = fold_char(ch);
-            let start = normalized.len();
-            normalized.push(mapped);
-            // One byte_map entry per byte of the normalized char.
-            let added = normalized.len() - start;
-            for _ in 0..added {
-                byte_map.push(idx);
-            }
-        }
-        byte_map.push(original.len());
-        Self {
-            normalized,
-            byte_map,
-        }
-    }
-
-    fn norm_to_orig(&self, norm_byte: usize) -> usize {
-        if norm_byte >= self.byte_map.len() {
-            return *self.byte_map.last().unwrap_or(&0);
-        }
-        self.byte_map[norm_byte]
-    }
-}
-
-fn is_zero_width(c: char) -> bool {
-    matches!(
-        c,
-        '\u{200B}'
-            | '\u{200C}'
-            | '\u{200D}'
-            | '\u{200E}'
-            | '\u{200F}'
-            | '\u{2060}'
-            | '\u{180E}'
-            | '\u{FEFF}'
-    )
-}
-
-fn fold_char(c: char) -> char {
-    match c {
-        // Fullwidth digits 0-9
-        '\u{FF10}'..='\u{FF19}' => char::from_u32(c as u32 - 0xFF10 + 0x30).unwrap_or(c),
-        // Arabic-Indic digits ٠-٩
-        '\u{0660}'..='\u{0669}' => char::from_u32(c as u32 - 0x0660 + 0x30).unwrap_or(c),
-        // Eastern Arabic-Indic digits ۰-۹
-        '\u{06F0}'..='\u{06F9}' => char::from_u32(c as u32 - 0x06F0 + 0x30).unwrap_or(c),
-        // Common fullwidth punctuation we care about for PII formats
-        '\u{FF0D}' => '-',
-        '\u{FF0E}' => '.',
-        '\u{FF0F}' => '/',
-        '\u{FF1A}' => ':',
-        '\u{2010}'..='\u{2015}' => '-', // various unicode hyphens/dashes
-        '\u{2212}' => '-',              // minus sign
-        other => other,
-    }
-}
+// Fullwidth / zero-width normalization used before matching. Lives in its own
+// module — see `normalize.rs`.
+mod normalize;
+use normalize::NormalizedView;
 
 // ---------- Checksum helpers ----------
 

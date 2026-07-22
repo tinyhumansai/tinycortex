@@ -75,6 +75,16 @@ fn my_number_redacted_with_keyword() {
 fn bare_12_digits_without_keyword_kept() {
     unchanged("Order 123456789012 shipped today.");
 }
+#[test]
+fn my_number_keyword_tab_separator_redacted() {
+    // `My\s?Number` accepts any single `\s`; the byte prefilter must recognise a
+    // tab-separated keyword, not just a literal space.
+    redacts("My\tNumber 123456789012", PII_MYNUM);
+}
+#[test]
+fn my_number_keyword_newline_separator_redacted() {
+    redacts("My\nNumber 123456789012", PII_MYNUM);
+}
 
 // --- E.164 + NANP phone ---
 #[test]
@@ -92,6 +102,13 @@ fn nanp_with_country_code_redacted() {
 #[test]
 fn nanp_invalid_area_code_kept() {
     unchanged("score 115-555-0123 ish");
+}
+#[test]
+fn nanp_bare_country_code_redacted() {
+    // Separator-less `1`+10-digit NANP: the old SCREEN reached PHONE_NANP_RE via
+    // the `\d{11,}` run; the prefilter must keep gating this through the phone
+    // class (the bare-CPF checksum rejects it, so nothing else redacts it).
+    redacts("12025551234", PII_PHONE);
 }
 
 // --- SSN ---
@@ -147,6 +164,12 @@ fn aadhaar_keyword_bare_redacted() {
 #[test]
 fn aadhaar_invalid_verhoeff_kept() {
     unchanged("Random 2341 2341 2345 nope");
+}
+#[test]
+fn aadhaar_formatted_newline_separator_redacted() {
+    // AADHAAR_FMT_RE separates groups with `[\s-]`; a newline-separated Aadhaar
+    // (no keyword, no dash) must still flag the formatted class in the prefilter.
+    redacts("2341\n2341\n2346", PII_AADHAAR);
 }
 
 // --- PAN-IN ---
@@ -385,4 +408,155 @@ fn redact_pii_does_not_reach_bare_10_digit_nanp_today() {
 #[test]
 fn empty_text_is_noop() {
     unchanged("");
+}
+
+// --- Byte prefilter: per-class positives (incl. non-Latin) ---
+
+/// Devanagari Aadhaar keyword must still route into the keyword-gated Aadhaar
+/// path (the `आधार` needle lives in `AADHAAR_KEYWORDS`).
+#[test]
+fn aadhaar_devanagari_keyword_redacted() {
+    redacts("आधार 234123412346", PII_AADHAAR);
+}
+
+/// Japanese My-Number keyword (kanji form) routes into the My-Number path.
+#[test]
+fn my_number_kanji_keyword_redacted() {
+    redacts("個人番号 123456789012", PII_MYNUM);
+}
+
+/// `scan_candidates` flags the right class for representative per-class inputs.
+#[test]
+fn scan_flags_expected_classes() {
+    assert!(scan_candidates("111.444.777-35").cpf_fmt);
+    assert!(scan_candidates("11.222.333/0001-81").cnpj_fmt);
+    assert!(scan_candidates("20-11111111-2").cuit);
+    assert!(scan_candidates("DE89370400440532013000").iban);
+    assert!(scan_candidates("4111111111111111").cc);
+    assert!(scan_candidates("11222333000181").cnpj_bare);
+    assert!(scan_candidates("11144477735").cpf_bare);
+    assert!(scan_candidates("2341 2341 2346").aadhaar_fmt);
+    assert!(scan_candidates("aadhaar 234123412346").aadhaar_kw);
+    assert!(scan_candidates("आधार 234123412346").aadhaar_kw);
+    assert!(scan_candidates("12345678Z").dni);
+    assert!(scan_candidates("X1234567L").nie);
+    assert!(scan_candidates("AB123456C").nino);
+    assert!(scan_candidates("123-45-6789").ssn);
+    assert!(scan_candidates("900101-1234567").rrn);
+    assert!(scan_candidates("VECJ880326XK4").rfc);
+    assert!(scan_candidates("ABCDE1234F").pan_in);
+    assert!(scan_candidates("+15551234567").phone_e164);
+    assert!(scan_candidates("415-555-0123").phone_nanp);
+    assert!(scan_candidates("マイナンバー 123456789012").mynumber);
+    assert!(scan_candidates("My Number 123456789012").mynumber);
+}
+
+/// Clean, PII-free text flags no class at all — the whole precise pass is
+/// skipped and every precise regex stays uncompiled.
+#[test]
+fn scan_clean_text_flags_nothing() {
+    for clean in [
+        "",
+        "just some ordinary words here",
+        "memory/global/preferences",
+        "the quick brown fox",
+        "https://example.com/path?q=1",
+        "snake_case_identifier_v2",
+    ] {
+        let cand = scan_candidates(clean);
+        assert!(!cand.any(), "clean text flagged a class: {clean:?}");
+    }
+}
+
+/// A bare separator-less 10-digit run must NOT flag the NANP phone class — this
+/// is what preserves the documented "bare 10-digit NANP is never reached"
+/// behavior even though the precise NANP regex would otherwise match it.
+#[test]
+fn scan_bare_10_digit_run_does_not_flag_nanp() {
+    assert!(!scan_candidates("call me at 2025551234 thanks").phone_nanp);
+}
+
+/// Parity oracle: the new byte prefilter must be a SUPERSET of the legacy
+/// `SCREEN` regex set. For every corpus input, if the old combined set would
+/// have matched the normalized text, the new per-class scan must flag at least
+/// one class — otherwise a real PII candidate would be silently dropped.
+#[test]
+fn prefilter_is_superset_of_legacy_screen() {
+    use regex::RegexSet;
+
+    // Byte-for-byte the pattern list this PR removed from `pii.rs`.
+    let legacy_screen = RegexSet::new([
+        r"\d{11,}",
+        r"\d{3}\.\d{3}\.\d{3}-\d{2}",
+        r"\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}",
+        r"\d{2}-\d{8}-\d",
+        r"(?i)[A-Z]{3,4}\d{6}",
+        r"(?:マイナンバー|個人番号|My\s?Number)",
+        r"\+\d{7}",
+        r"\(?[2-9]\d{2}\)?[\s.\-]\d{3}[\s.\-]\d{4}",
+        r"\d{3}-\d{2}-\d{4}",
+        r"\b[A-Z]{2}\d{2}[A-Z0-9]",
+        r"\d{4}[\s\-]\d{4}[\s\-]\d{4}",
+        r"(?i)aadhaar|aadhar|आधार|uidai",
+        r"(?i)[A-Z]{5}\d{4}[A-Z]",
+        r"(?i)[A-Z]{2}\d{6}[A-D]",
+        r"\b\d{8}[A-Z]\b",
+        r"(?i)[XYZ]\d{7}[A-Z]",
+        r"\d{6}-[1-4]\d{6}",
+    ])
+    .expect("legacy screen");
+
+    let corpus = [
+        // Real PII, one per class.
+        "CPF: 111.444.777-35.",
+        "Sem mascara 11144477735 ok",
+        "CNPJ 11.222.333/0001-81",
+        "contract 11222333000181 yes",
+        "CUIT 20-11111111-2",
+        "Mi RFC VECJ880326XK4 .",
+        "マイナンバー: 123456789012",
+        "個人番号 123456789012",
+        "My Number 123456789012",
+        // Whitespace-separator variants the precise regexes accept via `\s`.
+        "My\tNumber 123456789012",
+        "My\nNumber 123456789012",
+        "2341\n2341\n2346",
+        "12025551234",
+        "phone +15551234567",
+        "call 415-555-0123 thanks",
+        "+1 (212) 555-7890",
+        "ssn 123-45-6789",
+        "card 4111 1111 1111 1111 thanks",
+        "card 378282246310005 used",
+        "IBAN DE89370400440532013000 ok",
+        "Aadhaar 2341 2341 2346",
+        "Aadhaar: 234123412346",
+        "आधार 234123412346",
+        "uidai 234123412346",
+        "PAN: ABCDE1234F",
+        "NI no AB123456C",
+        "DNI 12345678Z",
+        "NIE X1234567L",
+        "주민번호 900101-1234567",
+        // Scanner-built / borderline identifiers.
+        "12025551234-1543890267@g.us:2026-05-30",
+        "+12025551234:2026-05-30",
+        "accepted:000001747729035001",
+        "screen_intelligence_vision-1747729035001-VSCode",
+        "Order 123456789012 shipped today.",
+        // Clean text (screen won't match; nothing to assert but exercises path).
+        "memory/global/preferences",
+        "the quick brown fox jumps",
+        "just some ordinary words here",
+    ];
+
+    for input in corpus {
+        let nview = NormalizedView::build(input);
+        if legacy_screen.is_match(&nview.normalized) {
+            assert!(
+                scan_candidates(&nview.normalized).any(),
+                "legacy SCREEN matched but new prefilter flagged nothing: {input:?}"
+            );
+        }
+    }
 }
