@@ -4,7 +4,7 @@ This document is a source-grounded reference for porting OpenHuman's memory
 engine into TinyCortex. It records the observed module responsibilities,
 contract types, operation boundaries, and implementation invariants from:
 
-`/Users/enamakel/work/tinyhumansai/openhuman-workflow/openhuman/src/openhuman`.
+the vendoring host's `src/openhuman/` tree.
 
 The goal is not to copy OpenHuman wholesale. TinyCortex should preserve the
 contracts and failure semantics first, then reimplement storage and workers with

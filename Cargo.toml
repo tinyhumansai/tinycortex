@@ -64,9 +64,11 @@ serde_json = "1"
 schemars = "1"
 sha2 = "0.10"
 thiserror = "2"
-# Kept in lockstep with OpenHuman's vendored TinyAgents checkout. Initialize it
-# after cloning with `git submodule update --init vendor/tinyagents`.
-tinyagents = { version = "2", path = "vendor/tinyagents" }
+# Kept in lockstep with OpenHuman's vendored TinyAgents checkout. Standalone
+# development resolves this requirement to `vendor/tinyagents` through
+# `.cargo/config.toml`; embedding hosts may supply their own crates.io patch so
+# the host and TinyCortex share one `EmbeddingModel` trait identity.
+tinyagents = "2.1"
 toml = "0.8"
 uuid = { version = "1", features = ["serde", "v4"] }
 walkdir = "2"

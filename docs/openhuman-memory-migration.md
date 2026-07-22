@@ -4,15 +4,15 @@ This repository now has a Rust crate rooted at the repository root. The first
 migration target is the memory core: stable contracts, storage primitives, and
 testable in-process behavior before API or UI integrations.
 
-TinyCortex will not own memory sync. OpenHuman owns the sync module and
-decides when data is ingested on demand. TinyCortex should assume OpenHuman
-supplies source-scoped payloads or canonical ingest requests, then process them
-through TinyCortex contracts.
+TinyCortex owns the generic sync engine and provider pipelines behind its
+optional `sync` feature. OpenHuman retains scheduling, credentials, RPC,
+source-scope/redaction policy, and event-bus publishing, and supplies those
+product concerns through the sync adapter traits.
 
 ## Source Modules
 
-Use `/Users/enamakel/work/tinyhumansai/openhuman-workflow/openhuman/src/openhuman`
-as the current source checkout unless a later branch is chosen.
+Compare against the vendoring host's `src/openhuman/` tree; do not encode a
+developer-specific absolute checkout path in migration notes.
 
 - `memory/`: orchestration for query, remember, OpenHuman-triggered ingest, and
   RPC surfaces.
