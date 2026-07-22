@@ -41,8 +41,10 @@ The memory engine now lives under `src/memory/` as cohesive modules:
   `conversations/`, `archivist/`: specialized memory surfaces.
 
 Future host adapters should keep OpenHuman's layer rule: orchestration depends
-on storage, but storage does not depend upward on orchestration. The OpenHuman
-memory sync module remains outside this crate.
+on storage, but storage does not depend upward on orchestration. Generic sync
+fetch/pagination/canonical-record mechanics live in this crate behind injected
+traits; OpenHuman retains scheduling, credentials, source policy, event-bus
+translation, RPC, and product projections.
 
 ## Migration Order
 
@@ -50,8 +52,8 @@ memory sync module remains outside this crate.
 2. Port content and chunk storage behind the `MemoryStore` contract.
 3. Port tree IO and bucket-seal mechanics with storage injected by traits.
 4. Port queue workers only after persistence and deterministic drain tests exist.
-5. Add OpenHuman-facing on-demand ingest adapters; do not port the live sync
-   scheduler into TinyCortex.
+5. Add OpenHuman-facing ingest and sync adapters; keep the live scheduler in
+   OpenHuman.
 
 ## Port Status
 
@@ -79,9 +81,10 @@ are the current validation gates).
 | `conversations` | `memory_conversations` | JSONL transcript store, inverted index, persistence bus. |
 | `archivist` | `memory_archivist` | Conversation turns → one tree leaf (tool-JSON stripped). Tree-leaf sink injected. |
 
-Per the ownership boundary, the live sync runner, OAuth/webhook callbacks, and
-real LLM/embedding/network backends remain host-owned (OpenHuman) and are
-represented here as injectable traits. Known follow-ups: consolidate legacy
+Per the ownership boundary, the live sync scheduler, OAuth/webhook callbacks,
+credentials, and real LLM/embedding/network backends remain host-owned
+(OpenHuman) and are represented here as injectable traits. Generic provider
+pipelines and workspace reconciliation are crate-owned. Known follow-ups: consolidate legacy
 `score::store` entity-index helpers around `store::entity_index`; restore the
 deferred peripheral surfaces (tree `health`/`nlp`, retrieval RPC/fast paths,
 obsidian/wiki-git content, controller/tool registries) as host adapters land.

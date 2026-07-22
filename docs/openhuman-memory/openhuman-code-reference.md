@@ -733,8 +733,8 @@ and wire-stable types for future adapters.
 3. Port goals, tool memory, entities, graph edges, and source validation first.
 4. Add storage traits around namespace documents, chunks, trees, vectors, KV,
    and archive records.
-5. Implement source reader shapes and optional sync adapters behind the
-   `SyncPipeline` trait; keep the live sync runner in OpenHuman.
+5. Implement source reader shapes and provider pipelines behind sync traits;
+   keep scheduling, credentials, policy, and product events in OpenHuman.
 6. Implement tree registry and tree IO before queue workers.
 7. Add queue dedupe keys, status transitions, and deferred outcomes.
 8. Add diff snapshots/checkpoints as a separate ledger.
