@@ -23,13 +23,24 @@ use serde::{Deserialize, Serialize};
 use super::{normalize_source_ref, CanonicalisedSource};
 use crate::memory::chunks::{Metadata, SourceKind};
 
+/// Returns the current UTC time as a timestamp default. Used by serde
+/// `#[serde(default = …)]` so a payload missing the `timestamp` field
+/// doesn't reject the entire batch — it falls back to `now()`.
+fn chrono_now() -> DateTime<Utc> {
+    Utc::now()
+}
+
 /// One chat message in a channel/group.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChatMessage {
     /// Author display name or id.
     pub author: String,
     /// When the message was sent (epoch-ms integer or RFC 3339 string).
+    /// When absent from the payload, defaults to `Utc::now()` so that
+    /// clients that omit the field (version skew / third-party integration)
+    /// do not cause a hard rejection.
     #[serde(
+        default = "chrono_now",
         serialize_with = "chrono::serde::ts_milliseconds::serialize",
         deserialize_with = "super::deserialize_flexible_timestamp"
     )]

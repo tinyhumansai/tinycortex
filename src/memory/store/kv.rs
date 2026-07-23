@@ -118,14 +118,26 @@ impl KvStore {
 
     /// Insert or update a global key-value pair.
     ///
-    /// Returns `Err` when the key looks like a secret or personal identifier.
+    /// Returns `Err` when the key looks like a secret. PII-like keys are
+    /// auto-sanitized rather than rejected (see #5164).
     pub fn set_global(&self, key: &str, value: &Value) -> Result<(), String> {
         if safety::has_likely_secret(key) {
             return Err("kv key cannot contain secrets".to_string());
         }
-        if safety::has_likely_email(key) || safety::has_likely_pii(key) {
-            return Err("kv key cannot contain personal identifiers".to_string());
-        }
+
+        // Auto-sanitize PII from the key rather than rejecting (see #5164).
+        // This prevents unthrottled retry loops when caller-generated keys
+        // happen to contain structured personal identifiers (CPF, SSN, RFC).
+        let key = if safety::has_likely_email(key) || safety::has_likely_pii(key) {
+            let sanitized = safety::pii::redact_pii(key);
+            log::info!(
+                "[kv:safety] set_global auto-sanitized PII from key original_len_chars={}",
+                key.chars().count()
+            );
+            sanitized.value
+        } else {
+            key.to_string()
+        };
 
         let sanitized = safety::sanitize_json(value);
         let conn = self.conn.lock();
@@ -163,13 +175,33 @@ impl KvStore {
         if safety::has_likely_secret(namespace) || safety::has_likely_secret(key) {
             return Err("kv namespace/key cannot contain secrets".to_string());
         }
-        if safety::has_likely_email(namespace)
-            || safety::has_likely_email(key)
+
+        // Auto-sanitize PII/email from namespace and key rather than rejecting
+        // (see #5164). This prevents unthrottled retry loops when caller-generated
+        // identifiers contain structured personal identifiers (CPF, SSN, RFC).
+        let namespace = if safety::has_likely_email(namespace)
             || safety::has_likely_pii(namespace)
-            || safety::has_likely_pii(key)
         {
-            return Err("kv namespace/key cannot contain personal identifiers".to_string());
-        }
+            let sanitized = safety::pii::redact_pii(namespace);
+            log::info!(
+                "[kv:safety] set_namespace auto-sanitized PII from namespace original_len_chars={}",
+                namespace.chars().count()
+            );
+            sanitized.value
+        } else {
+            namespace.to_string()
+        };
+
+        let key = if safety::has_likely_email(key) || safety::has_likely_pii(key) {
+            let sanitized = safety::pii::redact_pii(key);
+            log::info!(
+                "[kv:safety] set_namespace auto-sanitized PII from key original_len_chars={}",
+                key.chars().count()
+            );
+            sanitized.value
+        } else {
+            key.to_string()
+        };
 
         let sanitized = safety::sanitize_json(value);
         let conn = self.conn.lock();
@@ -178,7 +210,7 @@ impl KvStore {
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(namespace, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
             params![
-                Self::sanitize_namespace(namespace),
+                Self::sanitize_namespace(&namespace),
                 key,
                 sanitized.value.to_string(),
                 Self::now_ts()

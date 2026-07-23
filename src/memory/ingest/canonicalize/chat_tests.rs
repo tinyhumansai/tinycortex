@@ -169,6 +169,39 @@ fn timestamp_epoch_seconds_are_rejected_instead_of_treated_as_millis() {
     }
 }
 
+/// Regression #5169: a payload with no `timestamp` field must deserialize
+/// gracefully (defaulting to `Utc::now()`) instead of failing with "missing
+/// field `timestamp`".
+#[test]
+fn missing_timestamp_defaults_to_now() {
+    let json = r#"{
+        "author": "alice",
+        "text": "hello"
+    }"#;
+    let msg: ChatMessage = serde_json::from_str(json).expect("missing timestamp should not fail");
+    let diff = Utc::now().signed_duration_since(msg.timestamp);
+    assert!(
+        diff.num_seconds().unsigned_abs() < 5,
+        "defaulted timestamp should be within ~5s of now, got {diff:?}"
+    );
+}
+
+/// Regression #5169: null timestamp should also fall back to the default.
+#[test]
+fn null_timestamp_defaults_to_now() {
+    let json = r#"{
+        "author": "alice",
+        "timestamp": null,
+        "text": "hello"
+    }"#;
+    let msg: ChatMessage = serde_json::from_str(json).expect("null timestamp should not fail");
+    let diff = Utc::now().signed_duration_since(msg.timestamp);
+    assert!(
+        diff.num_seconds().unsigned_abs() < 5,
+        "defaulted timestamp should be within ~5s of now, got {diff:?}"
+    );
+}
+
 #[test]
 fn message_content_cannot_inject_chat_boundaries() {
     let batch = ChatBatch {
