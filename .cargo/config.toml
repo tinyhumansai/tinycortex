@@ -1,0 +1,5 @@
+[patch.crates-io]
+# Keep standalone TinyCortex builds offline-friendly and pinned to the nested
+# submodule. Embedding hosts ignore this config and may patch the same registry
+# requirement to their own TinyAgents checkout.
+tinyagents = { path = "vendor/tinyagents" }

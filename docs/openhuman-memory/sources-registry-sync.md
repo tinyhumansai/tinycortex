@@ -191,5 +191,5 @@ src/memory/ingest/canonicalize/
 
 Port order: source kind/types/validation, registry patch semantics, reader
 trait and static reader contracts, canonicalizer pure functions, then
-OpenHuman-facing on-demand ingest adapters. Do not port the live sync scheduler
-into TinyCortex.
+OpenHuman-facing ingest and sync adapters. The provider pipeline is crate-owned;
+the live scheduler, credentials, policy, and product events stay in OpenHuman.
