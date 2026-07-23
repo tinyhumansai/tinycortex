@@ -39,6 +39,7 @@ where
     enum RawTs {
         Millis(i64),
         Text(String),
+        Null,
     }
 
     fn epoch_millis<E: serde::de::Error>(ms: i64) -> Result<DateTime<Utc>, E> {
@@ -58,6 +59,7 @@ where
 
     let raw = RawTs::deserialize(deserializer)?;
     match raw {
+        RawTs::Null => Ok(Utc::now()),
         RawTs::Millis(ms) => epoch_millis(ms),
         RawTs::Text(s) => {
             if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {

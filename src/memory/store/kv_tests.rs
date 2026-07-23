@@ -99,10 +99,23 @@ fn kv_rejects_secret_like_keys() {
 }
 
 #[test]
-fn kv_rejects_pii_like_keys() {
+fn kv_auto_sanitizes_pii_like_keys() {
     let kv = store();
-    let err = kv.set_global("alice@example.com", &json!("v")).unwrap_err();
-    assert!(err.contains("personal identifiers"));
+    // Email key: should auto-sanitize instead of rejecting.
+    kv.set_global("alice@example.com", &json!("v")).unwrap();
+
+    // SSN key: should auto-sanitize instead of rejecting.
+    kv.set_namespace("safe", "ssn-123-45-6789", &json!("v"))
+        .unwrap();
+
+    // The PII-redacted keys should be stored, not the originals.
+    let global_records = kv.records_global().unwrap();
+    let ns_records = kv.records_namespace("safe").unwrap();
+    assert_eq!(global_records.len(), 1);
+    assert_eq!(ns_records.len(), 1);
+    // The stored key should contain a redaction token.
+    assert!(global_records[0].key.contains("REDACTED"));
+    assert!(ns_records[0].key.contains("REDACTED"));
 }
 
 #[test]
