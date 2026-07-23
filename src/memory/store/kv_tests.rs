@@ -101,11 +101,11 @@ fn kv_rejects_secret_like_keys() {
 #[test]
 fn kv_auto_sanitizes_pii_like_keys() {
     let kv = store();
-    // Email key: should auto-sanitize instead of rejecting.
-    kv.set_global("alice@example.com", &json!("v")).unwrap();
-
     // SSN key: should auto-sanitize instead of rejecting.
-    kv.set_namespace("safe", "ssn-123-45-6789", &json!("v"))
+    kv.set_global("ssn-123-45-6789", &json!("v")).unwrap();
+
+    // CPF key in namespace: should auto-sanitize instead of rejecting.
+    kv.set_namespace("safe", "cpf-111.444.777-35", &json!("v"))
         .unwrap();
 
     // The PII-redacted keys should be stored, not the originals.

@@ -128,7 +128,10 @@ impl KvStore {
         // Auto-sanitize PII from the key rather than rejecting (see #5164).
         // This prevents unthrottled retry loops when caller-generated keys
         // happen to contain structured personal identifiers (CPF, SSN, RFC).
-        let key = if safety::has_likely_email(key) || safety::has_likely_pii(key) {
+        // Email addresses are not redacted (intentionally excluded from the
+        // PII redactor) — they are let through as-is, consistent with the
+        // document upsert path.
+        let key = if safety::has_likely_pii(key) {
             let sanitized = safety::pii::redact_pii(key);
             log::info!(
                 "[kv:safety] set_global auto-sanitized PII from key original_len_chars={}",
@@ -179,9 +182,9 @@ impl KvStore {
         // Auto-sanitize PII/email from namespace and key rather than rejecting
         // (see #5164). This prevents unthrottled retry loops when caller-generated
         // identifiers contain structured personal identifiers (CPF, SSN, RFC).
-        let namespace = if safety::has_likely_email(namespace)
-            || safety::has_likely_pii(namespace)
-        {
+        // Email addresses are not redacted (intentionally excluded from
+        // redact_pii) — they are let through as-is.
+        let namespace = if safety::has_likely_pii(namespace) {
             let sanitized = safety::pii::redact_pii(namespace);
             log::info!(
                 "[kv:safety] set_namespace auto-sanitized PII from namespace original_len_chars={}",
@@ -192,7 +195,7 @@ impl KvStore {
             namespace.to_string()
         };
 
-        let key = if safety::has_likely_email(key) || safety::has_likely_pii(key) {
+        let key = if safety::has_likely_pii(key) {
             let sanitized = safety::pii::redact_pii(key);
             log::info!(
                 "[kv:safety] set_namespace auto-sanitized PII from key original_len_chars={}",
