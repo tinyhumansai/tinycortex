@@ -10,7 +10,7 @@ owns the sync module and decides when data is ingested on demand. These specs
 describe the contracts TinyCortex exposes after OpenHuman supplies source data.
 
 Source checkout used for this pass:
-`/Users/enamakel/work/tinyhumansai/openhuman-workflow/openhuman/src/openhuman`.
+the vendoring host's `src/openhuman/` tree.
 
 ## Documents
 

@@ -66,6 +66,8 @@ jobs:
             flags: --no-default-features --features git-diff
           - name: sync
             flags: --no-default-features --features sync
+          - name: persona
+            flags: --no-default-features --features persona
           - name: all features
             flags: --all-features
     steps:

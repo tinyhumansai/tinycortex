@@ -2,7 +2,7 @@
 
 This document captures the OpenHuman memory engine as the target functional
 specification for TinyCortex. It is source-derived from
-`/Users/enamakel/work/tinyhumansai/openhuman-workflow/openhuman/src/openhuman`.
+the vendoring host's `src/openhuman/` tree.
 
 ## Scope
 

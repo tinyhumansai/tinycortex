@@ -4,15 +4,15 @@ This repository now has a Rust crate rooted at the repository root. The first
 migration target is the memory core: stable contracts, storage primitives, and
 testable in-process behavior before API or UI integrations.
 
-TinyCortex will not own memory sync. OpenHuman owns the sync module and
-decides when data is ingested on demand. TinyCortex should assume OpenHuman
-supplies source-scoped payloads or canonical ingest requests, then process them
-through TinyCortex contracts.
+TinyCortex owns the generic sync engine and provider pipelines behind its
+optional `sync` feature. OpenHuman retains scheduling, credentials, RPC,
+source-scope/redaction policy, and event-bus publishing, and supplies those
+product concerns through the sync adapter traits.
 
 ## Source Modules
 
-Use `/Users/enamakel/work/tinyhumansai/openhuman-workflow/openhuman/src/openhuman`
-as the current source checkout unless a later branch is chosen.
+Compare against the vendoring host's `src/openhuman/` tree; do not encode a
+developer-specific absolute checkout path in migration notes.
 
 - `memory/`: orchestration for query, remember, OpenHuman-triggered ingest, and
   RPC surfaces.
@@ -41,8 +41,10 @@ The memory engine now lives under `src/memory/` as cohesive modules:
   `conversations/`, `archivist/`: specialized memory surfaces.
 
 Future host adapters should keep OpenHuman's layer rule: orchestration depends
-on storage, but storage does not depend upward on orchestration. The OpenHuman
-memory sync module remains outside this crate.
+on storage, but storage does not depend upward on orchestration. Generic sync
+fetch/pagination/canonical-record mechanics live in this crate behind injected
+traits; OpenHuman retains scheduling, credentials, source policy, event-bus
+translation, RPC, and product projections.
 
 ## Migration Order
 
@@ -50,8 +52,8 @@ memory sync module remains outside this crate.
 2. Port content and chunk storage behind the `MemoryStore` contract.
 3. Port tree IO and bucket-seal mechanics with storage injected by traits.
 4. Port queue workers only after persistence and deterministic drain tests exist.
-5. Add OpenHuman-facing on-demand ingest adapters; do not port the live sync
-   scheduler into TinyCortex.
+5. Add OpenHuman-facing ingest and sync adapters; keep the live scheduler in
+   OpenHuman.
 
 ## Port Status
 
@@ -79,9 +81,10 @@ are the current validation gates).
 | `conversations` | `memory_conversations` | JSONL transcript store, inverted index, persistence bus. |
 | `archivist` | `memory_archivist` | Conversation turns → one tree leaf (tool-JSON stripped). Tree-leaf sink injected. |
 
-Per the ownership boundary, the live sync runner, OAuth/webhook callbacks, and
-real LLM/embedding/network backends remain host-owned (OpenHuman) and are
-represented here as injectable traits. Known follow-ups: consolidate legacy
+Per the ownership boundary, the live sync scheduler, OAuth/webhook callbacks,
+credentials, and real LLM/embedding/network backends remain host-owned
+(OpenHuman) and are represented here as injectable traits. Generic provider
+pipelines and workspace reconciliation are crate-owned. Known follow-ups: consolidate legacy
 `score::store` entity-index helpers around `store::entity_index`; restore the
 deferred peripheral surfaces (tree `health`/`nlp`, retrieval RPC/fast paths,
 obsidian/wiki-git content, controller/tool registries) as host adapters land.
