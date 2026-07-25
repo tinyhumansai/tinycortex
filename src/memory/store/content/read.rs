@@ -161,7 +161,7 @@ fn read_legacy_chunk_preview(config: &MemoryConfig, chunk_id: &str) -> anyhow::R
         anyhow::bail!("no content pointer or raw refs for chunk {chunk_id}");
     };
     if chunk.content.is_empty() {
-        anyhow::bail!("empty content pointer and no raw refs for chunk {chunk_id}");
+        anyhow::bail!("legacy chunk content empty for chunk {chunk_id}");
     }
     Ok(chunk.content)
 }

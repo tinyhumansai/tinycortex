@@ -4,10 +4,10 @@ This repository now has a Rust crate rooted at the repository root. The first
 migration target is the memory core: stable contracts, storage primitives, and
 testable in-process behavior before API or UI integrations.
 
-TinyCortex owns the generic sync engine and provider pipelines behind its
-optional `sync` feature. OpenHuman retains scheduling, credentials, RPC,
-source-scope/redaction policy, and event-bus publishing, and supplies those
-product concerns through the sync adapter traits.
+TinyCortex owns reusable provider fetch, pagination, and canonicalization
+pipeline mechanics behind its optional `sync` feature and injected traits.
+OpenHuman owns the live sync runner, credentials, scheduling, source policy,
+callbacks, RPC, product events, and projections.
 
 ## Source Modules
 
@@ -41,10 +41,10 @@ The memory engine now lives under `src/memory/` as cohesive modules:
   `conversations/`, `archivist/`: specialized memory surfaces.
 
 Future host adapters should keep OpenHuman's layer rule: orchestration depends
-on storage, but storage does not depend upward on orchestration. Generic sync
-fetch/pagination/canonical-record mechanics live in this crate behind injected
-traits; OpenHuman retains scheduling, credentials, source policy, event-bus
-translation, RPC, and product projections.
+on storage, but storage does not depend upward on orchestration. Reusable sync
+fetch, pagination, and canonical-record mechanics live in this crate behind
+injected traits; OpenHuman retains the live runner, scheduling, credentials,
+callbacks, source policy, event-bus translation, RPC, and product projections.
 
 ## Migration Order
 
@@ -81,10 +81,12 @@ are the current validation gates).
 | `conversations` | `memory_conversations` | JSONL transcript store, inverted index, persistence bus. |
 | `archivist` | `memory_archivist` | Conversation turns → one tree leaf (tool-JSON stripped). Tree-leaf sink injected. |
 
-Per the ownership boundary, the live sync scheduler, OAuth/webhook callbacks,
-credentials, and real LLM/embedding/network backends remain host-owned
-(OpenHuman) and are represented here as injectable traits. Generic provider
-pipelines and workspace reconciliation are crate-owned. Known follow-ups: consolidate legacy
-`score::store` entity-index helpers around `store::entity_index`; restore the
-deferred peripheral surfaces (tree `health`/`nlp`, retrieval RPC/fast paths,
-obsidian/wiki-git content, controller/tool registries) as host adapters land.
+Per the ownership boundary, the live sync runner, OAuth/webhook callbacks,
+credentials, scheduling, policy, RPC, product events, and real
+LLM/embedding/network backends remain host-owned (OpenHuman) and are represented
+here as injectable traits. Reusable provider fetch, pagination, and
+canonicalization pipeline mechanics are crate-owned. Known follow-ups:
+consolidate legacy `score::store` entity-index helpers around
+`store::entity_index`; restore the deferred peripheral surfaces (tree
+`health`/`nlp`, retrieval RPC/fast paths, obsidian/wiki-git content,
+controller/tool registries) as host adapters land.
