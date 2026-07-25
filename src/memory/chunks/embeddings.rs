@@ -67,6 +67,11 @@ fn upsert_chunk_embedding_conn(
                 created_at = excluded.created_at",
         rusqlite::params![chunk_id, model_signature, bytes, dim, created_at],
     )?;
+    conn.execute(
+        "DELETE FROM mem_tree_chunk_reembed_skipped
+          WHERE chunk_id = ?1 AND model_signature = ?2",
+        rusqlite::params![chunk_id, model_signature],
+    )?;
     Ok(())
 }
 
@@ -385,7 +390,9 @@ pub fn has_uncovered_reembed_work(
               WHERE NOT EXISTS (SELECT 1 FROM mem_tree_chunk_embeddings e
                                  WHERE e.chunk_id = c.id AND e.model_signature = ?1)
                 AND NOT EXISTS (SELECT 1 FROM mem_tree_chunk_reembed_skipped sk
-                                 WHERE sk.chunk_id = c.id AND sk.model_signature = ?1))
+                                 WHERE sk.chunk_id = c.id AND sk.model_signature = ?1
+                                   AND sk.reason NOT LIKE 'body read failed: no content pointer or raw refs for chunk %'
+                                   AND sk.reason NOT LIKE 'body read failed: empty content pointer and no raw refs for chunk %'))
            OR EXISTS(
              SELECT 1 FROM mem_tree_summaries s
               WHERE s.deleted = 0

@@ -8,8 +8,9 @@ use std::path::{Component, Path, PathBuf};
 use super::atomic::sha256_hex;
 use super::compose::split_front_matter;
 use crate::memory::chunks::{
-    content_root, get_chunk_content_pointers, get_chunk_raw_refs, get_summary_content_pointers,
-    update_chunk_content_sha256, update_summary_content_sha256, RawRef,
+    content_root, get_chunk, get_chunk_content_pointers, get_chunk_raw_refs,
+    get_summary_content_pointers, update_chunk_content_sha256, update_summary_content_sha256,
+    RawRef,
 };
 use crate::memory::config::MemoryConfig;
 
@@ -136,10 +137,11 @@ pub fn read_chunk_body(config: &MemoryConfig, chunk_id: &str) -> anyhow::Result<
         }
     }
 
-    let (rel_path, expected_sha256) = get_chunk_content_pointers(config, chunk_id)?
-        .ok_or_else(|| anyhow::anyhow!("no content pointer or raw refs for chunk {chunk_id}"))?;
+    let Some((rel_path, expected_sha256)) = get_chunk_content_pointers(config, chunk_id)? else {
+        return read_legacy_chunk_preview(config, chunk_id);
+    };
     if rel_path.is_empty() {
-        anyhow::bail!("empty content pointer and no raw refs for chunk {chunk_id}");
+        return read_legacy_chunk_preview(config, chunk_id);
     }
     let abs_path = resolve_within_content_root(&content_root(config), &rel_path)?;
     let result = read_chunk_file(&abs_path)?;
@@ -152,6 +154,16 @@ pub fn read_chunk_body(config: &MemoryConfig, chunk_id: &str) -> anyhow::Result<
         }
     }
     Ok(result.body)
+}
+
+fn read_legacy_chunk_preview(config: &MemoryConfig, chunk_id: &str) -> anyhow::Result<String> {
+    let Some(chunk) = get_chunk(config, chunk_id)? else {
+        anyhow::bail!("no content pointer or raw refs for chunk {chunk_id}");
+    };
+    if chunk.content.is_empty() {
+        anyhow::bail!("empty content pointer and no raw refs for chunk {chunk_id}");
+    }
+    Ok(chunk.content)
 }
 
 fn read_chunk_body_from_raw(config: &MemoryConfig, refs: &[RawRef]) -> anyhow::Result<String> {
