@@ -5,8 +5,10 @@ specifications for the TinyCortex migration. Each document captures the
 observed OpenHuman contract, the required data attributes, invariants, and the
 recommended TinyCortex landing area.
 
-Boundary: TinyCortex does not own memory sync. The OpenHuman application
-owns the sync module and decides when data is ingested on demand. These specs
+Boundary: TinyCortex owns reusable provider fetch, pagination, and
+canonicalization pipeline mechanics behind injected traits. OpenHuman owns the
+live sync runner, credentials, scheduling, source policy, callbacks, RPC,
+product events, and decides when data is ingested on demand. These specs
 describe the contracts TinyCortex exposes after OpenHuman supplies source data.
 
 Source checkout used for this pass:

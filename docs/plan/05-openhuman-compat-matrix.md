@@ -71,10 +71,11 @@ kind fields + sync budgets `types.rs:68-146`; discriminator validation
       reconciliation with `source_kind = raw_file` so interrupted syncs don't
       strand raw files (spec: sources-registry-sync.md §Raw Archive Coverage).
 
-Generic Composio provider fetch/pagination pipelines are crate-owned behind
-injected network and persistence traits. Provider credentials, the scheduler,
-source policy, RPC, events, and non-Composio product integrations remain
-host-owned. **Do not port the live sync scheduler.**
+Generic provider fetch, pagination, and canonicalization pipeline mechanics are
+crate-owned behind injected network and persistence traits. Provider
+credentials, the live sync runner, scheduling, callbacks, source policy, RPC,
+events, and non-Composio product integrations remain host-owned. **Do not port
+the live sync scheduler.**
 
 ---
 

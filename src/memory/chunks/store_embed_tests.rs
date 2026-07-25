@@ -366,6 +366,54 @@ fn legacy_body_read_skip_does_not_hide_reembed_work() {
 }
 
 #[test]
+fn legacy_empty_pointer_skip_does_not_hide_reembed_work() {
+    let (_tmp, cfg) = test_config();
+    let c = sample_chunk("persona/communication", 0, 1_700_000_000_000);
+    upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap();
+    let sig = "bge-m3@1024";
+    mark_chunk_reembed_skipped(
+        &cfg,
+        &c.id,
+        sig,
+        &format!(
+            "body read failed: empty content pointer and no raw refs for chunk {}",
+            c.id
+        ),
+    )
+    .unwrap();
+
+    with_connection(&cfg, |conn| {
+        assert!(has_uncovered_reembed_work(conn, sig)?);
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn empty_legacy_content_skip_hides_reembed_work() {
+    let (_tmp, cfg) = test_config();
+    let c = sample_chunk("persona/communication", 0, 1_700_000_000_000);
+    upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap();
+    let sig = "bge-m3@1024";
+    mark_chunk_reembed_skipped(
+        &cfg,
+        &c.id,
+        sig,
+        &format!(
+            "body read failed: legacy chunk content empty for chunk {}",
+            c.id
+        ),
+    )
+    .unwrap();
+
+    with_connection(&cfg, |conn| {
+        assert!(!has_uncovered_reembed_work(conn, sig)?);
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
 fn non_legacy_skip_still_hides_reembed_work() {
     let (_tmp, cfg) = test_config();
     let c = sample_chunk("persona/communication", 0, 1_700_000_000_000);

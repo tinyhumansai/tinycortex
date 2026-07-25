@@ -210,6 +210,22 @@ fn high_level_chunk_reader_falls_back_to_legacy_content_column() {
 }
 
 #[test]
+fn high_level_chunk_reader_empty_legacy_content_uses_terminal_error() {
+    let dir = TempDir::new().unwrap();
+    let config = crate::memory::MemoryConfig::new(dir.path());
+    let mut chunk = sample_chunk();
+    chunk.content.clear();
+    crate::memory::chunks::upsert_chunks(&config, std::slice::from_ref(&chunk)).unwrap();
+
+    let err = read_chunk_body(&config, &chunk.id).unwrap_err();
+
+    assert_eq!(
+        err.to_string(),
+        format!("legacy chunk content empty for chunk {}", chunk.id)
+    );
+}
+
+#[test]
 fn high_level_chunk_reader_joins_clamped_raw_references() {
     let dir = TempDir::new().unwrap();
     let mut config = crate::memory::MemoryConfig::new(dir.path());
