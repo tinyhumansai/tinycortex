@@ -19,9 +19,10 @@ use super::{
     clear_summary_reembed_skipped, content_root, count_chunks, db_path_for, delete_chunks_by_owner,
     delete_chunks_by_source, extraction_coverage, get_chunk, get_chunk_embedding,
     get_chunk_embedding_for_signature, get_chunk_embeddings_for_signature_batch, get_chunks_batch,
-    is_source_ingested, list_chunks, mark_chunk_reembed_skipped, mark_summary_reembed_skipped,
-    set_chunk_embedding, set_chunk_embedding_for_signature, tree_active_signature, upsert_chunks,
-    ListChunksQuery, DB_DIR, GLOBAL_TOPIC_PURGE_MIGRATION_VERSION,
+    has_uncovered_reembed_work, is_source_ingested, list_chunks, mark_chunk_reembed_skipped,
+    mark_summary_reembed_skipped, set_chunk_embedding, set_chunk_embedding_for_signature,
+    tree_active_signature, upsert_chunks, ListChunksQuery, DB_DIR,
+    GLOBAL_TOPIC_PURGE_MIGRATION_VERSION,
 };
 use crate::memory::config::MemoryConfig;
 use crate::memory::tree::store::{
@@ -69,6 +70,28 @@ fn clear_chunk_reembed_skipped_is_idempotent() {
     mark_chunk_reembed_skipped(&cfg, &c.id, &sig, "test orphan").unwrap();
     clear_chunk_reembed_skipped(&cfg, &c.id, &sig).unwrap();
     clear_chunk_reembed_skipped(&cfg, &c.id, &sig).unwrap();
+    let count: i64 = with_connection(&cfg, |conn| {
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM mem_tree_chunk_reembed_skipped
+              WHERE chunk_id = ?1 AND model_signature = ?2",
+            params![c.id, sig],
+            |r| r.get(0),
+        )?)
+    })
+    .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn setting_chunk_embedding_clears_matching_skip_marker() {
+    let (_tmp, cfg) = test_config();
+    let c = sample_chunk("slack:#eng", 0, 1_700_000_000_000);
+    upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap();
+    let sig = tree_active_signature(&cfg);
+    mark_chunk_reembed_skipped(&cfg, &c.id, &sig, "body read failed: no content pointer").unwrap();
+
+    set_chunk_embedding_for_signature(&cfg, &c.id, &sig, &[0.1, 0.2]).unwrap();
+
     let count: i64 = with_connection(&cfg, |conn| {
         Ok(conn.query_row(
             "SELECT COUNT(*) FROM mem_tree_chunk_reembed_skipped
@@ -316,6 +339,45 @@ fn batch_embedding_lookup_unknown_ids_absent_from_map() {
     let map = get_chunk_embeddings_for_signature_batch(&cfg, &ids, sig).unwrap();
     assert_eq!(map.len(), 1);
     assert_eq!(map.get(&c.id).cloned(), Some(vec![0.1]));
+}
+
+#[test]
+fn legacy_body_read_skip_does_not_hide_reembed_work() {
+    let (_tmp, cfg) = test_config();
+    let c = sample_chunk("persona/communication", 0, 1_700_000_000_000);
+    upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap();
+    let sig = "bge-m3@1024";
+    mark_chunk_reembed_skipped(
+        &cfg,
+        &c.id,
+        sig,
+        &format!(
+            "body read failed: no content pointer or raw refs for chunk {}",
+            c.id
+        ),
+    )
+    .unwrap();
+
+    with_connection(&cfg, |conn| {
+        assert!(has_uncovered_reembed_work(conn, sig)?);
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn non_legacy_skip_still_hides_reembed_work() {
+    let (_tmp, cfg) = test_config();
+    let c = sample_chunk("persona/communication", 0, 1_700_000_000_000);
+    upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap();
+    let sig = "bge-m3@1024";
+    mark_chunk_reembed_skipped(&cfg, &c.id, sig, "embed failed: provider rejected input").unwrap();
+
+    with_connection(&cfg, |conn| {
+        assert!(!has_uncovered_reembed_work(conn, sig)?);
+        Ok(())
+    })
+    .unwrap();
 }
 
 #[test]
