@@ -208,7 +208,7 @@ fn resolve_local(
     let mut hits = Vec::new();
     for (id, _) in ordered {
         if let Some(mut hit) = by_id.remove(&id) {
-            if source_scope.is_some_and(|scope| !scope.contains(&hit.tree_scope)) {
+            if source_scope.is_some_and(|scope| !source_scope_allows(scope, &hit.tree_scope)) {
                 continue;
             }
             hit.score = coverage.get(&id).copied().unwrap_or_default();
@@ -239,7 +239,9 @@ async fn dense(
     )
     .await?;
     if let Some(scope) = source_scope {
-        response.hits.retain(|hit| scope.contains(&hit.tree_scope));
+        response
+            .hits
+            .retain(|hit| source_scope_allows(scope, &hit.tree_scope));
     }
     let total = response.hits.len();
     response.hits.truncate(limit);
@@ -280,6 +282,19 @@ async fn global_occurrence(
 fn dedup_ids(ids: impl Iterator<Item = String>) -> Vec<String> {
     let mut seen = HashSet::new();
     ids.filter(|id| seen.insert(id.clone())).collect()
+}
+
+fn source_scope_allows(scope: &HashSet<String>, tree_scope: &str) -> bool {
+    if scope.contains(tree_scope) {
+        return true;
+    }
+    extract_mem_src_id(tree_scope).is_some_and(|id| scope.contains(id))
+}
+
+fn extract_mem_src_id(value: &str) -> Option<&str> {
+    let rest = value.strip_prefix("mem_src:")?;
+    let (id, _) = rest.split_once(':')?;
+    (!id.is_empty()).then_some(id)
 }
 
 #[cfg(test)]
