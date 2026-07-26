@@ -236,6 +236,9 @@ fn scope_matches_kind(scope: &str, kind_prefix: &str) -> bool {
     if lower.starts_with(&format!("{kind_prefix}:")) {
         return true;
     }
+    if kind_prefix == SourceKind::Document.as_str() && lower.starts_with("mem_src:") {
+        return true;
+    }
     PLATFORM_KINDS
         .iter()
         .any(|(platform, kind)| *kind == kind_prefix && lower.starts_with(&format!("{platform}:")))
