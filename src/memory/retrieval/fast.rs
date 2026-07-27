@@ -288,13 +288,40 @@ fn source_scope_allows(scope: &HashSet<String>, tree_scope: &str) -> bool {
     if scope.contains(tree_scope) {
         return true;
     }
-    extract_mem_src_id(tree_scope).is_some_and(|id| scope.contains(id))
+    // Caller scopes are source selectors: either the exact tree scope, a bare
+    // source id such as `src-folder-9`, or the collection prefix
+    // `mem_src:src-folder-9`. Per-file trees store the full
+    // `mem_src:<source_id>:<path>` scope, so extract the collection source id
+    // before applying source-level filtering.
+    let Some(id) = extract_mem_src_id(tree_scope) else {
+        return false;
+    };
+    scope.contains(id)
+        || scope
+            .iter()
+            .any(|allowed| mem_src_scope_selects_id(allowed, id))
 }
 
 fn extract_mem_src_id(value: &str) -> Option<&str> {
-    let rest = value.strip_prefix("mem_src:")?;
+    let prefix = value.get(..8)?;
+    if !prefix.eq_ignore_ascii_case("mem_src:") {
+        return None;
+    }
+    let rest = &value[8..];
     let (id, _) = rest.split_once(':')?;
     (!id.is_empty()).then_some(id)
+}
+
+fn mem_src_scope_selects_id(value: &str, expected_id: &str) -> bool {
+    let Some(prefix) = value.get(..8) else {
+        return false;
+    };
+    if !prefix.eq_ignore_ascii_case("mem_src:") {
+        return false;
+    }
+    let rest = &value[8..];
+    let id = rest.split_once(':').map_or(rest, |(id, _)| id);
+    !id.is_empty() && id == expected_id
 }
 
 #[cfg(test)]

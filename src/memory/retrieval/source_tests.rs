@@ -199,6 +199,10 @@ fn scope_prefix_matching_known_platforms() {
         "mem_src:src-folder-9:Slides_Notes/example.md",
         "document"
     ));
+    assert!(scope_matches_kind(
+        "Mem_Src:src-folder-9:Slides_Notes/example.md",
+        "document"
+    ));
     assert!(!scope_matches_kind("slack:#eng", "email"));
     assert!(scope_matches_kind("chat:custom", "chat"));
 }
