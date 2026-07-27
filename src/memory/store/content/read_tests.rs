@@ -221,7 +221,7 @@ fn high_level_chunk_reader_empty_legacy_content_uses_terminal_error() {
 
     assert_eq!(
         err.to_string(),
-        format!("legacy chunk content empty for chunk {}", chunk.id)
+        format!("{LEGACY_EMPTY_CHUNK_CONTENT_REASON_PREFIX}{}", chunk.id)
     );
 }
 

@@ -25,6 +25,10 @@ use super::{
     GLOBAL_TOPIC_PURGE_MIGRATION_VERSION,
 };
 use crate::memory::config::MemoryConfig;
+use crate::memory::store::content::read::{
+    LEGACY_EMPTY_CHUNK_CONTENT_REASON_PREFIX, LEGACY_EMPTY_CONTENT_POINTER_REASON_PREFIX,
+    LEGACY_NO_CONTENT_POINTER_REASON_PREFIX,
+};
 use crate::memory::tree::store::{
     insert_summary_tx, insert_tree, SummaryNode, Tree, TreeKind, TreeStatus,
 };
@@ -352,7 +356,7 @@ fn legacy_body_read_skip_does_not_hide_reembed_work() {
         &c.id,
         sig,
         &format!(
-            "body read failed: no content pointer or raw refs for chunk {}",
+            "body read failed: {LEGACY_NO_CONTENT_POINTER_REASON_PREFIX}{}",
             c.id
         ),
     )
@@ -376,7 +380,7 @@ fn legacy_empty_pointer_skip_does_not_hide_reembed_work() {
         &c.id,
         sig,
         &format!(
-            "body read failed: empty content pointer and no raw refs for chunk {}",
+            "body read failed: {LEGACY_EMPTY_CONTENT_POINTER_REASON_PREFIX}{}",
             c.id
         ),
     )
@@ -400,7 +404,7 @@ fn empty_legacy_content_skip_hides_reembed_work() {
         &c.id,
         sig,
         &format!(
-            "body read failed: legacy chunk content empty for chunk {}",
+            "body read failed: {LEGACY_EMPTY_CHUNK_CONTENT_REASON_PREFIX}{}",
             c.id
         ),
     )

@@ -13,6 +13,9 @@ use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashMap;
 
 use crate::memory::config::MemoryConfig;
+use crate::memory::store::content::read::{
+    LEGACY_EMPTY_CONTENT_POINTER_REASON_PREFIX, LEGACY_NO_CONTENT_POINTER_REASON_PREFIX,
+};
 
 /// The active embedding vector dimension for `config`. Drives the legacy
 /// migration's dim-match decision.
@@ -412,20 +415,33 @@ pub fn has_uncovered_reembed_work(
 ) -> rusqlite::Result<bool> {
     let variants = signature_variants(model_signature);
     let sig_clause = signature_in_clause(variants.len(), 1);
-    let params: Vec<&dyn rusqlite::ToSql> = variants
+    // Retryable skip reasons for legacy content-pointer rows; matched after the
+    // signature-variant params (which occupy `?1..=?variants.len()`).
+    let retry_idx_1 = variants.len() + 1;
+    let retry_idx_2 = variants.len() + 2;
+    let missing_pointer_retry_like =
+        format!("body read failed: {LEGACY_NO_CONTENT_POINTER_REASON_PREFIX}%");
+    // Legacy-only: older readers emitted this for present-but-empty content
+    // pointers. Current readers filter those pointers before returning `Some`,
+    // but existing skip rows must still become retriable after the fallback fix.
+    let empty_pointer_retry_like =
+        format!("body read failed: {LEGACY_EMPTY_CONTENT_POINTER_REASON_PREFIX}%");
+    let mut params: Vec<&dyn rusqlite::ToSql> = variants
         .iter()
         .map(|variant| variant as &dyn rusqlite::ToSql)
         .collect();
+    params.push(&missing_pointer_retry_like as &dyn rusqlite::ToSql);
+    params.push(&empty_pointer_retry_like as &dyn rusqlite::ToSql);
     conn.query_row(
-&format!(
+        &format!(
             "SELECT EXISTS(
                  SELECT 1 FROM mem_tree_chunks c
                   WHERE NOT EXISTS (SELECT 1 FROM mem_tree_chunk_embeddings e
                                      WHERE e.chunk_id = c.id AND e.model_signature {sig_clause})
                     AND NOT EXISTS (SELECT 1 FROM mem_tree_chunk_reembed_skipped sk
                                      WHERE sk.chunk_id = c.id AND sk.model_signature {sig_clause}
-                                       AND sk.reason NOT LIKE 'body read failed: no content pointer or raw refs for chunk %'
-                                       AND sk.reason NOT LIKE 'body read failed: empty content pointer and no raw refs for chunk %'))
+                                       AND sk.reason NOT LIKE ?{retry_idx_1}
+                                       AND sk.reason NOT LIKE ?{retry_idx_2}))
                OR EXISTS(
                  SELECT 1 FROM mem_tree_summaries s
                   WHERE s.deleted = 0
