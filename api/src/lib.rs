@@ -1,6 +1,7 @@
 //! Stable public contracts for the TinyCortex memory system.
 //!
-//! This crate holds the value types, error enum, and storage trait that both the `tinycortex` engine and its embedding hosts
+//! This crate holds the value types, error enum, capability vocabulary, and
+//! storage trait that both the `tinycortex` engine and its embedding hosts
 //! compile against. It is deliberately dependency-light (serde / serde_json /
 //! chrono / sha2 / anyhow / thiserror / async-trait / uuid only) so depending on
 //! the contract never drags in SQLite, git2, reqwest, regex, or an async
@@ -12,7 +13,12 @@
 //! depend on this crate alone, and the *generic* subsystem/driver vocabulary of
 //! the OpenHuman kernel (`Driver`, `DriverClass`, `SubsystemRegistry`, the
 //! policy `Guard`) must not be inherited from a *memory* crate by whichever
-//! subsystem is cut over next.
+//! subsystem is cut over next. So the contract carries its own capability
+//! vocabulary, and the host's memory adapter converts at the boundary.
+//!
+//! Driver *class* (embedded / external / null) is deliberately **absent**: that
+//! is a host configuration fact about how a driver was bound, not something a
+//! driver reports about itself.
 //!
 //! ## The engine's historical paths still resolve
 //!
@@ -28,6 +34,8 @@
 //! - [`recall`]: the borrowed [`recall::RecallOpts`] and owned, serde-derived
 //!   [`recall::OwnedRecallOpts`] recall filters (both re-exported from
 //!   [`types`]).
+//! - [`capabilities`]: the thirteen [`capabilities::Capability`] families and
+//!   the [`capabilities::Capabilities`] set negotiated at bind time.
 //! - [`error`]: the typed [`error::MemoryError`] enum and its result alias.
 //! - [`traits`]: the [`traits::Memory`] storage-backend trait.
 //! - [`chunks`]: the persisted chunk model ([`chunks::Chunk`], [`chunks::Metadata`],
@@ -37,6 +45,7 @@
 //! - [`tool_memory`]: tool-scoped rule contracts ([`tool_memory::ToolMemoryRule`], …).
 //! - [`goals`]: the long-term goals document ([`goals::GoalsDoc`], [`goals::GoalItem`]).
 
+pub mod capabilities;
 pub mod chunks;
 pub mod error;
 pub mod goals;
