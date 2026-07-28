@@ -26,6 +26,12 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The recall filter contracts live in [`crate::recall`] so the borrowed and
+/// owned forms sit next to each other and cannot drift, and are re-exported
+/// here so every historical `types::RecallOpts` path — including the engine
+/// crate's `tinycortex::memory::types::` alias — keeps resolving unchanged.
+pub use crate::recall::{OwnedRecallOpts, RecallOpts};
+
 /// Default namespace used when a caller passes no explicit namespace.
 pub const GLOBAL_NAMESPACE: &str = "global";
 
@@ -202,22 +208,6 @@ pub struct MemoryEntry {
     /// values decode as [`MemoryTaint::ExternalSync`].
     #[serde(default)]
     pub taint: MemoryTaint,
-}
-
-/// Optional filters for recall.
-#[derive(Debug, Default, Clone)]
-pub struct RecallOpts<'a> {
-    /// Restrict recall to this namespace; `None` falls back to [`GLOBAL_NAMESPACE`].
-    pub namespace: Option<&'a str>,
-    /// Restrict recall to entries of this category.
-    pub category: Option<MemoryCategory>,
-    /// Restrict recall to entries scoped to this session.
-    pub session_id: Option<&'a str>,
-    /// Drop hits scoring below this threshold (typically 0.0–1.0).
-    pub min_score: Option<f64>,
-    /// When `true`, include conversational hits from other sessions in the same
-    /// workspace alongside the namespace recall.
-    pub cross_session: bool,
 }
 
 /// Summary row for agent-side namespace discovery.
