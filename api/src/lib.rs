@@ -36,6 +36,7 @@
 //!   [`types`]).
 //! - [`capabilities`]: the thirteen [`capabilities::Capability`] families and
 //!   the [`capabilities::Capabilities`] set negotiated at bind time.
+//! - [`version`]: [`CONTRACT_VERSION`] and the [`is_compatible`] bind rule.
 //! - [`error`]: the typed [`error::MemoryError`] enum and its result alias.
 //! - [`traits`]: the [`traits::Memory`] storage-backend trait.
 //! - [`chunks`]: the persisted chunk model ([`chunks::Chunk`], [`chunks::Metadata`],
@@ -54,3 +55,6 @@ pub mod tool_memory;
 pub mod traits;
 pub mod tree;
 pub mod types;
+pub mod version;
+
+pub use version::{is_compatible, CONTRACT_VERSION};
