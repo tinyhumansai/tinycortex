@@ -48,9 +48,12 @@
 
 // ── Shared contracts ────────────────────────────────────────────────────────
 pub mod config;
-pub mod error;
-pub mod traits;
-pub mod types;
+/// The stable value types, error enum, and storage trait now live in the
+/// dependency-light `tinycortex-api` crate. Re-exporting the modules (rather
+/// than the individual items) keeps every `memory::types::…` /
+/// `super::types::…` path inside this crate — and in embedding hosts —
+/// resolving exactly as before.
+pub use tinycortex_api::{error, traits, types};
 
 // ── Storage primitives ──────────────────────────────────────────────────────
 pub mod store;
