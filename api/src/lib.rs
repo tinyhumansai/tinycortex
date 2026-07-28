@@ -13,8 +13,9 @@
 //! depend on this crate alone, and the *generic* subsystem/driver vocabulary of
 //! the OpenHuman kernel (`Driver`, `DriverClass`, `SubsystemRegistry`, the
 //! policy `Guard`) must not be inherited from a *memory* crate by whichever
-//! subsystem is cut over next. So the contract carries its own capability
-//! vocabulary, and the host's memory adapter converts at the boundary.
+//! subsystem is cut over next. So the contract carries its own identity,
+//! capability, and health vocabulary, and the host's memory adapter converts at
+//! the boundary — see [`health`] for the shape that conversion relies on.
 //!
 //! Driver *class* (embedded / external / null) is deliberately **absent**: that
 //! is a host configuration fact about how a driver was bound, not something a
@@ -36,6 +37,7 @@
 //!   [`types`]).
 //! - [`capabilities`]: the thirteen [`capabilities::Capability`] families and
 //!   the [`capabilities::Capabilities`] set negotiated at bind time.
+//! - [`health`]: [`health::MemoryHealth`], the liveness state a driver reports.
 //! - [`version`]: [`CONTRACT_VERSION`] and the [`is_compatible`] bind rule.
 //! - [`error`]: the typed [`error::MemoryError`] enum and its result alias.
 //! - [`traits`]: the [`traits::Memory`] storage-backend trait.
@@ -50,6 +52,7 @@ pub mod capabilities;
 pub mod chunks;
 pub mod error;
 pub mod goals;
+pub mod health;
 pub mod recall;
 pub mod tool_memory;
 pub mod traits;
