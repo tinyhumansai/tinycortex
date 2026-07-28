@@ -37,6 +37,10 @@
 //!   [`types`]).
 //! - [`capabilities`]: the thirteen [`capabilities::Capability`] families and
 //!   the [`capabilities::Capabilities`] set negotiated at bind time.
+//! - [`provider`]: the driver contract — [`provider::MemoryProvider`] plus the
+//!   thirteen capability family traits and the value types they need.
+//! - [`null`]: [`null::NullMemoryProvider`], the reference driver a
+//!   compiled-out or unconfigured memory subsystem binds to.
 //! - [`health`]: [`health::MemoryHealth`], the liveness state a driver reports.
 //! - [`version`]: [`CONTRACT_VERSION`] and the [`is_compatible`] bind rule.
 //! - [`error`]: the typed [`error::MemoryError`] enum and its result alias.
@@ -53,6 +57,8 @@ pub mod chunks;
 pub mod error;
 pub mod goals;
 pub mod health;
+pub mod null;
+pub mod provider;
 pub mod recall;
 pub mod tool_memory;
 pub mod traits;
