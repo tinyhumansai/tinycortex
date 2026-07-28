@@ -24,7 +24,14 @@ description = "Stable public contracts for the TinyCortex memory system"
 #               crate additionally enables `serde`.
 #
 # Nothing here may pull in `rusqlite`, `git2`, `reqwest`, `regex`, or an async
-# runtime — guard with `cargo tree -i <crate> -p tinycortex-api`.
+# runtime. Guard with the FORWARD form, which is scoped to this package:
+#
+#   cargo tree -p tinycortex-api -e normal,build --prefix none \
+#     | grep -Ei 'rusqlite|libsqlite|git2|reqwest|regex|tokio'   # expect no match
+#
+# Do NOT use `cargo tree -i <crate> -p tinycortex-api`: `-i` discards the `-p`
+# scope and prints the whole-workspace inverse tree, so it exits 0 and looks
+# clean even when this crate is the one pulling the dependency in.
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
