@@ -86,16 +86,16 @@ pub struct RecallOpts<'a> {
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OwnedRecallOpts {
     /// Restrict recall to this namespace; `None` falls back to [`crate::types::GLOBAL_NAMESPACE`].
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
     /// Restrict recall to entries of this category.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<MemoryCategory>,
     /// Restrict recall to entries scoped to this session.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// Drop hits scoring below this threshold (typically 0.0–1.0).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_score: Option<f64>,
     /// When `true`, include conversational hits from other sessions in the same
     /// workspace alongside the namespace recall.

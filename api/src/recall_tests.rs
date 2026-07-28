@@ -116,3 +116,43 @@ fn partial_recall_body_leaves_unmentioned_fields_at_default() {
     assert!(decoded.min_score.is_none());
     assert!(!decoded.cross_session);
 }
+
+/// The wire form omits absent filters rather than emitting explicit nulls.
+///
+/// `OwnedRecallOpts` is the body of `POST /v1/memory/recall`, which the spec
+/// describes as an optional-filters bag. Emitting `"namespace": null` for every
+/// unset filter is valid JSON but forces a backend to distinguish "absent" from
+/// "explicitly null" for no gain. Pinned here because changing the emitted shape
+/// after a driver has shipped is observable to any backend that draws that
+/// distinction.
+#[test]
+fn absent_recall_filters_are_omitted_from_the_wire_form() {
+    let json = serde_json::to_value(OwnedRecallOpts::default()).expect("serialize");
+    assert_eq!(
+        json,
+        serde_json::json!({ "cross_session": false }),
+        "unset optional filters must be omitted, not serialized as null"
+    );
+
+    let populated = OwnedRecallOpts {
+        namespace: Some("work".into()),
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&populated).expect("serialize");
+    assert_eq!(
+        json,
+        serde_json::json!({ "namespace": "work", "cross_session": false })
+    );
+}
+
+/// Omitting a filter and sending it as `null` must both decode to `None`, so a
+/// backend built against either spelling keeps working.
+#[test]
+fn omitted_and_explicit_null_recall_filters_both_decode_to_none() {
+    let omitted: OwnedRecallOpts = serde_json::from_str("{}").expect("decode {}");
+    let explicit: OwnedRecallOpts =
+        serde_json::from_str(r#"{"namespace":null,"category":null,"session_id":null,"min_score":null,"cross_session":false}"#)
+            .expect("decode explicit nulls");
+    assert_eq!(omitted, explicit);
+    assert_eq!(omitted, OwnedRecallOpts::default());
+}
