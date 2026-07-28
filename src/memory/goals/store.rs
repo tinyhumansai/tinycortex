@@ -34,25 +34,102 @@ use crate::memory::store::safety::{
     has_likely_email, has_likely_pii, has_likely_secret, sanitize_text,
 };
 
-use super::types::GoalsDoc;
+use super::types::{GoalItem, GoalsDoc};
 
 /// Detect likely PII in goal text (email addresses, generic PII patterns, or
 /// content the sanitizer would otherwise redact). Backs
-/// [`super::types::GoalsDoc`]'s text validation.
+/// [`GoalsDocMutations`]'s text validation.
 ///
-/// Lives here rather than in `types.rs` so that the value types
-/// (`GoalItem`/`GoalsDoc`) stay free of the `regex`-backed `safety` module —
-/// a dependency-light module tree is a prerequisite for those types moving
-/// into a future standalone API crate.
+/// Lives here rather than beside the value types so that `GoalItem`/`GoalsDoc`
+/// stay free of the `regex`-backed `safety` module — that dependency-light
+/// module tree is what lets those types live in the standalone
+/// `tinycortex-api` contract crate.
 pub(super) fn has_goal_pii(text: &str) -> bool {
     has_likely_email(text) || has_likely_pii(text) || sanitize_text(text).report.pii_redactions > 0
 }
 
 /// Detect likely secrets (API keys, tokens, …) in goal text. Backs
-/// [`super::types::GoalsDoc`]'s text validation; see [`has_goal_pii`] for why
-/// this lives here instead of `types.rs`.
+/// [`GoalsDocMutations`]'s text validation; see [`has_goal_pii`] for why this
+/// lives here rather than beside the value types.
 pub(super) fn has_goal_secret(text: &str) -> bool {
     has_likely_secret(text)
+}
+
+/// Validate that `text` is a non-empty, single-line goal body. A
+/// newline-bearing goal would inject extra `- [..]` list lines on reload,
+/// corrupting the stored shape — so it is rejected outright.
+fn validate_goal_text(text: &str) -> Result<&str, MemoryError> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(MemoryError::Invalid(
+            "goal text must not be empty".to_string(),
+        ));
+    }
+    if text.contains('\n') || text.contains('\r') {
+        return Err(MemoryError::Invalid(
+            "goal text must be a single line".to_string(),
+        ));
+    }
+    if has_goal_secret(text) || has_goal_pii(text) {
+        return Err(MemoryError::Invalid(
+            "goal text must not contain secrets or PII".to_string(),
+        ));
+    }
+    Ok(text)
+}
+
+/// In-memory, validating mutation surface for [`GoalsDoc`].
+///
+/// These were inherent methods on `GoalsDoc` until the value types moved into
+/// the dependency-light `tinycortex-api` crate. They live here, next to the
+/// `regex`-backed [`has_goal_secret`] / [`has_goal_pii`] guards they call, so
+/// the contract crate stays free of that machinery. The trait is implemented
+/// for `GoalsDoc` and re-exported from [`super`], so call sites keep using
+/// method syntax (`doc.add(text)`) with identical semantics.
+///
+/// None of these persist; pair them with [`save`] (or use the `add` / `edit` /
+/// `delete` free functions in this module, which do both under the mutation
+/// lock).
+pub trait GoalsDocMutations {
+    /// Append a new goal, returning the assigned id. Text is trimmed; empty,
+    /// multi-line, or secret/PII-bearing text is rejected.
+    fn add(&mut self, text: &str) -> Result<String, MemoryError>;
+
+    /// Replace the text of the goal with `id`. Returns an error if the id is
+    /// unknown or the new text is empty/multi-line/secret-or-PII-bearing.
+    fn edit(&mut self, id: &str, text: &str) -> Result<(), MemoryError>;
+
+    /// Delete the goal with `id`. Returns an error if the id is unknown.
+    fn delete(&mut self, id: &str) -> Result<(), MemoryError>;
+}
+
+impl GoalsDocMutations for GoalsDoc {
+    fn add(&mut self, text: &str) -> Result<String, MemoryError> {
+        let text = validate_goal_text(text)?;
+        let id = self.next_id();
+        self.items.push(GoalItem::new(&id, text));
+        Ok(id)
+    }
+
+    fn edit(&mut self, id: &str, text: &str) -> Result<(), MemoryError> {
+        let text = validate_goal_text(text)?;
+        let item = self
+            .items
+            .iter_mut()
+            .find(|i| i.id == id)
+            .ok_or_else(|| MemoryError::NotFound(format!("no goal with id '{id}'")))?;
+        item.text = text.to_string();
+        Ok(())
+    }
+
+    fn delete(&mut self, id: &str) -> Result<(), MemoryError> {
+        let before = self.items.len();
+        self.items.retain(|i| i.id != id);
+        if self.items.len() == before {
+            return Err(MemoryError::NotFound(format!("no goal with id '{id}'")));
+        }
+        Ok(())
+    }
 }
 
 /// File name of the goals document inside the workspace.
@@ -221,3 +298,7 @@ pub fn delete_for(config: &MemoryConfig, id: &str) -> MemoryEngineResult<GoalsDo
 #[cfg(test)]
 #[path = "store_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "mutations_tests.rs"]
+mod mutations_tests;

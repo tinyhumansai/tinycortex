@@ -56,9 +56,13 @@ hand-edited file degrades gracefully instead of erroring.
 All writes go through `load → mutate → save` in `goals::store`, which
 re-enforces every invariant on each write:
 
-- **Single-line text only.** `GoalsDoc::validate_text` trims the text and
-  rejects it if empty or if it contains `\n`/`\r`. A newline-bearing goal would
-  inject extra `- [..]` list lines on reload and corrupt the stored shape.
+- **Single-line text only.** `goals::store::validate_goal_text` trims the text
+  and rejects it if empty or if it contains `\n`/`\r`. A newline-bearing goal
+  would inject extra `- [..]` list lines on reload and corrupt the stored shape.
+  It backs the `GoalsDocMutations` trait (`add` / `edit` / `delete`), which
+  lives in `goals::store` — beside the `regex`-backed guards it calls — rather
+  than on `GoalsDoc` itself, so the value types can live in the
+  dependency-light `tinycortex-api` contract crate.
 - **PII / secret rejection.** The same validator rejects text where
   `has_likely_secret` or `has_likely_pii` (from `memory::store::safety`) fires —
   goals must stay free of credentials and personal data.
@@ -118,7 +122,7 @@ decides *how* it is applied. `reflect(config, context, generator)`:
    `first_run`).
 4. Applies them via `apply_mutations`: additions are de-duplicated by
    **normalized** text (trim, lowercase, collapse internal whitespace);
-   edits/deletes pass through `GoalsDoc::edit`/`delete`. Every rejected mutation
+   edits/deletes pass through `GoalsDocMutations::edit`/`delete`. Every rejected mutation
    (duplicate add, unknown id, invalid text) is counted as `skipped`.
 5. `save`s with cap enforcement only if anything was applied; otherwise re-loads
    on-disk truth to avoid a needless rewrite.

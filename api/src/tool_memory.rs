@@ -150,14 +150,13 @@ impl ToolMemoryRule {
 /// reason about the namespace without ambiguity. Always build the
 /// namespace through this helper — never hard-code the `tool-` format.
 ///
-/// [`ToolMemoryStore::put_rule`] applies the same normalization to the stored
-/// rule so namespace and display/grouping identity cannot diverge.
-///
-/// [`ToolMemoryStore::put_rule`]: super::store::ToolMemoryStore::put_rule
+/// The engine crate's `ToolMemoryStore::put_rule` applies the same
+/// normalization to the stored rule so namespace and display/grouping identity
+/// cannot diverge.
 pub fn tool_memory_namespace(tool_name: &str) -> String {
     format!("tool-{}", tool_name.trim().to_lowercase())
 }
 
 #[cfg(test)]
-#[path = "types_tests.rs"]
+#[path = "tool_memory_tests.rs"]
 mod tests;

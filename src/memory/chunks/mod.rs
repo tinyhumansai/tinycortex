@@ -58,8 +58,13 @@ mod store_delete;
 mod store_list;
 #[path = "store_sources.rs"]
 mod store_sources;
-#[path = "types.rs"]
-mod types;
+
+/// The persisted chunk value types now live in the dependency-light
+/// `tinycortex-api` crate. Aliasing the whole module (rather than importing
+/// the individual items) keeps every `super::types::…` path inside this module
+/// tree resolving exactly as before, at the same private visibility the local
+/// `mod types;` had.
+use tinycortex_api::chunks as types;
 
 #[cfg(test)]
 #[path = "store_conn_tests.rs"]
