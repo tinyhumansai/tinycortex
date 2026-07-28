@@ -453,3 +453,52 @@ fn extraction_coverage_reflects_indexed_fraction() {
     .unwrap();
     assert!((extraction_coverage(&cfg).unwrap() - 1.0).abs() < 1e-6);
 }
+
+#[test]
+fn a_vector_written_under_the_legacy_spelling_is_readable_under_the_active_signature() {
+    // The regression this exists for: the tree used to key sidecars by
+    // `{model}@{dims}`. After the convention was unified on the canonical
+    // `provider=…;model=…;dims=…` string, an exact-match read stopped seeing
+    // those rows — hundreds of live chunks scored against nothing, from a
+    // format change that was never a model change. Nothing is rewritten on
+    // disk; the read simply accepts both spellings.
+    let (_tmp, mut cfg) = test_config();
+    cfg.embedding.provider = "cloud".into();
+    cfg.embedding.model = "embedding-v1".into();
+    cfg.embedding.dim = 3;
+
+    let chunk = sample_chunk("gmail:inbox", 0, 1_700_000_000_000);
+    upsert_chunks(&cfg, std::slice::from_ref(&chunk)).unwrap();
+    set_chunk_embedding_for_signature(&cfg, &chunk.id, "embedding-v1@3", &[0.1, 0.2, 0.3]).unwrap();
+
+    let active = tree_active_signature(&cfg);
+    assert_eq!(active, "provider=cloud;model=embedding-v1;dims=3");
+    assert_eq!(
+        get_chunk_embedding(&cfg, &chunk.id).unwrap(),
+        Some(vec![0.1, 0.2, 0.3]),
+        "a legacy-spelled vector must be visible under the canonical signature"
+    );
+
+    // Batch read — the retrieval hot path — sees it too.
+    let batch =
+        get_chunk_embeddings_for_signature_batch(&cfg, &[chunk.id.clone()], &active).unwrap();
+    assert_eq!(batch.get(&chunk.id), Some(&vec![0.1, 0.2, 0.3]));
+
+    // …and it counts as covered, so the re-embed chain does not pay to
+    // recompute a vector that is already on disk.
+    with_connection(&cfg, |conn| {
+        assert!(
+            !super::has_uncovered_reembed_work(conn, &active)?,
+            "a legacy-spelled vector must count as coverage"
+        );
+        Ok(())
+    })
+    .unwrap();
+
+    // A genuinely different space is still separate.
+    assert_eq!(
+        get_chunk_embedding_for_signature(&cfg, &chunk.id, "provider=cloud;model=other-v2;dims=3")
+            .unwrap(),
+        None
+    );
+}

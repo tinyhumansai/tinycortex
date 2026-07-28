@@ -51,6 +51,8 @@ mod produce_split;
 mod raw_refs;
 #[path = "semantic.rs"]
 mod semantic;
+#[path = "signature.rs"]
+mod signature;
 #[path = "store.rs"]
 mod store;
 #[path = "store_delete.rs"]
@@ -97,6 +99,10 @@ pub use raw_refs::{
 };
 pub use recovery::{
     is_io_open_error, is_transient_cold_start, recover_corrupt_db, try_cleanup_stale_files,
+};
+pub(crate) use signature::signature_in_clause;
+pub use signature::{
+    format_signature, parse_signature, signature_variants, signatures_equivalent, SignatureParts,
 };
 pub use store::{
     claim_source_ingest_tx, count_chunks, count_chunks_by_lifecycle_status,
