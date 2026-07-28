@@ -6,21 +6,16 @@
 //! tools. Each item carries a stable short id so edit/delete operations can
 //! address a specific line without depending on ordering.
 //!
-//! This module is pure: it owns parse/render and the in-memory mutation logic
-//! (`add` / `edit` / `delete`) plus their validation rules. The cap-enforcing
-//! persistence layer lives in [`super::store`]; the reflection apply/dedupe
-//! logic lives in [`super::reflect()`].
+//! This module owns parse/render and the in-memory mutation logic
+//! (`add` / `edit` / `delete`) plus their validation rules; the PII/secret
+//! predicates those rules call out to live in [`super::store`] instead of
+//! here so this module stays free of the `regex`-backed safety machinery.
+//! The cap-enforcing persistence layer lives in [`super::store`]; the
+//! reflection apply/dedupe logic lives in [`super::reflect()`].
 
 use serde::{Deserialize, Serialize};
 
 use crate::memory::error::MemoryError;
-use crate::memory::store::safety::{
-    has_likely_email, has_likely_pii, has_likely_secret, sanitize_text,
-};
-
-fn has_goal_pii(text: &str) -> bool {
-    has_likely_email(text) || has_likely_pii(text) || sanitize_text(text).report.pii_redactions > 0
-}
 
 /// Markdown header rendered at the top of `MEMORY_GOALS.md`.
 pub(crate) const HEADER: &str = "# Long-term Goals";
@@ -146,7 +141,7 @@ impl GoalsDoc {
                 "goal text must be a single line".to_string(),
             ));
         }
-        if has_likely_secret(text) || has_goal_pii(text) {
+        if super::store::has_goal_secret(text) || super::store::has_goal_pii(text) {
             return Err(MemoryError::Invalid(
                 "goal text must not contain secrets or PII".to_string(),
             ));

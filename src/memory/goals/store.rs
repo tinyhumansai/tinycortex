@@ -30,8 +30,30 @@ use parking_lot::Mutex;
 
 use crate::memory::config::MemoryConfig;
 use crate::memory::error::{MemoryEngineResult, MemoryError};
+use crate::memory::store::safety::{
+    has_likely_email, has_likely_pii, has_likely_secret, sanitize_text,
+};
 
 use super::types::GoalsDoc;
+
+/// Detect likely PII in goal text (email addresses, generic PII patterns, or
+/// content the sanitizer would otherwise redact). Backs
+/// [`super::types::GoalsDoc`]'s text validation.
+///
+/// Lives here rather than in `types.rs` so that the value types
+/// (`GoalItem`/`GoalsDoc`) stay free of the `regex`-backed `safety` module —
+/// a dependency-light module tree is a prerequisite for those types moving
+/// into a future standalone API crate.
+pub(super) fn has_goal_pii(text: &str) -> bool {
+    has_likely_email(text) || has_likely_pii(text) || sanitize_text(text).report.pii_redactions > 0
+}
+
+/// Detect likely secrets (API keys, tokens, …) in goal text. Backs
+/// [`super::types::GoalsDoc`]'s text validation; see [`has_goal_pii`] for why
+/// this lives here instead of `types.rs`.
+pub(super) fn has_goal_secret(text: &str) -> bool {
+    has_likely_secret(text)
+}
 
 /// File name of the goals document inside the workspace.
 pub const GOALS_FILE: &str = "MEMORY_GOALS.md";
