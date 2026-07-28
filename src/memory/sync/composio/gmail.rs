@@ -121,6 +121,15 @@ impl IncrementalSource for GmailSyncPipeline {
         true
     }
 
+    /// Gmail pages are capped by `max_results`, and full message payloads make
+    /// a page's size depend on what is *in* the mail — a handful of large
+    /// attachments is enough for the provider to refuse 25 messages it accepted
+    /// yesterday. Naming the argument lets the orchestrator halve it and retry
+    /// rather than leaving the source stuck.
+    fn page_size_arg_key(&self) -> Option<&'static str> {
+        Some("max_results")
+    }
+
     fn arguments(
         &self,
         _scope: &SyncScope,
