@@ -23,7 +23,8 @@ pub(crate) use super::connection_breaker::CB_THRESHOLD;
 
 use super::migrations::{migrate_legacy_embeddings_to_sidecar, purge_global_topic_trees};
 use super::recovery::{
-    is_corrupt_error, is_io_open_error, quarantine_corrupt_files, try_cleanup_stale_files,
+    is_corrupt_error, is_io_open_error, is_transient_cold_start, quarantine_corrupt_files,
+    try_cleanup_stale_files,
 };
 use super::schema::SCHEMA;
 use super::{db_path_for, SQLITE_BUSY_TIMEOUT};
@@ -366,6 +367,36 @@ pub(crate) fn get_or_init_connection(config: &MemoryConfig) -> Result<Arc<PMutex
 /// `db_path` is always produced by [`super::db_path_for`], which joins onto
 /// `config.workspace`.
 fn open_and_init(db_path: &Path, config: &MemoryConfig) -> Result<Connection> {
+    // Bootstrap I/O errors (`CANTOPEN`, the `-shm`/`-wal` cold-start races,
+    // `IOERR_FSTAT`) come from a sibling connection creating or truncating the
+    // same file at the same instant — a fresh open a moment later succeeds. Give
+    // a transient failure a couple of short, backed-off retries before
+    // surfacing it, which is what removes the flaky parallel-open failure.
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut attempt = 0;
+    loop {
+        match try_open_and_init(db_path, config) {
+            Ok(conn) => return Ok(conn),
+            Err(error) if attempt + 1 < MAX_ATTEMPTS && is_transient_cold_start(&error) => {
+                let backoff = std::time::Duration::from_millis(20 * (1 << attempt));
+                tracing::debug!(
+                    db_path = %db_path.display(),
+                    attempt = attempt + 1,
+                    backoff_ms = backoff.as_millis() as u64,
+                    "[chunks] transient cold-start opening chunk DB; retrying"
+                );
+                std::thread::sleep(backoff);
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// One open+init attempt. Retried by [`open_and_init`] on a transient
+/// cold-start failure. Does not clean up a partially created directory or file
+/// on failure — a subsequent attempt simply retries against the same path.
+fn try_open_and_init(db_path: &Path, config: &MemoryConfig) -> Result<Connection> {
     let dir = db_path.parent().expect("db_path always has a parent");
     std::fs::create_dir_all(dir)
         .with_context(|| format!("Failed to create chunk DB dir: {}", dir.display()))?;
