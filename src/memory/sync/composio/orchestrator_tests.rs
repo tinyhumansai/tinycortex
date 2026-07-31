@@ -237,32 +237,3 @@ async fn a_source_without_a_page_size_argument_still_fails_fast() {
         "no pointless retry of an identical request"
     );
 }
-
-#[test]
-fn payload_too_large_is_told_apart_from_other_provider_errors() {
-    assert!(is_payload_too_large(Some(
-        "413 {\"slug\":\"Upstream_PayloadTooLarge\"}"
-    )));
-    assert!(is_payload_too_large(Some("Response too large for tool")));
-    assert!(!is_payload_too_large(Some("rate limit exceeded")));
-    assert!(!is_payload_too_large(Some("invalid grant")));
-    assert!(!is_payload_too_large(None));
-}
-
-#[test]
-fn shrinking_stops_at_the_floor() {
-    let mut arguments = json!({ "max_results": 3 });
-    assert_eq!(
-        shrink_page_size(&mut arguments, Some("max_results")),
-        Some(1)
-    );
-    assert_eq!(arguments["max_results"], json!(1));
-    // At one item per page there is nothing left to halve.
-    assert_eq!(shrink_page_size(&mut arguments, Some("max_results")), None);
-    // A source that declares no key, or a request that lacks it, cannot shrink.
-    assert_eq!(shrink_page_size(&mut arguments, None), None);
-    assert_eq!(
-        shrink_page_size(&mut json!({ "other": 10 }), Some("max_results")),
-        None
-    );
-}

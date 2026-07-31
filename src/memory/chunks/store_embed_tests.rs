@@ -481,7 +481,8 @@ fn a_vector_written_under_the_legacy_spelling_is_readable_under_the_active_signa
 
     // Batch read — the retrieval hot path — sees it too.
     let batch =
-        get_chunk_embeddings_for_signature_batch(&cfg, &[chunk.id.clone()], &active).unwrap();
+        get_chunk_embeddings_for_signature_batch(&cfg, std::slice::from_ref(&chunk.id), &active)
+            .unwrap();
     assert_eq!(batch.get(&chunk.id), Some(&vec![0.1, 0.2, 0.3]));
 
     // …and it counts as covered, so the re-embed chain does not pay to

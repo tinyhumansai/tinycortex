@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::client::ActionExecutor;
+use super::page_size::{apply_page_size, is_payload_too_large, shrink_page_size};
 use crate::memory::config::MemoryConfig;
 use crate::memory::sync::state::SyncState;
 use crate::memory::sync::traits::{
@@ -248,6 +249,10 @@ async fn run_pages(
                 source.page_size_arg_key(),
                 page_size_override,
             );
+            // The size a shrink most recently *tried*. Promoted to the run's
+            // sticky override only once the provider accepts a page at it —
+            // before that it names a size that may itself be refused.
+            let mut attempted_page_size: Option<u64> = None;
             let response = loop {
                 let response = match executor
                     .execute(source.action(), arguments.clone(), Some(connection_id))
@@ -278,6 +283,16 @@ async fn run_pages(
                 // this point.
                 state.record_action(response.attempts, response.cost_usd);
                 if response.successful {
+                    // Sticky for the rest of the run, and set HERE rather than
+                    // at the shrink: with several halvings (25 → 12 → 6) an
+                    // assignment per attempt leaves the last *rejected* size in
+                    // the override on every step but the final one, and is
+                    // correct at the end only because that step happens to be
+                    // the accepted one. Recording the accepted size makes the
+                    // intent independent of the retry order.
+                    if let Some(accepted) = attempted_page_size {
+                        page_size_override = Some(accepted);
+                    }
                     break response;
                 }
                 // A page refused purely for its size is the one provider
@@ -293,7 +308,7 @@ async fn run_pages(
                     if let Some(reduced) =
                         shrink_page_size(&mut arguments, source.page_size_arg_key())
                     {
-                        page_size_override = Some(reduced);
+                        attempted_page_size = Some(reduced);
                         tracing::warn!(
                             toolkit = source.toolkit(),
                             connection_id,
@@ -493,51 +508,6 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
-}
-
-/// Smallest page a shrink will ask for. One item is the point past which a
-/// too-large response is about that single item, not the batch size.
-const MIN_PAGE_SIZE: u64 = 1;
-
-/// Whether the provider refused a page for its *size* rather than for anything
-/// about the request's content — the only failure a smaller page can fix.
-///
-/// Matched on the error text because that is all the envelope carries: Composio
-/// reports it as HTTP 413 with a `Upstream_PayloadTooLarge` slug, and other
-/// backends phrase it as "payload too large" / "response too large".
-fn is_payload_too_large(error: Option<&str>) -> bool {
-    error.is_some_and(|error| {
-        let lower = error.to_ascii_lowercase();
-        lower.contains("payloadtoolarge")
-            || lower.contains("payload_too_large")
-            || lower.contains("413")
-            || (lower.contains("too large")
-                && (lower.contains("payload") || lower.contains("response")))
-    })
-}
-
-/// Pin the page-size argument to `size`, if the source declared one.
-fn apply_page_size(arguments: &mut Value, key: Option<&str>, size: Option<u64>) {
-    if let (Some(key), Some(size)) = (key, size) {
-        if let Some(slot) = arguments.get_mut(key) {
-            *slot = Value::from(size);
-        }
-    }
-}
-
-/// Halve the page-size argument in place, returning the new value.
-///
-/// `None` means retrying is pointless — the source declares no page-size
-/// argument, this request does not carry it, or it is already at the floor.
-fn shrink_page_size(arguments: &mut Value, key: Option<&str>) -> Option<u64> {
-    let key = key?;
-    let current = arguments.get(key)?.as_u64()?;
-    if current <= MIN_PAGE_SIZE {
-        return None;
-    }
-    let reduced = (current / 2).max(MIN_PAGE_SIZE);
-    arguments[key] = Value::from(reduced);
-    Some(reduced)
 }
 
 #[cfg(test)]

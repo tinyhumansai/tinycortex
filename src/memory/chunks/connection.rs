@@ -379,6 +379,10 @@ fn open_and_init(db_path: &Path, config: &MemoryConfig) -> Result<Connection> {
             Ok(conn) => return Ok(conn),
             Err(error) if attempt + 1 < MAX_ATTEMPTS && is_transient_cold_start(&error) => {
                 let backoff = std::time::Duration::from_millis(20 * (1 << attempt));
+                // `tracing` is optional and only arrives with `sync`; the chunk
+                // store compiles in the dependency-light default build too, so
+                // the call has to be gated or that build cannot link.
+                #[cfg(feature = "sync")]
                 tracing::debug!(
                     db_path = %db_path.display(),
                     attempt = attempt + 1,
