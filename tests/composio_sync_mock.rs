@@ -405,6 +405,8 @@ async fn todoist_lists_tasks_dedupes_and_is_idempotent() {
         let documents = captures.documents.lock().unwrap();
         assert_eq!(documents[0].document_id, "todoist:t1");
         assert_eq!(documents[0].title, "Write report");
+        // The document body is the task text, not JSON.
+        assert_eq!(documents[0].content, "Write report");
         assert!(documents
             .iter()
             .all(|doc| doc.metadata["taint"] == "external_sync"));
@@ -413,6 +415,32 @@ async fn todoist_lists_tasks_dedupes_and_is_idempotent() {
     let second = pipeline.tick(&test_config(), &context).await.unwrap();
     assert_eq!(second.records_ingested, 0);
     assert_eq!(captures.documents.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn todoist_reads_tasks_from_bare_data_array() {
+    // Composio sometimes returns the Todoist list as `data: [...]` directly
+    // rather than `data: { tasks: [...] }`; the pipeline must handle both.
+    let server = MockServer::start().await;
+    Mock::given(path("/tools/execute/TODOIST_GET_ALL_TASKS"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "successful": true,
+            "data": [
+                {"id": "t5", "content": "Ship release", "created_at": "2026-05-05T00:00:00Z"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    let (captures, context) = test_context();
+    let pipeline = TodoistSyncPipeline::new(
+        ComposioClient::new(direct_config(server.uri(), "key")),
+        "todoist-bare-conn",
+    );
+    let outcome = pipeline.tick(&test_config(), &context).await.unwrap();
+    assert_eq!(outcome.records_ingested, 1);
+    let docs = captures.documents.lock().unwrap();
+    assert_eq!(docs[0].document_id, "todoist:t5");
+    assert_eq!(docs[0].content, "Ship release");
 }
 
 struct TodoistEditedTask(AtomicUsize);

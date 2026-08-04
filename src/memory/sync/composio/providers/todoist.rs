@@ -98,18 +98,24 @@ impl IncrementalSource for TodoistSyncPipeline {
         serde_json::json!({})
     }
     fn extract_page(&self, data: &Value, _: Option<&str>) -> PageFetch {
-        PageFetch {
-            items: first_array(
+        // Todoist's active-tasks response is sometimes the bare task array
+        // (already unwrapped from the Composio `data` envelope by the client)
+        // and sometimes wrapped under `tasks`/`items`. Handle the top-level
+        // array first, then the wrapped shapes.
+        let items = data.as_array().cloned().unwrap_or_else(|| {
+            first_array(
                 data,
                 &[
                     "/data/tasks",
                     "/tasks",
                     "/data/items",
                     "/items",
-                    "/data",
                     "/data/data",
                 ],
-            ),
+            )
+        });
+        PageFetch {
+            items,
             // Todoist active tasks are returned as a single unpaginated array.
             next: None,
         }
@@ -147,7 +153,17 @@ impl IncrementalSource for TodoistSyncPipeline {
             &["content", "data.content", "title", "data.title"],
         )
         .unwrap_or_else(|| format!("Todoist task {id}"));
-        let content = serde_json::to_string_pretty(&item.raw)?;
+        // A Todoist task's meaningful text is its `content` (title line) plus an
+        // optional `description`; store that as the document body so retrieval
+        // embeds the task text, not JSON syntax. Fall back to the raw payload
+        // only when the task carries no content field.
+        let content = match pick_str(&item.raw, &["content", "data.content"]) {
+            Some(text) => match pick_str(&item.raw, &["description", "data.description"]) {
+                Some(desc) if !desc.trim().is_empty() => format!("{text}\n\n{desc}"),
+                _ => text,
+            },
+            None => serde_json::to_string_pretty(&item.raw)?,
+        };
         Ok(document(
             "todoist",
             connection_id,
@@ -160,12 +176,51 @@ impl IncrementalSource for TodoistSyncPipeline {
 }
 
 /// Stable content fingerprint of a task payload, used as the freshness half of
-/// the dedup key. Deterministic for a given payload (`DefaultHasher` has a fixed
-/// seed and `serde_json` serializes map keys in sorted order), so an unchanged
-/// task always hashes the same and any edit changes the hash.
+/// the dedup key. Computed as FNV-1a over a canonical serialization (object keys
+/// sorted recursively). The key is **persisted** in `SyncState`, so the hash
+/// must be stable across Rust toolchains and independent of `serde_json` map
+/// ordering — `DefaultHasher` guarantees neither, and an unstable value would
+/// silently re-ingest every task on a toolchain bump.
 fn payload_fingerprint(item: &Value) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    item.to_string().hash(&mut hasher);
-    hasher.finish()
+    let mut canonical = String::new();
+    write_canonical(item, &mut canonical);
+    // FNV-1a 64-bit — a fixed, specified algorithm.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in canonical.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Serialize `value` with object keys sorted recursively so the byte stream is
+/// canonical regardless of map insertion order.
+fn write_canonical(value: &Value, out: &mut String) {
+    match value {
+        Value::Object(map) => {
+            out.push('{');
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort_unstable();
+            for (index, key) in keys.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push_str(&serde_json::to_string(key).unwrap_or_default());
+                out.push(':');
+                write_canonical(&map[*key], out);
+            }
+            out.push('}');
+        }
+        Value::Array(items) => {
+            out.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                write_canonical(item, out);
+            }
+            out.push(']');
+        }
+        other => out.push_str(&other.to_string()),
+    }
 }
