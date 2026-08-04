@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
-use super::common::{document, first_array, pick_str};
+use super::common::{document, first_array, next_page_token, pick_str};
 use crate::memory::config::MemoryConfig;
 use crate::memory::sync::composio::{
     run_incremental_sync, ActionExecutor, ComposioClient, IncrementalSource, PageFetch, SyncItem,
@@ -121,16 +121,7 @@ impl IncrementalSource for GoogleDriveSyncPipeline {
                     "/items",
                 ],
             ),
-            next: [
-                "/data/nextPageToken",
-                "/nextPageToken",
-                "/data/data/nextPageToken",
-            ]
-            .iter()
-            .find_map(|path| data.pointer(path).and_then(Value::as_str))
-            .map(str::trim)
-            .filter(|token| !token.is_empty())
-            .map(str::to_owned),
+            next: next_page_token(data),
         }
     }
     fn dedup_key(&self, item: &Value) -> Option<String> {

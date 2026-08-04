@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
-use super::common::{document, first_array, pick_str};
+use super::common::{document, first_array, next_page_token, pick_str};
 use crate::memory::config::MemoryConfig;
 use crate::memory::sync::composio::{
     run_incremental_sync, ActionExecutor, ComposioClient, IncrementalSource, PageFetch, SyncItem,
@@ -97,7 +97,8 @@ impl IncrementalSource for GoogleCalendarSyncPipeline {
         page: Option<&str>,
     ) -> Value {
         // `single_events` expands recurring series into concrete instances so
-        // each carries a stable id; `updated` ordering keeps the freshest first.
+        // each carries a stable id; `order_by: "updated"` sorts ascending by
+        // modification time (oldest change first), matching the `updated` cursor.
         let mut args = serde_json::json!({
             "calendar_id": self.calendar_id,
             "max_results": self.page_size,
@@ -107,10 +108,14 @@ impl IncrementalSource for GoogleCalendarSyncPipeline {
         if let Some(page) = page {
             args["page_token"] = serde_json::json!(page);
         }
-        // Depth window: prefer the last-synced cursor, else the configured
-        // horizon. `time_min` filters by event start time server-side.
+        // The cursor is a modification time (the item `updated` field), so it
+        // belongs on `updated_min` (last-modified lower bound) — NOT `time_min`,
+        // which filters by event *start* time and would drop recently-edited
+        // past events. `time_min` is only the start-time horizon for the first,
+        // cursorless backfill; once a cursor exists, `updated_min` fully bounds
+        // the incremental window.
         if let Some(cursor) = state.cursor.as_deref() {
-            args["time_min"] = serde_json::json!(cursor);
+            args["updated_min"] = serde_json::json!(cursor);
         } else if let Some(days) = config.sync.budget.sync_depth_days {
             args["time_min"] = serde_json::json!((chrono::Utc::now()
                 - chrono::Duration::days(days as i64))
@@ -130,16 +135,7 @@ impl IncrementalSource for GoogleCalendarSyncPipeline {
                     "/events",
                 ],
             ),
-            next: [
-                "/data/nextPageToken",
-                "/nextPageToken",
-                "/data/data/nextPageToken",
-            ]
-            .iter()
-            .find_map(|path| data.pointer(path).and_then(Value::as_str))
-            .map(str::trim)
-            .filter(|token| !token.is_empty())
-            .map(str::to_owned),
+            next: next_page_token(data),
         }
     }
     fn dedup_key(&self, item: &Value) -> Option<String> {

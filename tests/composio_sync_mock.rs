@@ -738,6 +738,9 @@ async fn google_drive_paginates_indexes_metadata_and_is_idempotent() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/tools/execute/GOOGLEDRIVE_LIST_FILES"))
+        .and(body_partial_json(serde_json::json!({
+            "arguments": {"page_size": 50, "order_by": "modifiedTime desc"}
+        })))
         .respond_with(GoogleDrivePages)
         .mount(&server)
         .await;
@@ -752,6 +755,7 @@ async fn google_drive_paginates_indexes_metadata_and_is_idempotent() {
     assert_eq!(first.actions_called, 2);
     {
         let docs = captures.documents.lock().unwrap();
+        assert_eq!(docs.len(), 2);
         assert_eq!(docs[0].document_id, "googledrive:file-1");
         assert_eq!(docs[0].title, "Plan.doc");
         assert!(docs
@@ -764,7 +768,9 @@ async fn google_drive_paginates_indexes_metadata_and_is_idempotent() {
         .unwrap();
     assert_eq!(state.cursor.as_deref(), Some("2026-04-02T12:00:00Z"));
     assert!(state.is_synced("file-1@2026-04-01T12:00:00Z"));
+    assert!(state.is_synced("file-2@2026-04-02T12:00:00Z"));
 
     let second = pipeline.tick(&test_config(), &context).await.unwrap();
     assert_eq!(second.records_ingested, 0);
+    assert_eq!(captures.documents.lock().unwrap().len(), 2);
 }
