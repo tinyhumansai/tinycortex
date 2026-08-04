@@ -142,6 +142,18 @@ fn mandatory_portability_round_trips_as_an_empty_store() {
 }
 
 #[test]
+fn export_page_rejects_a_cursor_it_never_issued() {
+    let driver = NullMemoryProvider::new();
+
+    let err = block_on(driver.export_page(Some("unexpected"), 100))
+        .expect_err("a cursor this driver never issued must be rejected, not silently accepted");
+    assert!(
+        matches!(err, MemoryError::Invalid(_)),
+        "expected MemoryError::Invalid, got {err:?}"
+    );
+}
+
+#[test]
 fn every_unadvertised_family_is_unreachable_through_the_trait_object() {
     let driver = NullMemoryProvider::new();
     let provider: &dyn MemoryProvider = &driver;

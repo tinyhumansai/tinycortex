@@ -176,11 +176,22 @@ impl MemoryRecall for NullMemoryProvider {
 impl MemoryPortability for NullMemoryProvider {
     /// One empty, terminal page: no records and no continuation cursor, so a
     /// caller's export loop terminates on the first iteration.
+    ///
+    /// This driver never issues a cursor (every page is the first and only
+    /// page), so any `Some(_)` cursor a caller passes back is necessarily one
+    /// this driver did not hand out — reject it rather than silently treating
+    /// it as a valid terminal page.
     async fn export_page(
         &self,
-        _cursor: Option<&str>,
+        cursor: Option<&str>,
         _limit: usize,
     ) -> Result<ExportPage, MemoryError> {
+        if cursor.is_some() {
+            return Err(MemoryError::Invalid(
+                "null provider does not issue export cursors".into(),
+            ));
+        }
+
         Ok(ExportPage::default())
     }
 
