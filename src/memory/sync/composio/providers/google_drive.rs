@@ -1,0 +1,171 @@
+use async_trait::async_trait;
+use serde_json::Value;
+
+use super::common::{document, first_array, pick_str};
+use crate::memory::config::MemoryConfig;
+use crate::memory::sync::composio::{
+    run_incremental_sync, ActionExecutor, ComposioClient, IncrementalSource, PageFetch, SyncItem,
+    SyncScope,
+};
+use crate::memory::sync::state::SyncState;
+use crate::memory::sync::traits::{
+    SkillDocument, SyncContext, SyncOutcome, SyncPipeline, SyncPipelineKind,
+};
+
+const ACTION_LIST_FILES: &str = "GOOGLEDRIVE_LIST_FILES";
+
+/// Incremental Google Drive synchronization through Composio.
+///
+/// File-shaped: each Drive file is a record with a stable id and a
+/// `modifiedTime`. This indexes file *metadata* only — it never downloads
+/// binary bodies (which may be arbitrarily large and are not memory-shaped);
+/// the document content is the file's structured metadata.
+pub struct GoogleDriveSyncPipeline {
+    client: ComposioClient,
+    connection_id: String,
+    max_pages: usize,
+    page_size: usize,
+}
+
+impl GoogleDriveSyncPipeline {
+    pub fn new(client: ComposioClient, connection_id: impl Into<String>) -> Self {
+        Self {
+            client,
+            connection_id: connection_id.into(),
+            max_pages: 10,
+            page_size: 50,
+        }
+    }
+
+    pub fn with_limits(mut self, max_pages: usize, page_size: usize) -> Self {
+        self.max_pages = max_pages.max(1);
+        // Google Drive caps `pageSize` at 1000.
+        self.page_size = page_size.clamp(1, 1000);
+        self
+    }
+}
+
+#[async_trait]
+impl SyncPipeline for GoogleDriveSyncPipeline {
+    fn id(&self) -> &str {
+        "composio:googledrive"
+    }
+    fn kind(&self) -> SyncPipelineKind {
+        SyncPipelineKind::Composio
+    }
+    async fn init(&self, _: &MemoryConfig, _: &SyncContext) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn tick(
+        &self,
+        config: &MemoryConfig,
+        context: &SyncContext,
+    ) -> anyhow::Result<SyncOutcome> {
+        run_incremental_sync(self, &self.client, &self.connection_id, config, context).await
+    }
+}
+
+#[async_trait]
+impl IncrementalSource for GoogleDriveSyncPipeline {
+    fn toolkit(&self) -> &'static str {
+        "googledrive"
+    }
+    fn action(&self) -> &'static str {
+        ACTION_LIST_FILES
+    }
+    fn max_pages(&self) -> usize {
+        self.max_pages
+    }
+    fn stop_on_empty_pending(&self) -> bool {
+        true
+    }
+    fn server_side_depth(&self) -> bool {
+        true
+    }
+    fn arguments(
+        &self,
+        _: &SyncScope,
+        config: &MemoryConfig,
+        state: &SyncState,
+        page: Option<&str>,
+    ) -> Value {
+        let mut args = serde_json::json!({
+            "page_size": self.page_size,
+            "order_by": "modifiedTime desc",
+        });
+        if let Some(page) = page {
+            args["page_token"] = serde_json::json!(page);
+        }
+        // Depth window via a Drive `q` clause on modification time. Prefer the
+        // last-synced cursor, else the configured horizon.
+        let floor =
+            state.cursor.clone().or_else(|| {
+                config.sync.budget.sync_depth_days.map(|days| {
+                    (chrono::Utc::now() - chrono::Duration::days(days as i64)).to_rfc3339()
+                })
+            });
+        if let Some(floor) = floor {
+            args["query"] = serde_json::json!(format!("modifiedTime > '{floor}'"));
+        }
+        args
+    }
+    fn extract_page(&self, data: &Value, _: Option<&str>) -> PageFetch {
+        PageFetch {
+            items: first_array(
+                data,
+                &[
+                    "/data/files",
+                    "/files",
+                    "/data/data/files",
+                    "/data/items",
+                    "/items",
+                ],
+            ),
+            next: [
+                "/data/nextPageToken",
+                "/nextPageToken",
+                "/data/data/nextPageToken",
+            ]
+            .iter()
+            .find_map(|path| data.pointer(path).and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+            .map(str::to_owned),
+        }
+    }
+    fn dedup_key(&self, item: &Value) -> Option<String> {
+        let id = pick_str(item, &["id", "data.id", "fileId", "data.fileId"])?;
+        Some(match self.sort_cursor(item) {
+            Some(modified) => format!("{id}@{modified}"),
+            None => id,
+        })
+    }
+    fn sort_cursor(&self, item: &Value) -> Option<String> {
+        pick_str(
+            item,
+            &["modifiedTime", "data.modifiedTime", "modified_time"],
+        )
+    }
+    async fn document(
+        &self,
+        _: &SyncScope,
+        connection_id: &str,
+        item: SyncItem,
+        _: &dyn ActionExecutor,
+        _: &mut SyncState,
+    ) -> anyhow::Result<SkillDocument> {
+        let id = pick_str(&item.raw, &["id", "data.id", "fileId", "data.fileId"])
+            .unwrap_or_else(|| item.dedup_key.clone());
+        let title = pick_str(&item.raw, &["name", "data.name", "title", "data.title"])
+            .unwrap_or_else(|| format!("Drive file {id}"));
+        let content = serde_json::to_string_pretty(&item.raw)?;
+        Ok(document(
+            "googledrive",
+            connection_id,
+            &id,
+            title,
+            content,
+            item.raw,
+        ))
+    }
+}
