@@ -773,4 +773,20 @@ async fn google_drive_paginates_indexes_metadata_and_is_idempotent() {
     let second = pipeline.tick(&test_config(), &context).await.unwrap();
     assert_eq!(second.records_ingested, 0);
     assert_eq!(captures.documents.lock().unwrap().len(), 2);
+
+    // The incremental (cursor-bearing) run must send the depth filter under the
+    // Drive-native `q` key — a wrong key (e.g. `query`) is silently ignored and
+    // forces a full scan every run.
+    let requests = server.received_requests().await.unwrap();
+    let depth_query = requests.iter().find_map(|request| {
+        let body: Value = serde_json::from_slice(&request.body).ok()?;
+        body.pointer("/arguments/q")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    });
+    assert_eq!(
+        depth_query.as_deref(),
+        Some("modifiedTime > '2026-04-02T12:00:00Z'"),
+        "Drive depth filter must be sent under `q`"
+    );
 }

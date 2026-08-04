@@ -119,7 +119,10 @@ impl IncrementalSource for GoogleDriveSyncPipeline {
                 })
             });
         if let Some(floor) = floor {
-            args["query"] = serde_json::json!(format!("modifiedTime > '{floor}'"));
+            // `GOOGLEDRIVE_FIND_FILE` names the Drive query parameter `q` (the
+            // native `files.list` name), not `query` — an unrecognised key would
+            // be ignored and defeat server-side depth bounding.
+            args["q"] = serde_json::json!(format!("modifiedTime > '{floor}'"));
         }
         args
     }
