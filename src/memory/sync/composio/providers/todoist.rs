@@ -21,16 +21,15 @@ const ACTION_GET_ALL_TASKS: &str = "TODOIST_GET_ALL_TASKS";
 /// (`LinearSyncPipeline`) rather than the message-shaped one: a single list
 /// action, content taken directly from the task payload with no secondary
 /// fetch. Todoist's active-tasks endpoint returns a plain array and is not
-/// paginated, so there is no server-side incremental filter; the orchestrator's
-/// client-side dedup (`synced_ids`) plus the `created_at` sort cursor drive
-/// incremental behavior.
+/// paginated, so there is no server-side incremental filter, and a task carries
+/// no modification timestamp. Incremental behavior is therefore driven by the
+/// orchestrator's client-side dedup (`synced_ids`) keyed on a payload
+/// fingerprint (see [`dedup_key`](Self::dedup_key)) — an unchanged task is
+/// skipped, while any edit re-ingests.
 pub struct TodoistSyncPipeline {
     client: ComposioClient,
     connection_id: String,
     max_pages: usize,
-    // Todoist active-tasks is unpaginated, so `page_size` is stored only to keep
-    // the constructor signature parallel to sibling pipelines; it is unused.
-    page_size: usize,
 }
 
 impl TodoistSyncPipeline {
@@ -39,15 +38,13 @@ impl TodoistSyncPipeline {
             client,
             connection_id: connection_id.into(),
             max_pages: 1,
-            page_size: 50,
         }
     }
 
     pub fn with_limits(mut self, max_pages: usize, _page_size: usize) -> Self {
         self.max_pages = max_pages.max(1);
-        // Todoist active-tasks is unpaginated; retain the sibling signature but
-        // ignore the requested page size.
-        self.page_size = _page_size;
+        // Todoist active-tasks is unpaginated; the sibling `page_size` argument
+        // is accepted for signature parity but has no effect.
         self
     }
 }
@@ -119,22 +116,21 @@ impl IncrementalSource for TodoistSyncPipeline {
     }
     fn dedup_key(&self, item: &Value) -> Option<String> {
         let id = pick_str(item, &["id", "data.id", "task_id", "data.task_id"])?;
-        Some(match self.sort_cursor(item) {
-            Some(created) => format!("{id}@{created}"),
-            None => id,
-        })
+        // Todoist tasks have no modification timestamp, so `created_at` (which is
+        // immutable) would never change and edited tasks would never re-ingest.
+        // Key on a fingerprint of the task payload instead: any change to
+        // content/due/project yields a new key and re-ingests, while an
+        // unchanged task keeps its key and is deduped.
+        Some(format!("{id}@{}", payload_fingerprint(item)))
     }
-    fn sort_cursor(&self, item: &Value) -> Option<String> {
-        pick_str(
-            item,
-            &[
-                "created_at",
-                "data.created_at",
-                "added_at",
-                "data.added_at",
-                "createdAt",
-            ],
-        )
+    fn sort_cursor(&self, _item: &Value) -> Option<String> {
+        // Todoist active tasks have no modification timestamp and the endpoint
+        // is unpaginated, so there is no meaningful sort cursor. Returning None
+        // is deliberate: the orchestrator's cursor-boundary short-circuit keys
+        // on `sort_cursor`, and using the immutable `created_at` would halt the
+        // scan (and skip re-ingest) for an edited task created before the
+        // persisted cursor. Freshness is handled entirely by `dedup_key`.
+        None
     }
     async fn document(
         &self,
@@ -161,4 +157,15 @@ impl IncrementalSource for TodoistSyncPipeline {
             item.raw,
         ))
     }
+}
+
+/// Stable content fingerprint of a task payload, used as the freshness half of
+/// the dedup key. Deterministic for a given payload (`DefaultHasher` has a fixed
+/// seed and `serde_json` serializes map keys in sorted order), so an unchanged
+/// task always hashes the same and any edit changes the hash.
+fn payload_fingerprint(item: &Value) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    item.to_string().hash(&mut hasher);
+    hasher.finish()
 }

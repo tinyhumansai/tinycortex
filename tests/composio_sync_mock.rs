@@ -415,6 +415,48 @@ async fn todoist_lists_tasks_dedupes_and_is_idempotent() {
     assert_eq!(captures.documents.lock().unwrap().len(), 2);
 }
 
+struct TodoistEditedTask(AtomicUsize);
+
+impl Respond for TodoistEditedTask {
+    fn respond(&self, _: &Request) -> ResponseTemplate {
+        // Same task id, edited content on the second tick — no timestamp change
+        // (Todoist tasks have none), so only the payload fingerprint differs.
+        let content = if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+            "Draft proposal"
+        } else {
+            "Draft proposal (revised)"
+        };
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "successful": true,
+            "data": {"tasks": [{"id": "t9", "content": content, "created_at": "2026-05-05T00:00:00Z"}]}
+        }))
+    }
+}
+
+#[tokio::test]
+async fn todoist_reingests_edited_task_without_timestamp_change() {
+    let server = MockServer::start().await;
+    Mock::given(path("/tools/execute/TODOIST_GET_ALL_TASKS"))
+        .respond_with(TodoistEditedTask(AtomicUsize::new(0)))
+        .mount(&server)
+        .await;
+    let (captures, context) = test_context();
+    let pipeline = TodoistSyncPipeline::new(
+        ComposioClient::new(direct_config(server.uri(), "key")),
+        "todoist-edit-conn",
+    );
+
+    let first = pipeline.tick(&test_config(), &context).await.unwrap();
+    assert_eq!(first.records_ingested, 1);
+    // Second tick: identical id, edited content → new payload fingerprint →
+    // re-ingested (would be silently skipped if keyed on immutable created_at).
+    let second = pipeline.tick(&test_config(), &context).await.unwrap();
+    assert_eq!(second.records_ingested, 1);
+    let docs = captures.documents.lock().unwrap();
+    assert_eq!(docs.last().unwrap().document_id, "todoist:t9");
+    assert!(docs.last().unwrap().content.contains("revised"));
+}
+
 #[tokio::test]
 async fn notion_fetches_markdown_and_counts_both_requests() {
     let server = MockServer::start().await;
