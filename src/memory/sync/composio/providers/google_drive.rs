@@ -12,7 +12,10 @@ use crate::memory::sync::traits::{
     SkillDocument, SyncContext, SyncOutcome, SyncPipeline, SyncPipelineKind,
 };
 
-const ACTION_LIST_FILES: &str = "GOOGLEDRIVE_LIST_FILES";
+// Composio deprecated `GOOGLEDRIVE_LIST_FILES` (2026-03-28) in favour of
+// `GOOGLEDRIVE_FIND_FILE`, which is the current `files.list`-backed listing
+// action (same paging/ordering/`q` filter surface).
+const ACTION_FIND_FILE: &str = "GOOGLEDRIVE_FIND_FILE";
 
 /// Incremental Google Drive synchronization through Composio.
 ///
@@ -71,7 +74,7 @@ impl IncrementalSource for GoogleDriveSyncPipeline {
         "googledrive"
     }
     fn action(&self) -> &'static str {
-        ACTION_LIST_FILES
+        ACTION_FIND_FILE
     }
     fn max_pages(&self) -> usize {
         self.max_pages
@@ -92,6 +95,9 @@ impl IncrementalSource for GoogleDriveSyncPipeline {
         let mut args = serde_json::json!({
             "page_size": self.page_size,
             "order_by": "modifiedTime desc",
+            // Guarantee the fields the cursor/title/dedup depend on come back,
+            // regardless of the action's default projection.
+            "fields": "files(id,name,mimeType,modifiedTime),nextPageToken",
         });
         if let Some(page) = page {
             args["page_token"] = serde_json::json!(page);

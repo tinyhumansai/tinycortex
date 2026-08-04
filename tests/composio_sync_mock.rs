@@ -737,7 +737,7 @@ impl Respond for GoogleDrivePages {
 async fn google_drive_paginates_indexes_metadata_and_is_idempotent() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/tools/execute/GOOGLEDRIVE_LIST_FILES"))
+        .and(path("/tools/execute/GOOGLEDRIVE_FIND_FILE"))
         .and(body_partial_json(serde_json::json!({
             "arguments": {"page_size": 50, "order_by": "modifiedTime desc"}
         })))
