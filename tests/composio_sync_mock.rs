@@ -6,10 +6,10 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tinycortex::memory::config::{ComposioMode, ComposioSyncConfig, MemoryConfig, SecretString};
 use tinycortex::memory::sync::{
-    ClickUpSyncPipeline, ComposioClient, GitHubSyncPipeline, GmailSyncPipeline, LinearSyncPipeline,
-    NotionSyncPipeline, SkillDocSink, SkillDocument, SlackSearchBackfillPipeline,
-    SlackSyncPipeline, SyncContext, SyncEvent, SyncEventSink, SyncPipeline, SyncStage, SyncState,
-    SyncStateStore,
+    ClickUpSyncPipeline, ComposioClient, GitHubSyncPipeline, GmailSyncPipeline,
+    GoogleCalendarSyncPipeline, GoogleDriveSyncPipeline, LinearSyncPipeline, NotionSyncPipeline,
+    SkillDocSink, SkillDocument, SlackSearchBackfillPipeline, SlackSyncPipeline, SyncContext,
+    SyncEvent, SyncEventSink, SyncPipeline, SyncStage, SyncState, SyncStateStore,
 };
 use wiremock::matchers::{body_partial_json, header, method, path, path_regex};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -629,4 +629,164 @@ async fn transient_retries_are_counted_in_persisted_budget() {
         .await
         .unwrap();
     assert_eq!(state.daily_budget.requests_used, 3);
+}
+
+struct GoogleCalendarPages;
+
+impl Respond for GoogleCalendarPages {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        let token = body
+            .pointer("/arguments/page_token")
+            .and_then(Value::as_str);
+        let data = if token == Some("cal-page-2") {
+            serde_json::json!({
+                "successful": true,
+                "data": {"items": [
+                    {"id": "evt-2", "summary": "Sync review", "updated": "2026-03-02T10:00:00Z"}
+                ]}
+            })
+        } else {
+            serde_json::json!({
+                "successful": true,
+                "data": {
+                    "items": [
+                        {"id": "evt-1", "summary": "Standup", "updated": "2026-03-01T09:00:00Z"}
+                    ],
+                    "nextPageToken": "cal-page-2"
+                }
+            })
+        };
+        ResponseTemplate::new(200).set_body_json(data)
+    }
+}
+
+#[tokio::test]
+async fn google_calendar_paginates_persists_cursor_and_is_idempotent() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/tools/execute/GOOGLECALENDAR_EVENTS_LIST"))
+        .and(body_partial_json(serde_json::json!({
+            "arguments": {"calendar_id": "primary", "single_events": true}
+        })))
+        .respond_with(GoogleCalendarPages)
+        .mount(&server)
+        .await;
+    let (captures, context) = test_context();
+    let pipeline = GoogleCalendarSyncPipeline::new(
+        ComposioClient::new(direct_config(server.uri(), "key")),
+        "gcal-conn",
+    );
+
+    let first = pipeline.tick(&test_config(), &context).await.unwrap();
+    assert_eq!(first.records_ingested, 2);
+    assert_eq!(first.actions_called, 2);
+    {
+        let docs = captures.documents.lock().unwrap();
+        assert_eq!(docs.len(), 2);
+        assert_eq!(docs[0].document_id, "googlecalendar:evt-1");
+        assert_eq!(docs[0].title, "Standup");
+        assert!(docs
+            .iter()
+            .all(|doc| doc.metadata["taint"] == "external_sync"));
+    }
+
+    let state = SyncState::load(captures.as_ref(), "googlecalendar", "gcal-conn")
+        .await
+        .unwrap();
+    assert_eq!(state.cursor.as_deref(), Some("2026-03-02T10:00:00Z"));
+    assert!(state.is_synced("evt-1@2026-03-01T09:00:00Z"));
+    assert!(state.is_synced("evt-2@2026-03-02T10:00:00Z"));
+
+    let second = pipeline.tick(&test_config(), &context).await.unwrap();
+    assert_eq!(second.records_ingested, 0);
+    assert_eq!(captures.documents.lock().unwrap().len(), 2);
+}
+
+struct GoogleDrivePages;
+
+impl Respond for GoogleDrivePages {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        let token = body
+            .pointer("/arguments/page_token")
+            .and_then(Value::as_str);
+        let data = if token == Some("drive-page-2") {
+            serde_json::json!({
+                "successful": true,
+                "data": {"files": [
+                    {"id": "file-2", "name": "Notes.md", "modifiedTime": "2026-04-02T12:00:00Z"}
+                ]}
+            })
+        } else {
+            serde_json::json!({
+                "successful": true,
+                "data": {
+                    "files": [
+                        {"id": "file-1", "name": "Plan.doc", "modifiedTime": "2026-04-01T12:00:00Z"}
+                    ],
+                    "nextPageToken": "drive-page-2"
+                }
+            })
+        };
+        ResponseTemplate::new(200).set_body_json(data)
+    }
+}
+
+#[tokio::test]
+async fn google_drive_paginates_indexes_metadata_and_is_idempotent() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/tools/execute/GOOGLEDRIVE_FIND_FILE"))
+        .and(body_partial_json(serde_json::json!({
+            "arguments": {"page_size": 50, "order_by": "modifiedTime desc"}
+        })))
+        .respond_with(GoogleDrivePages)
+        .mount(&server)
+        .await;
+    let (captures, context) = test_context();
+    let pipeline = GoogleDriveSyncPipeline::new(
+        ComposioClient::new(direct_config(server.uri(), "key")),
+        "gdrive-conn",
+    );
+
+    let first = pipeline.tick(&test_config(), &context).await.unwrap();
+    assert_eq!(first.records_ingested, 2);
+    assert_eq!(first.actions_called, 2);
+    {
+        let docs = captures.documents.lock().unwrap();
+        assert_eq!(docs.len(), 2);
+        assert_eq!(docs[0].document_id, "googledrive:file-1");
+        assert_eq!(docs[0].title, "Plan.doc");
+        assert!(docs
+            .iter()
+            .all(|doc| doc.metadata["taint"] == "external_sync"));
+    }
+
+    let state = SyncState::load(captures.as_ref(), "googledrive", "gdrive-conn")
+        .await
+        .unwrap();
+    assert_eq!(state.cursor.as_deref(), Some("2026-04-02T12:00:00Z"));
+    assert!(state.is_synced("file-1@2026-04-01T12:00:00Z"));
+    assert!(state.is_synced("file-2@2026-04-02T12:00:00Z"));
+
+    let second = pipeline.tick(&test_config(), &context).await.unwrap();
+    assert_eq!(second.records_ingested, 0);
+    assert_eq!(captures.documents.lock().unwrap().len(), 2);
+
+    // The incremental (cursor-bearing) run must send the depth filter under the
+    // Drive-native `q` key — a wrong key (e.g. `query`) is silently ignored and
+    // forces a full scan every run.
+    let requests = server.received_requests().await.unwrap();
+    let depth_query = requests.iter().find_map(|request| {
+        let body: Value = serde_json::from_slice(&request.body).ok()?;
+        body.pointer("/arguments/q")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    });
+    assert_eq!(
+        depth_query.as_deref(),
+        Some("modifiedTime > '2026-04-02T12:00:00Z'"),
+        "Drive depth filter must be sent under `q`"
+    );
 }
