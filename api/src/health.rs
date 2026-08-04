@@ -21,7 +21,7 @@
 //!
 //! Serializes as an internally-tagged object with a stable snake_case `status`
 //! discriminant, which is also the shape of the transport adapter's
-//! `GET /v1/health` → `{ status, detail }` response:
+//! `GET /v1/health` → `{ status, reason }` response:
 //!
 //! ```json
 //! { "status": "ready" }
