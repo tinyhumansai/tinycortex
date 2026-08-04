@@ -239,19 +239,21 @@ fn enforce_caps(doc: &mut GoalsDoc) -> Vec<String> {
 ///
 /// `GoalsDoc.items` and `GoalItem.text` are public, so a caller can build a
 /// document directly and hand it to `save` without going through
-/// [`GoalsDocMutations::add`]/[`GoalsDocMutations::edit`] — bypassing their
-/// secret/PII validation. Re-validate every item's text here so `save` is the
-/// one choke point that guarantees `MEMORY_GOALS.md` never holds
-/// secret/PII-bearing text, regardless of how the caller built `doc`.
+/// [`GoalsDocMutations::add`]/[`GoalsDocMutations::edit`] — bypassing all of
+/// their validation, not just the secret/PII guard. Re-run
+/// `validate_goal_text` over every item's text here so `save` is the one
+/// choke point that guarantees `MEMORY_GOALS.md` never holds empty,
+/// multi-line, or secret/PII-bearing text, regardless of how the caller built
+/// `doc`.
 pub fn save(workspace: &Path, doc: &mut GoalsDoc) -> MemoryEngineResult<()> {
     let path = validate_within_workspace(workspace)?;
     for item in &doc.items {
-        if has_goal_secret(&item.text) || has_goal_pii(&item.text) {
-            return Err(MemoryError::Invalid(format!(
-                "goal '{}' must not contain secrets or PII",
+        validate_goal_text(&item.text).map_err(|_| {
+            MemoryError::Invalid(format!(
+                "goal '{}' text must be a non-empty, single-line, secret/PII-free string",
                 item.id
-            )));
-        }
+            ))
+        })?;
     }
     let _dropped = enforce_caps(doc);
 

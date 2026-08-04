@@ -81,6 +81,38 @@ fn save_rejects_secret_or_pii_text_even_when_items_are_built_directly() {
 }
 
 #[test]
+fn save_rejects_empty_or_multiline_text_even_when_items_are_built_directly() {
+    // Same bypass as the secret/PII case above, but for the other two
+    // `validate_goal_text` invariants: non-empty and single-line. `GoalItem`'s
+    // fields are public, so a caller can set `text` to anything, including
+    // values `GoalsDocMutations::add`/`edit` would never have accepted.
+    use crate::memory::goals::types::GoalItem;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut empty_doc = GoalsDoc {
+        items: vec![GoalItem {
+            id: "g1".to_string(),
+            text: "   ".to_string(),
+        }],
+    };
+    let err = save(tmp.path(), &mut empty_doc).unwrap_err();
+    assert!(matches!(err, MemoryError::Invalid(_)));
+
+    let mut multiline_doc = GoalsDoc {
+        items: vec![GoalItem {
+            id: "g1".to_string(),
+            text: "line one\n- [x] injected".to_string(),
+        }],
+    };
+    let err = save(tmp.path(), &mut multiline_doc).unwrap_err();
+    assert!(matches!(err, MemoryError::Invalid(_)));
+
+    // Neither call wrote anything to disk.
+    let reloaded = load(tmp.path()).unwrap();
+    assert!(reloaded.is_empty());
+}
+
+#[test]
 fn config_rooted_wrappers_round_trip() {
     use crate::memory::config::MemoryConfig;
     let tmp = tempfile::tempdir().unwrap();
