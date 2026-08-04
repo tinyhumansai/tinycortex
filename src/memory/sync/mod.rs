@@ -19,8 +19,9 @@ pub use composio::{
     create_connection_link, generate_entity_id, get_connection_status, list_auth_configs,
     resolve_auth_config_id, status_is_active, status_is_terminal, ClickUpSyncPipeline,
     ComposioClient, ConnectionLink, EntityStore, GitHubSyncPipeline, GmailSyncPipeline,
-    GoogleCalendarSyncPipeline, GoogleDriveSyncPipeline, LinearSyncPipeline, NotionSyncPipeline,
-    SlackSearchBackfillPipeline, SlackSyncPipeline,
+    GoogleCalendarSyncPipeline, GoogleDocsSyncPipeline, GoogleDriveSyncPipeline,
+    GoogleSheetsSyncPipeline, LinearSyncPipeline, NotionSyncPipeline, SlackSearchBackfillPipeline,
+    SlackSyncPipeline,
 };
 pub use dispatcher::{SyncDispatcher, SyncRunResult};
 pub use github::GithubRepoSyncPipeline;
