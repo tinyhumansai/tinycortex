@@ -33,9 +33,12 @@ impl GoogleDocsSyncPipeline {
             client,
             connection_id: connection_id.into(),
             // NOTE: SEARCH_DOCUMENTS' page-token arg name is not pinned by the
-            // curated catalog, so we do a bounded, single-page-per-tick fetch
-            // (no page token emitted) rather than guessing a pagination scheme.
-            max_pages: 5,
+            // curated catalog, so we do a single-page-per-tick fetch (no page
+            // token emitted) rather than guessing a pagination scheme. Capped at
+            // 1 page: since `arguments()` never advances the token, a >1 cap
+            // would re-fire the identical page-1 request and burn budget slots
+            // for silently-deduplicated items.
+            max_pages: 1,
             page_size: 25,
         }
     }
