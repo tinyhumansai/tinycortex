@@ -25,6 +25,22 @@ pub fn first_array(data: &Value, pointers: &[&str]) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+/// Reads a Google-style `nextPageToken` from the common Composio response
+/// envelopes (single- and double-`data`-wrapped), trimming and dropping empty
+/// tokens. Shared by the Google provider pipelines to avoid drift.
+pub fn next_page_token(data: &Value) -> Option<String> {
+    [
+        "/data/nextPageToken",
+        "/nextPageToken",
+        "/data/data/nextPageToken",
+    ]
+    .iter()
+    .find_map(|path| data.pointer(path).and_then(Value::as_str))
+    .map(str::trim)
+    .filter(|token| !token.is_empty())
+    .map(str::to_owned)
+}
+
 pub fn document(
     toolkit: &str,
     connection_id: &str,
