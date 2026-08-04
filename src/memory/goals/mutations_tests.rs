@@ -74,6 +74,19 @@ fn delete_removes_known_id_and_rejects_unknown() {
 }
 
 #[test]
+fn delete_removes_only_the_first_occurrence_of_a_duplicate_id() {
+    // A well-formed document never has duplicate ids, but `GoalsDoc::parse`
+    // accepts a hand-edited or corrupt file that does. `delete` must not
+    // bulk-remove every item sharing the id.
+    let mut doc = GoalsDoc {
+        items: vec![GoalItem::new("g1", "first"), GoalItem::new("g1", "second")],
+    };
+    doc.delete("g1").unwrap();
+    assert_eq!(doc.items.len(), 1);
+    assert_eq!(doc.items[0].text, "second");
+}
+
+#[test]
 fn next_id_avoids_collision_with_custom_ids() {
     let mut doc = GoalsDoc {
         items: vec![GoalItem::new("g1", "a"), GoalItem::new("g2", "b")],

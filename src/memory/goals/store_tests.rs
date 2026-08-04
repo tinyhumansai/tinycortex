@@ -60,6 +60,27 @@ fn save_enforces_byte_cap() {
 }
 
 #[test]
+fn save_rejects_secret_or_pii_text_even_when_items_are_built_directly() {
+    // `GoalsDoc.items` and `GoalItem.text` are public: a caller can bypass
+    // `GoalsDocMutations::add`/`edit`'s validation entirely by constructing a
+    // document by hand. `save` must be the choke point that still refuses to
+    // persist secret/PII-bearing text.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut doc = GoalsDoc {
+        items: vec![crate::memory::goals::types::GoalItem::new(
+            "g1",
+            "rotate api_key=sk-abcdefghijklmnopqrstuvwxyz123456",
+        )],
+    };
+    let err = save(tmp.path(), &mut doc).unwrap_err();
+    assert!(matches!(err, MemoryError::Invalid(_)));
+
+    // Nothing was written.
+    let reloaded = load(tmp.path()).unwrap();
+    assert!(reloaded.is_empty());
+}
+
+#[test]
 fn config_rooted_wrappers_round_trip() {
     use crate::memory::config::MemoryConfig;
     let tmp = tempfile::tempdir().unwrap();

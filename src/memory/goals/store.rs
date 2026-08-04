@@ -82,7 +82,7 @@ fn validate_goal_text(text: &str) -> Result<&str, MemoryError> {
 ///
 /// These were inherent methods on `GoalsDoc` until the value types moved into
 /// the dependency-light `tinycortex-api` crate. They live here, next to the
-/// `regex`-backed [`has_goal_secret`] / [`has_goal_pii`] guards they call, so
+/// `regex`-backed `has_goal_secret` / `has_goal_pii` guards they call, so
 /// the contract crate stays free of that machinery. The trait is implemented
 /// for `GoalsDoc` and re-exported from [`super`], so call sites keep using
 /// method syntax (`doc.add(text)`) with identical semantics.
@@ -123,11 +123,17 @@ impl GoalsDocMutations for GoalsDoc {
     }
 
     fn delete(&mut self, id: &str) -> Result<(), MemoryError> {
-        let before = self.items.len();
-        self.items.retain(|i| i.id != id);
-        if self.items.len() == before {
-            return Err(MemoryError::NotFound(format!("no goal with id '{id}'")));
-        }
+        // `retain` would remove every item sharing `id`. A well-formed
+        // document never has duplicate ids, but `GoalsDoc::parse` accepts a
+        // hand-edited or corrupt file that does — match `edit`'s "first
+        // occurrence" semantics so a duplicate-id document loses at most one
+        // goal per delete, not all of them.
+        let index = self
+            .items
+            .iter()
+            .position(|item| item.id == id)
+            .ok_or_else(|| MemoryError::NotFound(format!("no goal with id '{id}'")))?;
+        self.items.remove(index);
         Ok(())
     }
 }
@@ -230,8 +236,23 @@ fn enforce_caps(doc: &mut GoalsDoc) -> Vec<String> {
 /// NOTE: this write is a plain truncate-then-write, not atomic
 /// temp-file+rename; a crash mid-write can leave the file empty or partial
 /// (see the module-level caveat above).
+///
+/// `GoalsDoc.items` and `GoalItem.text` are public, so a caller can build a
+/// document directly and hand it to `save` without going through
+/// [`GoalsDocMutations::add`]/[`GoalsDocMutations::edit`] — bypassing their
+/// secret/PII validation. Re-validate every item's text here so `save` is the
+/// one choke point that guarantees `MEMORY_GOALS.md` never holds
+/// secret/PII-bearing text, regardless of how the caller built `doc`.
 pub fn save(workspace: &Path, doc: &mut GoalsDoc) -> MemoryEngineResult<()> {
     let path = validate_within_workspace(workspace)?;
+    for item in &doc.items {
+        if has_goal_secret(&item.text) || has_goal_pii(&item.text) {
+            return Err(MemoryError::Invalid(format!(
+                "goal '{}' must not contain secrets or PII",
+                item.id
+            )));
+        }
+    }
     let _dropped = enforce_caps(doc);
 
     if let Some(parent) = path.parent() {
