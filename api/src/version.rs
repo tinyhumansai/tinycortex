@@ -7,13 +7,25 @@
 //!
 //! `CONTRACT_VERSION` is `(major, minor)`:
 //!
-//! - **Minor bump — a capability was added.** A new [`crate::capabilities::Capability`]
-//!   family, or a new method inside an existing family that older drivers may
-//!   simply not implement. Nothing that already compiled stops compiling.
-//! - **Major bump — an existing signature changed.** A method's parameters or
-//!   return type moved, a mandatory family was added or removed, or a wire
-//!   string changed. Anything an existing driver already implements now means
-//!   something different.
+//! - **Minor bump — an addition that capability negotiation alone makes safe.**
+//!   A new [`crate::capabilities::Capability`] family is the canonical case: an
+//!   older driver simply never advertises it, the corresponding RPC methods are
+//!   unregistered, and the kernel never calls in. A new optional field on an
+//!   existing wire type, or a new error variant an older kernel can treat as
+//!   opaque, are the same shape — nothing that already compiled stops
+//!   compiling, and there is no way for an old driver to be asked for
+//!   something it never claimed to support.
+//! - **Major bump — an existing signature changed, OR a method was added to an
+//!   already-advertised family.** A method's parameters or return type moved, a
+//!   mandatory family was added or removed, a wire string changed — or a driver
+//!   advertising an existing family (say [`crate::capabilities::Capability::Core`])
+//!   now has to implement one more method on it. That last case looks additive
+//!   but is not: capability negotiation has **family granularity only** — there
+//!   is no way to advertise "`Core`, but without the new method" — so an older
+//!   driver that still advertises `Core` can be called into a method it does
+//!   not implement. Bump the major half instead, which forces every driver
+//!   claiming that family to actually implement the new surface before it can
+//!   bind again.
 //!
 //! ## Why only the major half gates the bind
 //!
@@ -40,10 +52,14 @@
 
 /// Version of the memory contract this crate defines, as `(major, minor)`.
 ///
-/// See the module docs for the bump rule. Bump the **minor** half when a
-/// capability family or an additive method lands; bump the **major** half — and
-/// reset the minor to `0` — when an existing signature, mandatory family, or
-/// wire string changes.
+/// See the module docs for the bump rule. Bump the **minor** half only for an
+/// addition capability negotiation alone makes safe — a new capability family,
+/// a new optional wire field, a new opaque-to-old-kernels error variant. Bump
+/// the **major** half — and reset the minor to `0` — for an existing signature
+/// change, a mandatory family change, a wire string change, **or a new method
+/// added to a family a driver may already advertise** (negotiation is
+/// family-granular, not method-granular, so that case cannot be made minor-safe
+/// by negotiation alone).
 pub const CONTRACT_VERSION: (u16, u16) = (1, 0);
 
 /// Whether a driver speaking `remote` can be bound against this build.

@@ -48,6 +48,26 @@ fn a_major_mismatch_refuses_the_bind() {
 }
 
 #[test]
+fn adding_a_method_to_an_already_advertised_family_requires_a_major_bump() {
+    // Capability negotiation has family granularity, not method granularity:
+    // there is no way to advertise "Core, but without the new method". So a
+    // method added to a family a driver may already advertise (e.g. Core,
+    // Recall) cannot be made minor-safe by negotiation the way a brand-new
+    // capability family can — an older driver still advertising that family
+    // would be called into a method it never implemented. This is why the
+    // module docs classify that addition as a MAJOR bump, not minor, even
+    // though it looks additive. This test exists so the rule cannot be
+    // re-derived from `is_compatible`'s code alone, which only encodes "major
+    // halves must match" and says nothing about *why* a same-family method
+    // addition belongs on the major side of that line.
+    assert!(
+        !is_compatible((CONTRACT_VERSION.0 + 1, 0)),
+        "a method added to an existing family must ship as a major bump, \
+         which this asserts refuses the bind against an old build"
+    );
+}
+
+#[test]
 fn compatibility_depends_only_on_the_major_half() {
     let (major, _) = CONTRACT_VERSION;
     for minor in [0u16, 1, 2, 7, 999, u16::MAX] {
