@@ -191,8 +191,8 @@ impl Capability {
     }
 
     /// Single-bit mask for this family within a [`Capabilities`] set.
-    fn bit(self) -> u16 {
-        1 << self.index()
+    fn bit(self) -> u64 {
+        1u64 << self.index()
     }
 }
 
@@ -219,11 +219,13 @@ impl std::str::FromStr for Capability {
 /// set has neither.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Capabilities {
-    bits: u16,
+    bits: u64,
 }
 
 impl Capabilities {
-    /// The empty set. Advertised by the `null` driver.
+    /// The empty default capability set. The `null` driver advertises
+    /// [`Self::mandatory`] via its [`MemoryProvider::capabilities`](crate::provider::MemoryProvider::capabilities)
+    /// implementation, not this.
     pub const fn empty() -> Self {
         Self { bits: 0 }
     }
@@ -344,12 +346,23 @@ impl Serialize for Capabilities {
 }
 
 impl<'de> Deserialize<'de> for Capabilities {
+    /// Skips any family string this build does not recognise, rather than
+    /// failing the whole deserialize.
+    ///
+    /// A remote driver speaking a newer minor contract version may advertise a
+    /// family this build has never heard of — see [`Capability::parse`] and the
+    /// module-level "wire stability" docs. Rejecting the whole handshake on one
+    /// unknown string would refuse an otherwise-compatible driver; the correct
+    /// behaviour is to drop the family this kernel could never call anyway.
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let families = Vec::<Capability>::deserialize(deserializer)?;
-        Ok(families.into_iter().collect())
+        let raw = Vec::<String>::deserialize(deserializer)?;
+        let families = raw
+            .into_iter()
+            .filter_map(|family| Capability::parse(&family).ok());
+        Ok(families.collect())
     }
 }
 

@@ -135,8 +135,18 @@ fn capabilities_empty_contains_nothing() {
     for capability in Capability::ALL {
         assert!(!none.contains(capability));
     }
-    // The `null` driver's set is the default.
+    // The default capability set is empty (the null driver itself advertises
+    // `Capabilities::mandatory()`, not the default).
     assert_eq!(Capabilities::default(), none);
+}
+
+#[test]
+fn capabilities_bit_width_has_room_well_beyond_the_current_thirteen_families() {
+    // A `u16` bitset (the original representation) has exactly 16 bit
+    // positions, leaving room for only 3 more families before a family's
+    // `1 << index` bit-shift overflows. Pin the wider `u64` representation so
+    // a future family addition doesn't have to rediscover that ceiling.
+    assert!(std::mem::size_of::<Capabilities>() * 8 >= 64);
 }
 
 #[test]
@@ -229,13 +239,20 @@ fn capabilities_deserialization_collapses_duplicates_and_ignores_order() {
 }
 
 #[test]
-fn capabilities_deserialization_rejects_an_unknown_family() {
-    // The set type itself is strict; a handshake parser that wants to *skip*
-    // unknown families must decode the array element-wise via
-    // `Capability::parse`, which is why that function returns a `Result`.
-    let err = serde_json::from_value::<Capabilities>(json!(["core", "warp_drive"]))
-        .expect_err("unknown family must not silently decode");
-    assert!(err.to_string().contains("warp_drive"), "{err}");
+fn capabilities_deserialization_skips_an_unknown_family() {
+    // A remote driver speaking a newer minor contract version may advertise a
+    // family this build has never heard of (see the module docs' "wire
+    // stability" section and `Capability::parse`). The handshake must still
+    // decode — with the unknown family dropped — rather than failing the bind
+    // outright.
+    let decoded: Capabilities =
+        serde_json::from_value(json!(["core", "warp_drive", "recall"])).unwrap();
+    assert_eq!(
+        decoded,
+        Capabilities::empty()
+            .with(Capability::Core)
+            .with(Capability::Recall)
+    );
 }
 
 #[test]
