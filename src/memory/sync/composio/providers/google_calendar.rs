@@ -45,11 +45,6 @@ impl GoogleCalendarSyncPipeline {
         self.page_size = page_size.clamp(1, 2500);
         self
     }
-
-    pub fn with_calendar(mut self, calendar_id: impl Into<String>) -> Self {
-        self.calendar_id = calendar_id.into();
-        self
-    }
 }
 
 #[async_trait]
@@ -83,9 +78,11 @@ impl IncrementalSource for GoogleCalendarSyncPipeline {
     fn max_pages(&self) -> usize {
         self.max_pages
     }
-    fn stop_on_empty_pending(&self) -> bool {
-        true
-    }
+    // NB: `stop_on_empty_pending` is left at its default (false). The cursor only
+    // advances on a *complete* sync, so a run capped by `max_pages`/budget leaves
+    // it unadvanced; stopping early on an all-deduplicated first page would then
+    // permanently skip the still-unsynced tail. The persisted-cursor boundary
+    // already halts incremental runs at the right point.
     fn server_side_depth(&self) -> bool {
         true
     }

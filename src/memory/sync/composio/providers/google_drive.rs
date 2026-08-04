@@ -79,9 +79,10 @@ impl IncrementalSource for GoogleDriveSyncPipeline {
     fn max_pages(&self) -> usize {
         self.max_pages
     }
-    fn stop_on_empty_pending(&self) -> bool {
-        true
-    }
+    // NB: `stop_on_empty_pending` stays at its default (false) — see the note on
+    // the Calendar pipeline. The cursor only advances on a complete sync, so a
+    // capped run must not stop early on an all-deduplicated first page or it
+    // would permanently skip the unsynced tail.
     fn server_side_depth(&self) -> bool {
         true
     }
@@ -103,9 +104,16 @@ impl IncrementalSource for GoogleDriveSyncPipeline {
             args["page_token"] = serde_json::json!(page);
         }
         // Depth window via a Drive `q` clause on modification time. Prefer the
-        // last-synced cursor, else the configured horizon.
-        let floor =
-            state.cursor.clone().or_else(|| {
+        // last-synced cursor, else the configured horizon. The cursor is
+        // validated as an RFC3339 timestamp before being interpolated into the
+        // query so a malformed persisted value can never inject into the `q`
+        // clause — on a bad value we simply omit the depth filter (full scan).
+        let floor = state
+            .cursor
+            .as_deref()
+            .filter(|cursor| chrono::DateTime::parse_from_rfc3339(cursor).is_ok())
+            .map(str::to_owned)
+            .or_else(|| {
                 config.sync.budget.sync_depth_days.map(|days| {
                     (chrono::Utc::now() - chrono::Duration::days(days as i64)).to_rfc3339()
                 })
