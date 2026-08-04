@@ -86,7 +86,7 @@ tinyagents = "2.1"
 # The stable contract crate (value types, error enum, `Memory` trait). Declared
 # as a path dependency, not a registry requirement, so embedding hosts resolve
 # it through this checkout without needing their own `[patch.crates-io]` entry.
-tinycortex-api = { path = "api" }
+tinycortex-api = { path = "api", version = "0.1.1" }
 toml = "0.8"
 uuid = { version = "1", features = ["serde", "v4"] }
 walkdir = "2"
