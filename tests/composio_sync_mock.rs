@@ -6,10 +6,10 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tinycortex::memory::config::{ComposioMode, ComposioSyncConfig, MemoryConfig, SecretString};
 use tinycortex::memory::sync::{
-    ClickUpSyncPipeline, ComposioClient, GitHubSyncPipeline, GmailSyncPipeline, LinearSyncPipeline,
-    NotionSyncPipeline, SkillDocSink, SkillDocument, SlackSearchBackfillPipeline,
-    SlackSyncPipeline, SyncContext, SyncEvent, SyncEventSink, SyncPipeline, SyncStage, SyncState,
-    SyncStateStore,
+    ClickUpSyncPipeline, ComposioClient, GitHubSyncPipeline, GmailSyncPipeline,
+    GoogleDocsSyncPipeline, GoogleSheetsSyncPipeline, LinearSyncPipeline, NotionSyncPipeline,
+    SkillDocSink, SkillDocument, SlackSearchBackfillPipeline, SlackSyncPipeline, SyncContext,
+    SyncEvent, SyncEventSink, SyncPipeline, SyncStage, SyncState, SyncStateStore,
 };
 use wiremock::matchers::{body_partial_json, header, method, path, path_regex};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -407,6 +407,83 @@ async fn notion_fetches_markdown_and_counts_both_requests() {
         "# Roadmap\n\nBody"
     );
     let state = SyncState::load(captures.as_ref(), "notion", "notion-conn")
+        .await
+        .unwrap();
+    assert_eq!(state.daily_budget.requests_used, 2);
+}
+
+#[tokio::test]
+async fn google_docs_fetches_plaintext_and_counts_both_requests() {
+    let server = MockServer::start().await;
+    Mock::given(path("/tools/execute/GOOGLEDOCS_SEARCH_DOCUMENTS"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "successful": true,
+            "data": {"documents": [{"id": "doc-1", "title": "Design", "modifiedTime": "2026-03-01T00:00:00Z"}]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/tools/execute/GOOGLEDOCS_GET_DOCUMENT_PLAINTEXT"))
+        .and(body_partial_json(
+            serde_json::json!({"arguments": {"id": "doc-1"}}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"successful": true, "data": {"text": "Full plaintext body"}}),
+        ))
+        .mount(&server)
+        .await;
+    let (captures, context) = test_context();
+    let pipeline = GoogleDocsSyncPipeline::new(
+        ComposioClient::new(direct_config(server.uri(), "key")),
+        "gdocs-conn",
+    );
+    pipeline.tick(&test_config(), &context).await.unwrap();
+    {
+        let documents = captures.documents.lock().unwrap();
+        assert_eq!(documents[0].content, "Full plaintext body");
+        assert_eq!(documents[0].document_id, "googledocs:doc-1");
+        assert_eq!(documents[0].title, "Design");
+        assert_eq!(documents[0].metadata["taint"], "external_sync");
+    }
+    let state = SyncState::load(captures.as_ref(), "googledocs", "gdocs-conn")
+        .await
+        .unwrap();
+    assert_eq!(state.daily_budget.requests_used, 2);
+}
+
+#[tokio::test]
+async fn google_sheets_fetches_info_and_stores_document() {
+    let server = MockServer::start().await;
+    Mock::given(path("/tools/execute/GOOGLESHEETS_SEARCH_SPREADSHEETS"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "successful": true,
+            "data": {"spreadsheets": [{"id": "sheet-1", "title": "Budget", "modifiedTime": "2026-04-01T00:00:00Z"}]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/tools/execute/GOOGLESHEETS_GET_SPREADSHEET_INFO"))
+        .and(body_partial_json(
+            serde_json::json!({"arguments": {"spreadsheet_id": "sheet-1"}}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "successful": true,
+            "data": {"properties": {"title": "Budget"}, "sheets": [{"properties": {"title": "Q1"}}]}
+        })))
+        .mount(&server)
+        .await;
+    let (captures, context) = test_context();
+    let pipeline = GoogleSheetsSyncPipeline::new(
+        ComposioClient::new(direct_config(server.uri(), "key")),
+        "gsheets-conn",
+    );
+    pipeline.tick(&test_config(), &context).await.unwrap();
+    {
+        let documents = captures.documents.lock().unwrap();
+        assert_eq!(documents[0].document_id, "googlesheets:sheet-1");
+        assert_eq!(documents[0].title, "Budget");
+        assert_eq!(documents[0].metadata["taint"], "external_sync");
+        assert!(documents[0].content.contains("Q1"));
+    }
+    let state = SyncState::load(captures.as_ref(), "googlesheets", "gsheets-conn")
         .await
         .unwrap();
     assert_eq!(state.daily_budget.requests_used, 2);
