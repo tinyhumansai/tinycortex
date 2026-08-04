@@ -9,7 +9,7 @@ use tinycortex::memory::sync::{
     ClickUpSyncPipeline, ComposioClient, GitHubSyncPipeline, GmailSyncPipeline, LinearSyncPipeline,
     NotionSyncPipeline, SkillDocSink, SkillDocument, SlackSearchBackfillPipeline,
     SlackSyncPipeline, SyncContext, SyncEvent, SyncEventSink, SyncPipeline, SyncStage, SyncState,
-    SyncStateStore,
+    SyncStateStore, TodoistSyncPipeline,
 };
 use wiremock::matchers::{body_partial_json, header, method, path, path_regex};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -378,6 +378,40 @@ async fn linear_resolves_viewer_and_follows_graphql_cursor() {
     );
     let outcome = pipeline.tick(&test_config(), &context).await.unwrap();
     assert_eq!(outcome.records_ingested, 2);
+    assert_eq!(captures.documents.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn todoist_lists_tasks_dedupes_and_is_idempotent() {
+    let server = MockServer::start().await;
+    Mock::given(path("/tools/execute/TODOIST_GET_ALL_TASKS"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "successful": true,
+            "data": {"tasks": [
+                {"id": "t1", "content": "Write report", "created_at": "2026-05-01T00:00:00Z"},
+                {"id": "t2", "content": "Review PR", "created_at": "2026-05-02T00:00:00Z"}
+            ]}
+        })))
+        .mount(&server)
+        .await;
+    let (captures, context) = test_context();
+    let pipeline = TodoistSyncPipeline::new(
+        ComposioClient::new(direct_config(server.uri(), "key")),
+        "todoist-conn",
+    );
+    let outcome = pipeline.tick(&test_config(), &context).await.unwrap();
+    assert_eq!(outcome.records_ingested, 2);
+    {
+        let documents = captures.documents.lock().unwrap();
+        assert_eq!(documents[0].document_id, "todoist:t1");
+        assert_eq!(documents[0].title, "Write report");
+        assert!(documents
+            .iter()
+            .all(|doc| doc.metadata["taint"] == "external_sync"));
+    }
+
+    let second = pipeline.tick(&test_config(), &context).await.unwrap();
+    assert_eq!(second.records_ingested, 0);
     assert_eq!(captures.documents.lock().unwrap().len(), 2);
 }
 
