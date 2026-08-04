@@ -40,3 +40,25 @@ fn all_data_sources_bounded() {
         assert!((0.0..=1.0).contains(&w));
     }
 }
+
+/// Recovers the compile-time exhaustiveness guarantee that `DataSource` lost
+/// when it moved into the `tinycortex-api` contract crate.
+///
+/// `#[non_exhaustive]` is inert inside its defining crate but binding across a
+/// crate boundary, so `weight_for_explicit`'s match now needs a wildcard and
+/// the compiler can no longer prove every provider has a hand-tuned weight.
+/// Without this test, adding a provider to the contract crate would silently
+/// degrade it to the coarse `kind_default` instead of failing the build.
+#[test]
+fn every_data_source_has_an_explicit_weight() {
+    let missing: Vec<&'static str> = DataSource::all()
+        .iter()
+        .filter(|ds| weight_for_explicit(**ds).is_none())
+        .map(|ds| ds.as_str())
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these DataSource variants fall through to kind_default instead of a \
+         hand-tuned weight; add them to weight_for_explicit: {missing:?}"
+    );
+}

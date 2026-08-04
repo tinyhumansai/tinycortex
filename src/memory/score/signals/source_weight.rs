@@ -38,8 +38,13 @@ pub fn score(meta: &Metadata) -> f32 {
     if let Some(ds) = infer_data_source(meta) {
         return weight_for(ds);
     }
-    // Fallback: kind-level defaults consistent with per-provider averages.
-    match meta.source_kind {
+    kind_default(meta.source_kind)
+}
+
+/// Kind-level default weight, consistent with the per-provider averages
+/// below. Used when no [`DataSource`] can be inferred from the chunk tags.
+fn kind_default(kind: SourceKind) -> f32 {
+    match kind {
         SourceKind::Email => 0.75,
         SourceKind::Document => 0.7,
         SourceKind::Chat => 0.5,
@@ -48,10 +53,29 @@ pub fn score(meta: &Metadata) -> f32 {
 
 /// Per-[`DataSource`] base weight in `[0.0, 1.0]`, hand-tuned per the
 /// rationale in the module docs (scoped/directed communication scores
-/// higher than broadcast-style channels). Exhaustive match — adding a new
-/// `DataSource` variant is a compile error here until a weight is assigned.
+/// higher than broadcast-style channels).
+///
+/// Every variant that exists today is listed explicitly. `DataSource` is
+/// `#[non_exhaustive]` and now lives in the separate `tinycortex-api` contract
+/// crate, so the compiler can no longer prove this match exhaustive and a
+/// wildcard is required; the wildcard is unreachable today and only fires if a
+/// provider is added to the contract crate without a weight here. It degrades
+/// to the same [`kind_default`] the no-provider path uses rather than
+/// panicking.
+///
+/// The lost compile-time exhaustiveness is recovered as a test: see
+/// `every_data_source_has_an_explicit_weight` in `source_weight_tests.rs`,
+/// which walks [`DataSource::all`] and asserts [`weight_for_explicit`] answers
+/// for every variant. Adding a provider to the contract crate without a weight
+/// here therefore fails the suite instead of silently degrading.
 fn weight_for(ds: DataSource) -> f32 {
-    match ds {
+    weight_for_explicit(ds).unwrap_or_else(|| kind_default(ds.kind()))
+}
+
+/// The hand-tuned weight table proper. Returns `None` for a provider that has
+/// no explicit weight assigned — which is what the guard test detects.
+fn weight_for_explicit(ds: DataSource) -> Option<f32> {
+    let weight = match ds {
         // Personal email providers score high — typically small, directed audiences
         DataSource::Gmail => 0.8,
         DataSource::OtherEmail => 0.7,
@@ -66,7 +90,11 @@ fn weight_for(ds: DataSource) -> f32 {
         DataSource::Notion => 0.75,
         DataSource::DriveDocs => 0.6,
         DataSource::MeetingNotes => 0.85,
-    }
+        // Unreachable today — see the doc comment above. `None` routes the
+        // caller to `kind_default` and trips the guard test.
+        _ => return None,
+    };
+    Some(weight)
 }
 
 #[cfg(test)]

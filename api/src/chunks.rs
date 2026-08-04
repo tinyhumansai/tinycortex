@@ -412,5 +412,5 @@ mod time_range_serde {
 }
 
 #[cfg(test)]
-#[path = "types_tests.rs"]
+#[path = "chunks_tests.rs"]
 mod tests;

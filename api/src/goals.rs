@@ -2,25 +2,19 @@
 //!
 //! Goals are a small, ordered list of durable objectives the agent holds when
 //! interacting with the user. They are persisted as a compact markdown document
-//! (`MEMORY_GOALS.md`) — see [`super::store`] — and surfaced over RPC + agent
-//! tools. Each item carries a stable short id so edit/delete operations can
-//! address a specific line without depending on ordering.
+//! (`MEMORY_GOALS.md`) by the engine crate's `memory::goals::store` and
+//! surfaced over RPC + agent tools. Each item carries a stable short id so
+//! edit/delete operations can address a specific line without depending on
+//! ordering.
 //!
-//! This module is pure: it owns parse/render and the in-memory mutation logic
-//! (`add` / `edit` / `delete`) plus their validation rules. The cap-enforcing
-//! persistence layer lives in [`super::store`]; the reflection apply/dedupe
-//! logic lives in [`super::reflect()`].
+//! This module is **pure data**: it owns the shape, parse, and render only.
+//! The validating mutation surface (`add` / `edit` / `delete`) lives next to
+//! the `regex`-backed PII/secret predicates it calls, in the engine crate's
+//! `memory::goals::store::GoalsDocMutations` trait, so the value types stay
+//! free of the safety machinery and of `regex`. The cap-enforcing persistence
+//! layer and the reflection apply/dedupe logic live in the engine crate too.
 
 use serde::{Deserialize, Serialize};
-
-use crate::memory::error::MemoryError;
-use crate::memory::store::safety::{
-    has_likely_email, has_likely_pii, has_likely_secret, sanitize_text,
-};
-
-fn has_goal_pii(text: &str) -> bool {
-    has_likely_email(text) || has_likely_pii(text) || sanitize_text(text).report.pii_redactions > 0
-}
 
 /// Markdown header rendered at the top of `MEMORY_GOALS.md`.
 pub(crate) const HEADER: &str = "# Long-term Goals";
@@ -130,63 +124,8 @@ impl GoalsDoc {
     pub fn contains_id(&self, id: &str) -> bool {
         self.items.iter().any(|i| i.id == id)
     }
-
-    /// Validate that `text` is a non-empty, single-line goal body. A
-    /// newline-bearing goal would inject extra `- [..]` list lines on reload,
-    /// corrupting the stored shape — so it is rejected outright.
-    fn validate_text(text: &str) -> Result<&str, MemoryError> {
-        let text = text.trim();
-        if text.is_empty() {
-            return Err(MemoryError::Invalid(
-                "goal text must not be empty".to_string(),
-            ));
-        }
-        if text.contains('\n') || text.contains('\r') {
-            return Err(MemoryError::Invalid(
-                "goal text must be a single line".to_string(),
-            ));
-        }
-        if has_likely_secret(text) || has_goal_pii(text) {
-            return Err(MemoryError::Invalid(
-                "goal text must not contain secrets or PII".to_string(),
-            ));
-        }
-        Ok(text)
-    }
-
-    /// Append a new goal, returning the assigned id. Text is trimmed; empty or
-    /// multi-line text is rejected.
-    pub fn add(&mut self, text: &str) -> Result<String, MemoryError> {
-        let text = Self::validate_text(text)?;
-        let id = self.next_id();
-        self.items.push(GoalItem::new(&id, text));
-        Ok(id)
-    }
-
-    /// Replace the text of the goal with `id`. Returns an error if the id is
-    /// unknown or the new text is empty/multi-line.
-    pub fn edit(&mut self, id: &str, text: &str) -> Result<(), MemoryError> {
-        let text = Self::validate_text(text)?;
-        let item = self
-            .items
-            .iter_mut()
-            .find(|i| i.id == id)
-            .ok_or_else(|| MemoryError::NotFound(format!("no goal with id '{id}'")))?;
-        item.text = text.to_string();
-        Ok(())
-    }
-
-    /// Delete the goal with `id`. Returns an error if the id is unknown.
-    pub fn delete(&mut self, id: &str) -> Result<(), MemoryError> {
-        let before = self.items.len();
-        self.items.retain(|i| i.id != id);
-        if self.items.len() == before {
-            return Err(MemoryError::NotFound(format!("no goal with id '{id}'")));
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
-#[path = "types_tests.rs"]
+#[path = "goals_tests.rs"]
 mod tests;
