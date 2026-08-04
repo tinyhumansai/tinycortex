@@ -95,12 +95,11 @@ impl IncrementalSource for OutlookSyncPipeline {
             "orderby": "receivedDateTime desc",
         });
         if let Some(page) = page {
-            // Graph paginates via an opaque `@odata.nextLink` skip token. The
-            // exact Composio arg name for feeding it back is not fully certain;
-            // we send it under `skip_token`, which is the Graph-native name for
-            // the paging token. `extract_page` reads the token from the response
-            // so a mislabel here would surface as a single-page fetch, not a
-            // silent data loss.
+            // Graph paginates via a `$skiptoken`; `extract_page` has already
+            // reduced the `@odata.nextLink` URL to the bare token. The exact
+            // Composio arg name for feeding it back is not fully certain — we
+            // send `skip_token` (the Graph-native name), so a mislabel here
+            // surfaces as a single-page fetch, not silent data loss.
             args["skip_token"] = serde_json::json!(page);
         }
         // Depth window: prefer the last-synced cursor over the configured
@@ -140,7 +139,7 @@ impl IncrementalSource for OutlookSyncPipeline {
             .find_map(|path| data.pointer(path).and_then(Value::as_str))
             .map(str::trim)
             .filter(|token| !token.is_empty())
-            .map(str::to_owned),
+            .map(normalize_skip_token),
         }
     }
     fn dedup_key(&self, item: &Value) -> Option<String> {
@@ -151,13 +150,16 @@ impl IncrementalSource for OutlookSyncPipeline {
         })
     }
     fn sort_cursor(&self, item: &Value) -> Option<String> {
+        // Only `receivedDateTime` — the same field the `$filter` depth window
+        // keys on. A `lastModifiedDateTime` fallback would store a cursor in a
+        // different field than the filter compares, so on the next sync the
+        // `receivedDateTime ge <cursor>` window could skip valid messages.
         pick_str(
             item,
             &[
                 "receivedDateTime",
                 "data.receivedDateTime",
                 "received_date_time",
-                "lastModifiedDateTime",
             ],
         )
     }
@@ -183,4 +185,21 @@ impl IncrementalSource for OutlookSyncPipeline {
             item.raw,
         ))
     }
+}
+
+/// Reduce a Graph paging token to the bare `$skiptoken` value.
+///
+/// Graph returns `@odata.nextLink` as a full URL
+/// (`https://graph.microsoft.com/v1.0/me/messages?$skiptoken=ABC...`). Feeding
+/// that whole URL back as the paging arg would not resume pagination, so when
+/// the token looks like a URL we extract just the `skiptoken` query value;
+/// otherwise (Composio may already surface the bare token) we pass it through.
+fn normalize_skip_token(token: &str) -> String {
+    let lower = token.to_ascii_lowercase();
+    if let Some(pos) = lower.find("skiptoken=") {
+        let value = &token[pos + "skiptoken=".len()..];
+        let end = value.find('&').unwrap_or(value.len());
+        return value[..end].to_string();
+    }
+    token.to_string()
 }

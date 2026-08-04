@@ -639,7 +639,10 @@ impl Respond for OutlookPages {
         let token = body
             .pointer("/arguments/skip_token")
             .and_then(|value| value.as_str());
-        let data = if token == Some("outlook-page-2") {
+        // Page one returns a realistic full Graph `@odata.nextLink` URL; the
+        // pipeline must reduce it to the bare `$skiptoken` before page two, so
+        // the second request arrives with skip_token == the extracted token.
+        let data = if token == Some("AQMkADlabc123") {
             serde_json::json!({
                 "successful": true,
                 "data": {"value": [
@@ -653,7 +656,7 @@ impl Respond for OutlookPages {
                     "value": [
                         {"id": "o1", "receivedDateTime": "2026-01-01T00:00:00Z", "subject": "First"}
                     ],
-                    "@odata.nextLink": "outlook-page-2"
+                    "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/messages?$top=25&$skiptoken=AQMkADlabc123"
                 }
             })
         };
