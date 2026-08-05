@@ -11,6 +11,7 @@ mod linear;
 mod notion;
 mod slack;
 mod slack_parse;
+mod todoist;
 
 pub use clickup::ClickUpSyncPipeline;
 pub use github::GitHubSyncPipeline;
@@ -21,3 +22,4 @@ pub use google_sheets::GoogleSheetsSyncPipeline;
 pub use linear::LinearSyncPipeline;
 pub use notion::NotionSyncPipeline;
 pub use slack::{SlackSearchBackfillPipeline, SlackSyncPipeline};
+pub use todoist::TodoistSyncPipeline;

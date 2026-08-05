@@ -10,7 +10,7 @@ use tinycortex::memory::sync::{
     GoogleCalendarSyncPipeline, GoogleDocsSyncPipeline, GoogleDriveSyncPipeline,
     GoogleSheetsSyncPipeline, LinearSyncPipeline, NotionSyncPipeline, SkillDocSink, SkillDocument,
     SlackSearchBackfillPipeline, SlackSyncPipeline, SyncContext, SyncEvent, SyncEventSink,
-    SyncPipeline, SyncStage, SyncState, SyncStateStore,
+    SyncPipeline, SyncStage, SyncState, SyncStateStore, TodoistSyncPipeline,
 };
 use wiremock::matchers::{body_partial_json, header, method, path, path_regex};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -380,6 +380,110 @@ async fn linear_resolves_viewer_and_follows_graphql_cursor() {
     let outcome = pipeline.tick(&test_config(), &context).await.unwrap();
     assert_eq!(outcome.records_ingested, 2);
     assert_eq!(captures.documents.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn todoist_lists_tasks_dedupes_and_is_idempotent() {
+    let server = MockServer::start().await;
+    Mock::given(path("/tools/execute/TODOIST_GET_ALL_TASKS"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "successful": true,
+            "data": {"tasks": [
+                {"id": "t1", "content": "Write report", "created_at": "2026-05-01T00:00:00Z"},
+                {"id": "t2", "content": "Review PR", "created_at": "2026-05-02T00:00:00Z"}
+            ]}
+        })))
+        .mount(&server)
+        .await;
+    let (captures, context) = test_context();
+    let pipeline = TodoistSyncPipeline::new(
+        ComposioClient::new(direct_config(server.uri(), "key")),
+        "todoist-conn",
+    );
+    let outcome = pipeline.tick(&test_config(), &context).await.unwrap();
+    assert_eq!(outcome.records_ingested, 2);
+    {
+        let documents = captures.documents.lock().unwrap();
+        assert_eq!(documents[0].document_id, "todoist:t1");
+        assert_eq!(documents[0].title, "Write report");
+        // The document body is the task text, not JSON.
+        assert_eq!(documents[0].content, "Write report");
+        assert!(documents
+            .iter()
+            .all(|doc| doc.metadata["taint"] == "external_sync"));
+    }
+
+    let second = pipeline.tick(&test_config(), &context).await.unwrap();
+    assert_eq!(second.records_ingested, 0);
+    assert_eq!(captures.documents.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn todoist_reads_tasks_from_bare_data_array() {
+    // Composio sometimes returns the Todoist list as `data: [...]` directly
+    // rather than `data: { tasks: [...] }`; the pipeline must handle both.
+    let server = MockServer::start().await;
+    Mock::given(path("/tools/execute/TODOIST_GET_ALL_TASKS"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "successful": true,
+            "data": [
+                {"id": "t5", "content": "Ship release", "created_at": "2026-05-05T00:00:00Z"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    let (captures, context) = test_context();
+    let pipeline = TodoistSyncPipeline::new(
+        ComposioClient::new(direct_config(server.uri(), "key")),
+        "todoist-bare-conn",
+    );
+    let outcome = pipeline.tick(&test_config(), &context).await.unwrap();
+    assert_eq!(outcome.records_ingested, 1);
+    let docs = captures.documents.lock().unwrap();
+    assert_eq!(docs[0].document_id, "todoist:t5");
+    assert_eq!(docs[0].content, "Ship release");
+}
+
+struct TodoistEditedTask(AtomicUsize);
+
+impl Respond for TodoistEditedTask {
+    fn respond(&self, _: &Request) -> ResponseTemplate {
+        // Same task id, edited content on the second tick — no timestamp change
+        // (Todoist tasks have none), so only the payload fingerprint differs.
+        let content = if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+            "Draft proposal"
+        } else {
+            "Draft proposal (revised)"
+        };
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "successful": true,
+            "data": {"tasks": [{"id": "t9", "content": content, "created_at": "2026-05-05T00:00:00Z"}]}
+        }))
+    }
+}
+
+#[tokio::test]
+async fn todoist_reingests_edited_task_without_timestamp_change() {
+    let server = MockServer::start().await;
+    Mock::given(path("/tools/execute/TODOIST_GET_ALL_TASKS"))
+        .respond_with(TodoistEditedTask(AtomicUsize::new(0)))
+        .mount(&server)
+        .await;
+    let (captures, context) = test_context();
+    let pipeline = TodoistSyncPipeline::new(
+        ComposioClient::new(direct_config(server.uri(), "key")),
+        "todoist-edit-conn",
+    );
+
+    let first = pipeline.tick(&test_config(), &context).await.unwrap();
+    assert_eq!(first.records_ingested, 1);
+    // Second tick: identical id, edited content → new payload fingerprint →
+    // re-ingested (would be silently skipped if keyed on immutable created_at).
+    let second = pipeline.tick(&test_config(), &context).await.unwrap();
+    assert_eq!(second.records_ingested, 1);
+    let docs = captures.documents.lock().unwrap();
+    assert_eq!(docs.last().unwrap().document_id, "todoist:t9");
+    assert!(docs.last().unwrap().content.contains("revised"));
 }
 
 #[tokio::test]

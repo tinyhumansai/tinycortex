@@ -21,7 +21,7 @@ pub use composio::{
     ComposioClient, ConnectionLink, EntityStore, GitHubSyncPipeline, GmailSyncPipeline,
     GoogleCalendarSyncPipeline, GoogleDocsSyncPipeline, GoogleDriveSyncPipeline,
     GoogleSheetsSyncPipeline, LinearSyncPipeline, NotionSyncPipeline, SlackSearchBackfillPipeline,
-    SlackSyncPipeline,
+    SlackSyncPipeline, TodoistSyncPipeline,
 };
 pub use dispatcher::{SyncDispatcher, SyncRunResult};
 pub use github::GithubRepoSyncPipeline;
