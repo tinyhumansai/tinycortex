@@ -8,9 +8,10 @@ use tinycortex::memory::config::{ComposioMode, ComposioSyncConfig, MemoryConfig,
 use tinycortex::memory::sync::{
     ClickUpSyncPipeline, ComposioClient, GitHubSyncPipeline, GmailSyncPipeline,
     GoogleCalendarSyncPipeline, GoogleDocsSyncPipeline, GoogleDriveSyncPipeline,
-    GoogleSheetsSyncPipeline, LinearSyncPipeline, NotionSyncPipeline, SkillDocSink, SkillDocument,
-    SlackSearchBackfillPipeline, SlackSyncPipeline, SyncContext, SyncEvent, SyncEventSink,
-    SyncPipeline, SyncStage, SyncState, SyncStateStore, TodoistSyncPipeline,
+    GoogleSheetsSyncPipeline, LinearSyncPipeline, NotionSyncPipeline, OutlookSyncPipeline,
+    SkillDocSink, SkillDocument, SlackSearchBackfillPipeline, SlackSyncPipeline, SyncContext,
+    SyncEvent, SyncEventSink, SyncPipeline, SyncStage, SyncState, SyncStateStore,
+    TodoistSyncPipeline,
 };
 use wiremock::matchers::{body_partial_json, header, method, path, path_regex};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -811,6 +812,82 @@ async fn transient_retries_are_counted_in_persisted_budget() {
         .await
         .unwrap();
     assert_eq!(state.daily_budget.requests_used, 3);
+}
+
+struct OutlookPages;
+
+impl Respond for OutlookPages {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        let token = body
+            .pointer("/arguments/skip_token")
+            .and_then(|value| value.as_str());
+        // Page one returns a realistic full Graph `@odata.nextLink` URL; the
+        // pipeline must reduce it to the bare `$skiptoken` before page two, so
+        // the second request arrives with skip_token == the extracted token.
+        let data = if token == Some("AQMkADlabc123") {
+            serde_json::json!({
+                "successful": true,
+                "data": {"value": [
+                    {"id": "o2", "receivedDateTime": "2026-01-02T00:00:00Z", "subject": "Second"}
+                ]}
+            })
+        } else {
+            serde_json::json!({
+                "successful": true,
+                "data": {
+                    "value": [
+                        {"id": "o1", "receivedDateTime": "2026-01-01T00:00:00Z", "subject": "First"}
+                    ],
+                    "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/messages?$top=25&$skiptoken=AQMkADlabc123"
+                }
+            })
+        };
+        ResponseTemplate::new(200).set_body_json(data)
+    }
+}
+
+#[tokio::test]
+async fn outlook_paginates_persists_cursor_and_is_idempotent() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"/tools/execute/OUTLOOK_LIST_MESSAGES$"))
+        .and(header("x-api-key", "test-secret"))
+        .respond_with(OutlookPages)
+        .mount(&server)
+        .await;
+
+    let (captures, context) = test_context();
+    let pipeline = OutlookSyncPipeline::new(
+        ComposioClient::new(direct_config(server.uri(), "test-secret")),
+        "outlook-conn",
+    )
+    .with_limits(3, 10);
+    let config = test_config();
+
+    let first = pipeline.tick(&config, &context).await.unwrap();
+    assert_eq!(first.records_ingested, 2);
+    assert_eq!(first.actions_called, 2);
+    {
+        let docs = captures.documents.lock().unwrap();
+        assert_eq!(docs.len(), 2);
+        assert_eq!(docs[0].document_id, "outlook:o1");
+        assert_eq!(docs[0].title, "First");
+        assert!(docs
+            .iter()
+            .all(|doc| doc.metadata["taint"] == "external_sync"));
+    }
+
+    let state = SyncState::load(captures.as_ref(), "outlook", "outlook-conn")
+        .await
+        .unwrap();
+    assert_eq!(state.cursor.as_deref(), Some("2026-01-02T00:00:00Z"));
+    assert!(state.is_synced("o1@2026-01-01T00:00:00Z"));
+    assert!(state.is_synced("o2@2026-01-02T00:00:00Z"));
+
+    let second = pipeline.tick(&config, &context).await.unwrap();
+    assert_eq!(second.records_ingested, 0);
+    assert_eq!(captures.documents.lock().unwrap().len(), 2);
 }
 
 struct GoogleCalendarPages;
