@@ -1582,12 +1582,27 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tinyagents",
+ "tinycortex-api",
  "tokio",
  "toml",
  "tracing",
  "uuid",
  "walkdir",
  "wiremock",
+]
+
+[[package]]
+name = "tinycortex-api"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "uuid",
 ]
 
 [[package]]

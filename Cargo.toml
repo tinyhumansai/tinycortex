@@ -1,3 +1,17 @@
+# The engine crate is also the workspace root so `api/` is never an orphan
+# package: `cargo fmt --all`, `cargo check`, and `cargo test` from this
+# directory cover the stable-contract crate too. `vendor/` is excluded so the
+# nested TinyAgents submodule (reached through the `[patch.crates-io]` path
+# below) is not pulled in as an implicit member.
+[workspace]
+members = [".", "api"]
+# `default-members` would otherwise fall back to the root package alone (this is
+# a root-package workspace, not a virtual one), so a bare `cargo test` here
+# would silently skip `api/`. Naming both members keeps the contract crate in
+# every default build/test.
+default-members = [".", "api"]
+exclude = ["vendor"]
+
 [package]
 name = "tinycortex"
 version = "0.1.1"
@@ -69,6 +83,10 @@ thiserror = "2"
 # `.cargo/config.toml`; embedding hosts may supply their own crates.io patch so
 # the host and TinyCortex share one `EmbeddingModel` trait identity.
 tinyagents = "2.1"
+# The stable contract crate (value types, error enum, `Memory` trait). Declared
+# as a path dependency, not a registry requirement, so embedding hosts resolve
+# it through this checkout without needing their own `[patch.crates-io]` entry.
+tinycortex-api = { path = "api", version = "0.1.1" }
 toml = "0.8"
 uuid = { version = "1", features = ["serde", "v4"] }
 walkdir = "2"

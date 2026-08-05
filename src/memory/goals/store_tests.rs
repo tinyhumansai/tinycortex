@@ -60,6 +60,59 @@ fn save_enforces_byte_cap() {
 }
 
 #[test]
+fn save_rejects_secret_or_pii_text_even_when_items_are_built_directly() {
+    // `GoalsDoc.items` and `GoalItem.text` are public: a caller can bypass
+    // `GoalsDocMutations::add`/`edit`'s validation entirely by constructing a
+    // document by hand. `save` must be the choke point that still refuses to
+    // persist secret/PII-bearing text.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut doc = GoalsDoc {
+        items: vec![crate::memory::goals::types::GoalItem::new(
+            "g1",
+            "rotate api_key=sk-abcdefghijklmnopqrstuvwxyz123456",
+        )],
+    };
+    let err = save(tmp.path(), &mut doc).unwrap_err();
+    assert!(matches!(err, MemoryError::Invalid(_)));
+
+    // Nothing was written.
+    let reloaded = load(tmp.path()).unwrap();
+    assert!(reloaded.is_empty());
+}
+
+#[test]
+fn save_rejects_empty_or_multiline_text_even_when_items_are_built_directly() {
+    // Same bypass as the secret/PII case above, but for the other two
+    // `validate_goal_text` invariants: non-empty and single-line. `GoalItem`'s
+    // fields are public, so a caller can set `text` to anything, including
+    // values `GoalsDocMutations::add`/`edit` would never have accepted.
+    use crate::memory::goals::types::GoalItem;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut empty_doc = GoalsDoc {
+        items: vec![GoalItem {
+            id: "g1".to_string(),
+            text: "   ".to_string(),
+        }],
+    };
+    let err = save(tmp.path(), &mut empty_doc).unwrap_err();
+    assert!(matches!(err, MemoryError::Invalid(_)));
+
+    let mut multiline_doc = GoalsDoc {
+        items: vec![GoalItem {
+            id: "g1".to_string(),
+            text: "line one\n- [x] injected".to_string(),
+        }],
+    };
+    let err = save(tmp.path(), &mut multiline_doc).unwrap_err();
+    assert!(matches!(err, MemoryError::Invalid(_)));
+
+    // Neither call wrote anything to disk.
+    let reloaded = load(tmp.path()).unwrap();
+    assert!(reloaded.is_empty());
+}
+
+#[test]
 fn config_rooted_wrappers_round_trip() {
     use crate::memory::config::MemoryConfig;
     let tmp = tempfile::tempdir().unwrap();

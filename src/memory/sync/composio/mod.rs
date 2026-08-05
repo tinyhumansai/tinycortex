@@ -16,5 +16,5 @@ pub use orchestrator::{run_incremental_sync, IncrementalSource, PageFetch, SyncI
 pub use providers::{
     ClickUpSyncPipeline, GitHubSyncPipeline, GoogleCalendarSyncPipeline, GoogleDocsSyncPipeline,
     GoogleDriveSyncPipeline, GoogleSheetsSyncPipeline, LinearSyncPipeline, NotionSyncPipeline,
-    OutlookSyncPipeline, SlackSearchBackfillPipeline, SlackSyncPipeline,
+    OutlookSyncPipeline, SlackSearchBackfillPipeline, SlackSyncPipeline, TodoistSyncPipeline,
 };

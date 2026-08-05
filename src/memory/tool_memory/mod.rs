@@ -41,7 +41,12 @@
 
 pub mod render;
 pub mod store;
-pub mod types;
+/// The tool-memory rule value types now live in the dependency-light
+/// `tinycortex-api` crate. Aliasing the whole module (rather than the
+/// individual items) keeps every `super::types::…` /
+/// `crate::memory::tool_memory::types::…` path — inside this crate and in
+/// embedding hosts — resolving exactly as before.
+pub use tinycortex_api::tool_memory as types;
 
 #[cfg(test)]
 pub mod test_helpers;

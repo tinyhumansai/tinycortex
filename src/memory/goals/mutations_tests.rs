@@ -1,7 +1,9 @@
-//! Unit tests for [`super::GoalsDoc`] parse/render and in-memory mutation.
+//! Unit tests for the validating [`super::GoalsDocMutations`] surface
+//! (`add` / `edit` / `delete`) and its secret/PII guards.
 //! Ported from OpenHuman `memory_goals/types.rs`.
 
 use super::*;
+use crate::memory::goals::types::GoalItem;
 
 #[test]
 fn parse_round_trips_render() {
@@ -11,21 +13,6 @@ fn parse_round_trips_render() {
     let rendered = doc.render();
     let reparsed = GoalsDoc::parse(&rendered);
     assert_eq!(doc, reparsed);
-}
-
-#[test]
-fn render_starts_with_header() {
-    let doc = GoalsDoc::default();
-    assert!(doc.render().starts_with("# Long-term Goals"));
-}
-
-#[test]
-fn parse_ignores_non_item_lines() {
-    let body = "# Long-term Goals\n\nsome stray prose\n- [g1] real goal\n- malformed line\n";
-    let doc = GoalsDoc::parse(body);
-    assert_eq!(doc.items.len(), 1);
-    assert_eq!(doc.items[0].id, "g1");
-    assert_eq!(doc.items[0].text, "real goal");
 }
 
 #[test]
@@ -84,6 +71,19 @@ fn delete_removes_known_id_and_rejects_unknown() {
     doc.delete(&id).unwrap();
     assert!(doc.is_empty());
     assert!(doc.delete("nope").is_err());
+}
+
+#[test]
+fn delete_removes_only_the_first_occurrence_of_a_duplicate_id() {
+    // A well-formed document never has duplicate ids, but `GoalsDoc::parse`
+    // accepts a hand-edited or corrupt file that does. `delete` must not
+    // bulk-remove every item sharing the id.
+    let mut doc = GoalsDoc {
+        items: vec![GoalItem::new("g1", "first"), GoalItem::new("g1", "second")],
+    };
+    doc.delete("g1").unwrap();
+    assert_eq!(doc.items.len(), 1);
+    assert_eq!(doc.items[0].text, "second");
 }
 
 #[test]

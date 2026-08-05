@@ -201,5 +201,5 @@ pub fn node_id_to_path(node_id: &str) -> PathBuf {
 }
 
 #[cfg(test)]
-#[path = "types_tests.rs"]
+#[path = "tree_tests.rs"]
 mod tests;
