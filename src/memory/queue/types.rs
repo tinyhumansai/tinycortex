@@ -119,8 +119,9 @@ pub enum JobOutcome {
 }
 
 /// Lifecycle states persisted on `mem_tree_jobs.status`. Workers transition
-/// `ready → running → done|failed`. `Cancelled` is reserved for explicit admin
-/// actions (none surfaced yet).
+/// `ready → running → done|failed`. `Cancelled` settles a job outside the
+/// worker path — currently a failed row superseded by a newer one with the same
+/// `dedupe_key` during requeue (see `requeue_failed_where`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobStatus {
     /// Claimable: waiting for a worker (wire string `ready`).
@@ -132,8 +133,9 @@ pub enum JobStatus {
     /// Settled as failed after exhausting retries or on an unrecoverable
     /// classification (wire string `failed`).
     Failed,
-    /// Cancelled by explicit admin action (wire string `cancelled`); reserved,
-    /// no producer yet.
+    /// Settled without running to completion (wire string `cancelled`) — e.g. a
+    /// failed row superseded by a newer duplicate of the same `dedupe_key` when
+    /// the queue is requeued. Excluded from the `failed` counters.
     Cancelled,
 }
 

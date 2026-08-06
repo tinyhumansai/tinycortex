@@ -294,11 +294,16 @@ fn requeue_failed_where(config: &MemoryConfig, predicate: &str) -> Result<u64> {
 
         // Newest-first so the first row seen for a key is the one to keep.
         // `completed_at_ms` is stamped on failure; fall back to `created_at_ms`
-        // for legacy rows that predate the column.
+        // for legacy rows that predate the column. `created_at_ms` then `id`
+        // break exact-timestamp ties by enqueue order — job ids are random
+        // UUIDs, so `id` alone carries no ordering signal. For rows sharing a
+        // `dedupe_key` the pick is immaterial to correctness anyway (they are
+        // the same unit of work), but a stable order keeps the choice
+        // reproducible.
         let select = format!(
             "SELECT id, dedupe_key FROM mem_tree_jobs
               WHERE {predicate}
-              ORDER BY COALESCE(completed_at_ms, created_at_ms) DESC, id DESC"
+              ORDER BY COALESCE(completed_at_ms, created_at_ms) DESC, created_at_ms DESC, id DESC"
         );
         let candidates: Vec<(String, Option<String>)> = {
             let mut stmt = tx.prepare(&select)?;
