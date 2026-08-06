@@ -246,6 +246,129 @@ fn requeue_transient_failed_skips_unrecoverable_jobs() {
     assert_eq!(row_b.failure_class.as_deref(), Some("unrecoverable"));
 }
 
+/// Fail the same unit of work twice so two `failed` rows end up sharing one
+/// `dedupe_key`. Legal on disk: `idx_mem_tree_jobs_dedupe_active` only covers
+/// `ready`/`running`, so a failed row leaves the key free for a re-enqueue.
+/// Returns `(older_id, newer_id)`.
+fn two_failed_rows_sharing_a_dedupe_key(cfg: &MemoryConfig, chunk: &str) -> (String, String) {
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let id = enqueue(cfg, &extract_job(chunk, 1))
+            .unwrap()
+            .expect("key is free while the previous attempt sits in `failed`");
+        let claimed = claim_next(cfg, DEFAULT_LOCK_DURATION_MS).unwrap().unwrap();
+        mark_failed_typed(
+            cfg,
+            &claimed,
+            "No backend session for cloud embeddings",
+            Some(&JobFailure::unrecoverable("auth_missing")),
+        )
+        .unwrap();
+        ids.push(id);
+    }
+    (ids[0].clone(), ids[1].clone())
+}
+
+/// The production defect: a single blanket `UPDATE … SET status='ready'` over
+/// two failed rows sharing a `dedupe_key` puts both into the partial unique
+/// index at once, SQLite aborts the whole statement, and NOTHING is requeued —
+/// forever, on every boot and every 3h self-heal tick.
+///
+/// The requeue must succeed and requeue the newest row for the key.
+#[test]
+fn requeue_failed_survives_duplicate_dedupe_keys() {
+    let (_tmp, cfg) = test_config();
+    let (older, newer) = two_failed_rows_sharing_a_dedupe_key(&cfg, "c-dup");
+    assert_eq!(count_by_status(&cfg, JobStatus::Failed).unwrap(), 2);
+
+    let requeued = requeue_failed(&cfg).expect("requeue must not abort on a dedupe collision");
+
+    assert_eq!(requeued, 1, "exactly one row per dedupe_key may go ready");
+    assert_eq!(
+        get_job(&cfg, &newer).unwrap().unwrap().status,
+        JobStatus::Ready,
+        "the newest attempt is the one that retries"
+    );
+    assert_eq!(
+        get_job(&cfg, &older).unwrap().unwrap().status,
+        JobStatus::Cancelled,
+        "the superseded duplicate must settle, not stay counted as failed"
+    );
+    assert_eq!(
+        count_by_status(&cfg, JobStatus::Failed).unwrap(),
+        0,
+        "no failure may survive a manual retry — that is what pins the panel red"
+    );
+}
+
+/// Same collision on the automatic self-heal path (the one that logged
+/// `UNIQUE constraint failed: mem_tree_jobs.dedupe_key` on every boot).
+#[test]
+fn requeue_transient_failed_survives_duplicate_dedupe_keys() {
+    let (_tmp, cfg) = test_config();
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let id = enqueue(&cfg, &extract_job("c-dup-transient", 1))
+            .unwrap()
+            .expect("inserted");
+        let claimed = claim_next(&cfg, DEFAULT_LOCK_DURATION_MS).unwrap().unwrap();
+        mark_failed(&cfg, &claimed, "connection reset by peer").unwrap();
+        ids.push(id);
+    }
+
+    let requeued = requeue_transient_failed(&cfg).expect("self-heal must not abort");
+
+    assert_eq!(requeued, 1);
+    assert_eq!(
+        get_job(&cfg, &ids[1]).unwrap().unwrap().status,
+        JobStatus::Ready
+    );
+    assert_eq!(
+        get_job(&cfg, &ids[0]).unwrap().unwrap().status,
+        JobStatus::Cancelled
+    );
+}
+
+/// A failed row whose `dedupe_key` is already held by a live `ready` row must
+/// be left alone: requeueing it would collide, and the live row is already
+/// doing that work. It settles as a superseded duplicate rather than blocking
+/// the rest of the batch.
+#[test]
+fn requeue_failed_skips_keys_already_held_by_an_active_row() {
+    let (_tmp, cfg) = test_config();
+
+    // An unrelated failed row, which must still requeue in the same batch.
+    let other_id = enqueue(&cfg, &extract_job("c-other", 1)).unwrap().unwrap();
+    let claimed_other = claim_next(&cfg, DEFAULT_LOCK_DURATION_MS).unwrap().unwrap();
+    mark_failed(&cfg, &claimed_other, "boom").unwrap();
+
+    // A failed attempt at `c-live`...
+    let failed_id = enqueue(&cfg, &extract_job("c-live", 1)).unwrap().unwrap();
+    let claimed = claim_next(&cfg, DEFAULT_LOCK_DURATION_MS).unwrap().unwrap();
+    mark_failed(&cfg, &claimed, "boom").unwrap();
+    // ...and a fresh live row that re-took the same key. Enqueued last so no
+    // `claim_next` above can consume it.
+    let live_id = enqueue(&cfg, &extract_job("c-live", 5)).unwrap().unwrap();
+
+    let requeued = requeue_failed(&cfg).unwrap();
+
+    assert_eq!(requeued, 1, "only the unrelated row requeues");
+    assert_eq!(
+        get_job(&cfg, &other_id).unwrap().unwrap().status,
+        JobStatus::Ready
+    );
+    assert_eq!(
+        get_job(&cfg, &live_id).unwrap().unwrap().status,
+        JobStatus::Ready,
+        "the live row keeps its claim on the key, untouched"
+    );
+    assert_ne!(
+        get_job(&cfg, &failed_id).unwrap().unwrap().status,
+        JobStatus::Ready,
+        "requeueing onto an occupied key is exactly the collision to avoid"
+    );
+}
+
 #[test]
 fn recover_stale_locks_resets_running_rows() {
     let (_tmp, cfg) = test_config();

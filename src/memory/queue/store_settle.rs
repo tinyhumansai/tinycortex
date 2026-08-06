@@ -255,24 +255,135 @@ pub fn retry_all_failed(config: &MemoryConfig) -> Result<u64> {
     requeue_failed(config)
 }
 
+/// Shared requeue worker for [`requeue_failed`] / [`requeue_transient_failed`].
+///
+/// # Why this is not one blanket `UPDATE`
+///
+/// `idx_mem_tree_jobs_dedupe_active` is a **partial unique index** over
+/// `dedupe_key` restricted to `status IN ('ready', 'running')`. Failed rows sit
+/// outside it, so the same `dedupe_key` can legitimately accumulate several
+/// `failed` rows over time (the same seal / re-embed unit of work failing on
+/// successive attempts). The moment a single `UPDATE` flips two such siblings to
+/// `ready` they both enter the index and collide, SQLite aborts the **whole**
+/// statement, and **nothing** is requeued.
+///
+/// That is not hypothetical: it is what the periodic self-heal hit in
+/// production, logging `UNIQUE constraint failed: mem_tree_jobs.dedupe_key`
+/// every three hours and on every boot while the queue stayed permanently
+/// parked — and the manual "retry failed" path aborted the same way, so the
+/// user had no way out either.
+///
+/// So the requeue is filtered before it is applied:
+///
+/// - a key that **already has an active row** (`ready`/`running`) is skipped
+///   entirely — live work already covers it, and requeueing would collide;
+/// - among matched failed rows **sharing a key**, only the newest is requeued;
+///   its siblings are settled as `cancelled` (superseded duplicates of the same
+///   unit of work) so they stop being counted as failures the user must act on.
+/// - rows with `dedupe_key IS NULL` are outside the index and always requeue.
+///
+/// Selection and mutation run in one transaction, so a concurrent claim can't
+/// slip an active row in between the read and the write.
+///
+/// Returns the number of jobs actually flipped back to `ready` (cancelled
+/// duplicates are not counted — they were not requeued).
 fn requeue_failed_where(config: &MemoryConfig, predicate: &str) -> Result<u64> {
     with_connection(config, |conn| {
         let now_ms = Utc::now().timestamp_millis();
-        let sql = format!(
-            "UPDATE mem_tree_jobs
-                SET status = 'ready',
-                    attempts = 0,
-                    available_at_ms = ?1,
-                    locked_until_ms = NULL,
-                    started_at_ms = NULL,
-                    completed_at_ms = NULL,
-                    last_error = NULL,
-                    failure_reason = NULL,
-                    failure_class = NULL
-              WHERE {predicate}"
+        let tx = conn.unchecked_transaction()?;
+
+        // Newest-first so the first row seen for a key is the one to keep.
+        // `completed_at_ms` is stamped on failure; fall back to `created_at_ms`
+        // for legacy rows that predate the column.
+        let select = format!(
+            "SELECT id, dedupe_key FROM mem_tree_jobs
+              WHERE {predicate}
+              ORDER BY COALESCE(completed_at_ms, created_at_ms) DESC, id DESC"
         );
-        let n = conn.execute(&sql, params![now_ms])?;
-        Ok(n as u64)
+        let candidates: Vec<(String, Option<String>)> = {
+            let mut stmt = tx.prepare(&select)?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+
+        // Keys already held by a live row: requeueing onto one of these is the
+        // collision case, and the live row is already doing the work.
+        let active_keys: std::collections::HashSet<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT DISTINCT dedupe_key FROM mem_tree_jobs
+                  WHERE dedupe_key IS NOT NULL AND status IN ('ready', 'running')",
+            )?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?
+        };
+
+        let mut claimed_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut to_requeue: Vec<String> = Vec::new();
+        let mut to_cancel: Vec<String> = Vec::new();
+        let mut skipped_active = 0_usize;
+
+        for (id, dedupe_key) in candidates {
+            match dedupe_key {
+                // Outside the partial unique index — never collides.
+                None => to_requeue.push(id),
+                Some(key) if active_keys.contains(&key) => skipped_active += 1,
+                // First (newest) row for this key wins the requeue; every later
+                // sibling is the same unit of work, so settle it rather than
+                // leaving it counted as a failure the user must act on.
+                Some(key) => {
+                    if claimed_keys.insert(key) {
+                        to_requeue.push(id);
+                    } else {
+                        to_cancel.push(id);
+                    }
+                }
+            }
+        }
+
+        for id in &to_cancel {
+            tx.execute(
+                "UPDATE mem_tree_jobs
+                    SET status = 'cancelled',
+                        locked_until_ms = NULL,
+                        completed_at_ms = ?2,
+                        last_error = 'superseded by a newer job with the same dedupe_key'
+                  WHERE id = ?1",
+                params![id, now_ms],
+            )?;
+        }
+
+        let mut requeued = 0_u64;
+        for id in &to_requeue {
+            requeued += tx.execute(
+                "UPDATE mem_tree_jobs
+                    SET status = 'ready',
+                        attempts = 0,
+                        available_at_ms = ?2,
+                        locked_until_ms = NULL,
+                        started_at_ms = NULL,
+                        completed_at_ms = NULL,
+                        last_error = NULL,
+                        failure_reason = NULL,
+                        failure_class = NULL
+                  WHERE id = ?1",
+                params![id, now_ms],
+            )? as u64;
+        }
+
+        tx.commit()?;
+
+        if !to_cancel.is_empty() || skipped_active > 0 {
+            log::debug!(
+                "[queue::requeue] action=requeue_failed requeued={requeued} \
+                 cancelled_duplicates={} skipped_active_key={skipped_active}",
+                to_cancel.len()
+            );
+        }
+
+        Ok(requeued)
     })
 }
 
