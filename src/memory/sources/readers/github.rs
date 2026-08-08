@@ -12,10 +12,12 @@
 //!   `gh`-availability probe.
 //! - `types` — API response models and the `gh`-fallback list cache.
 //! - `git` — local bare-clone + `git log` / `git show` helpers.
-//! - `api` — `gh api` / REST list and read helpers.
+//! - `api` — `gh api` / REST transport plus commit list/read helpers.
+//! - `issues` — issue and pull-request list/read helpers.
 
 mod api;
 mod git;
+mod issues;
 mod types;
 
 #[cfg(test)]
@@ -230,7 +232,7 @@ impl GithubReader {
         }
 
         // Issues and PRs via gh CLI / API (no local equivalent)
-        match api::list_issues(&owner, &repo, max_issues, use_gh).await {
+        match issues::list_issues(&owner, &repo, max_issues, use_gh).await {
             Ok(issues) => items.extend(issues),
             Err(e) => {
                 tracing::warn!(error = %e, "[memory_sources:github] failed to list issues");
@@ -238,7 +240,7 @@ impl GithubReader {
             }
         }
 
-        match api::list_prs(&owner, &repo, max_prs, use_gh).await {
+        match issues::list_prs(&owner, &repo, max_prs, use_gh).await {
             Ok(prs) => items.extend(prs),
             Err(e) => {
                 tracing::warn!(error = %e, "[memory_sources:github] failed to list PRs");
@@ -298,13 +300,13 @@ impl GithubReader {
                 let num: u64 = ref_id
                     .parse()
                     .map_err(|_| format!("invalid issue number: {ref_id}"))?;
-                api::read_issue(&owner, &repo, num, use_gh).await
+                issues::read_issue(&owner, &repo, num, use_gh).await
             }
             ItemKind::PullRequest => {
                 let num: u64 = ref_id
                     .parse()
                     .map_err(|_| format!("invalid PR number: {ref_id}"))?;
-                api::read_pr(&owner, &repo, num, use_gh).await
+                issues::read_pr(&owner, &repo, num, use_gh).await
             }
         }
     }

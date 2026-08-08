@@ -73,6 +73,55 @@ fn commit_list_queries_carry_branch_and_path_filters() {
     );
 }
 
+/// Build a synthetic `GhCommit` for merge tests.
+fn gh_commit(sha: &str, subject: &str, ts: &str) -> types::GhCommit {
+    types::GhCommit {
+        sha: sha.into(),
+        commit: types::GhCommitInner {
+            message: subject.into(),
+            author: None,
+            committer: Some(types::GhAuthor {
+                name: None,
+                email: None,
+                date: Some(ts.into()),
+            }),
+        },
+        author: None,
+    }
+}
+
+#[test]
+fn merge_commit_batches_walks_every_path_before_truncating() {
+    // Two configured paths: the first returns two commits, the second one.
+    // The pre-fix code stopped after the first path once `out` reached `max`,
+    // silently dropping the `src` commit even though it is newer than the
+    // second `docs` commit.
+    let docs = vec![gh_commit("a", "docs first", "2024-01-01T00:00:00Z")];
+    let src = vec![gh_commit("b", "src newer", "2024-02-01T00:00:00Z")];
+
+    let merged = api::merge_commit_batches(vec![docs, src], 3);
+    let ids: Vec<&str> = merged.iter().map(|i| i.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["commit:b", "commit:a"],
+        "newest-first, both paths kept"
+    );
+}
+
+#[test]
+fn merge_commit_batches_dedups_by_sha_and_truncates_globally() {
+    // A commit touching both paths appears in both batches but only once.
+    let docs = vec![
+        gh_commit("a", "docs first", "2024-01-01T00:00:00Z"),
+        gh_commit("shared", "touches both", "2024-02-01T00:00:00Z"),
+    ];
+    let src = vec![gh_commit("shared", "touches both", "2024-02-01T00:00:00Z")];
+
+    let merged = api::merge_commit_batches(vec![docs, src], 1);
+    let ids: Vec<&str> = merged.iter().map(|i| i.id.as_str()).collect();
+    assert_eq!(ids, vec!["commit:shared"], "deduped and truncated to max");
+}
+
 #[test]
 fn parse_github_url_extracts_owner_and_repo() {
     let (owner, repo) = parse_github_url("https://github.com/openai/tiktoken").unwrap();

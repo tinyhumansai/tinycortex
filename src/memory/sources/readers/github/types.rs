@@ -74,6 +74,14 @@ pub(crate) struct GhPr {
     pub(crate) merged_at: Option<String>,
 }
 
+/// A comment on an issue or PR, slimmed to the fields the reader renders.
+#[derive(Debug, Clone)]
+pub(crate) struct IssueComment {
+    pub(crate) user: String,
+    pub(crate) body: String,
+    pub(crate) created_at: String,
+}
+
 /// What kind of GitHub item a list row refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ItemKind {
