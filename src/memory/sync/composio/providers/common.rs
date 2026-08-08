@@ -2,6 +2,19 @@ use serde_json::Value;
 
 use crate::memory::sync::traits::SkillDocument;
 
+/// Walk a JSON document by dotted path and return the first non-empty scalar.
+///
+/// # Not interchangeable with [`normalize::helpers::pick_str`]
+///
+/// A second `pick_str` lives in [`normalize::helpers`], and the two differ.
+/// This one resolves paths with [`Value::pointer`] (so a numeric segment
+/// indexes into an array) and **coerces `Number` to its string form**; that
+/// one walks with [`Value::get`] (objects only) and returns `None` for any
+/// non-string leaf. Swapping one for the other changes what normalisers emit
+/// for numeric fields. Keep them separate.
+///
+/// [`normalize::helpers`]: super::normalize::helpers
+/// [`normalize::helpers::pick_str`]: super::normalize::helpers::pick_str
 pub fn pick_str(value: &Value, paths: &[&str]) -> Option<String> {
     paths.iter().find_map(|path| {
         let pointer = format!("/{}", path.replace('.', "/"));
