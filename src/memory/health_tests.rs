@@ -87,6 +87,21 @@ fn with_detail_and_display() {
 }
 
 #[test]
+fn with_detail_truncates_long_input() {
+    // `with_detail` must bound the stored detail itself, not rely on every
+    // caller remembering to pre-truncate — an unbounded detail would balloon
+    // logs / wire payloads with a full provider response body.
+    let f = PipelineFailure::new(FailureCode::Transient).with_detail("x".repeat(500));
+    let detail = f.detail.expect("detail must be set");
+    assert!(
+        detail.chars().count() <= 201,
+        "detail not bounded, got {} chars",
+        detail.chars().count()
+    );
+    assert!(detail.ends_with('…'));
+}
+
+#[test]
 fn pipeline_failure_serde_roundtrips() {
     let f = PipelineFailure::new(FailureCode::EmbeddingDimMismatch).with_detail("got 3072");
     let json = serde_json::to_string(&f).unwrap();
@@ -333,6 +348,19 @@ fn parse_http_status_extracts_leading_code() {
     );
     assert_eq!(parse_http_status("no parens here"), None);
     assert_eq!(parse_http_status("(not a status): x"), None);
+}
+
+#[test]
+fn classify_embed_error_survives_context_with_parens() {
+    // `parse_http_status` must anchor on the `Embedding API error (` marker,
+    // not the first `(` in the flattened anyhow chain. A wrapper context
+    // containing parentheses before the real error used to make the parse
+    // return `None`, demoting a hard auth failure to `Transient`.
+    let base = anyhow::anyhow!("Embedding API error (401 Unauthorized): bad bearer");
+    let wrapped = base.context("provider rejected the request (see logs for details)");
+    let f = classify_embed_error(&wrapped);
+    assert_eq!(f.code, FailureCode::AuthInvalid);
+    assert!(f.is_unrecoverable());
 }
 
 #[test]

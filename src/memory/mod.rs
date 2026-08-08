@@ -73,10 +73,6 @@ pub mod entities;
 pub mod fsutil;
 pub mod goals;
 pub mod graph;
-/// Typed pipeline failure taxonomy (`FailureCode` / `FailureClass` /
-/// `PipelineFailure`) and the embed-error classifier that drives retry-vs-fail.
-///
-/// Distinct from `tinycortex_api::health`, which models *driver liveness*.
 pub mod health;
 pub mod ingest;
 pub mod queue;

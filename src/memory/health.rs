@@ -218,10 +218,11 @@ impl PipelineFailure {
         }
     }
 
-    /// Attach a non-localized detail string (truncated by callers; never
-    /// log secrets).
+    /// Attach a non-localized detail string (bounded by [`truncate_detail`];
+    /// never log secrets).
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
-        self.detail = Some(detail.into());
+        let detail = detail.into();
+        self.detail = Some(truncate_detail(&detail));
         self
     }
 
@@ -368,12 +369,12 @@ pub fn classify_embed_error_str(msg: &str) -> PipelineFailure {
     PipelineFailure::new(FailureCode::Transient).with_detail(truncate_detail(msg))
 }
 
-/// Extract the first HTTP status code from an `Embedding API error (<status>)`
-/// message. Returns the leading 3-digit number inside the first parenthesised
-/// group, if present.
+/// Extract the HTTP status code from an `Embedding API error (<status>)`
+/// message. Anchors on the `Embedding API error (` marker rather than the
+/// first `(` in the flattened anyhow chain, so a wrapper context that happens
+/// to contain parentheses before the real error cannot break the parse.
 fn parse_http_status(msg: &str) -> Option<u16> {
-    let open = msg.find('(')?;
-    let rest = &msg[open + 1..];
+    let (_, rest) = msg.split_once("Embedding API error (")?;
     let digits: String = rest
         .trim_start()
         .chars()
