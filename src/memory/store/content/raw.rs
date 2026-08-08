@@ -78,6 +78,8 @@ pub fn write_raw_items(
     if items.is_empty() {
         return Ok(0);
     }
+    super::ensure_obsidian_defaults_if_enabled(content_root);
+
     let mut written = 0usize;
     for item in items {
         let dir = raw_kind_dir(content_root, source_id, item.kind);

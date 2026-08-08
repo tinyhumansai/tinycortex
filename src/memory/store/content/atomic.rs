@@ -125,6 +125,8 @@ pub fn stage_summary_with_layout(
     scope_slug: &str,
     layout: SummaryDiskLayout<'_>,
 ) -> anyhow::Result<StagedSummary> {
+    super::ensure_obsidian_defaults_if_enabled(content_root);
+
     let rel_path = summary_rel_path_with_layout(
         input.tree_kind,
         scope_slug,

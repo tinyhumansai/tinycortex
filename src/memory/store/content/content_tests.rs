@@ -82,6 +82,30 @@ fn stage_chunks_replaces_stale_on_disk_body() {
     );
 }
 
+#[cfg(feature = "obsidian")]
+#[test]
+fn stage_chunks_stages_obsidian_defaults_when_feature_enabled() {
+    // Every content-write route must drop the bundled `.obsidian/` defaults
+    // into a fresh content root so a user opening the vault gets the
+    // intended graph colour mapping without manual configuration.
+    let dir = TempDir::new().unwrap();
+    let chunks = vec![sample_chunk(0)];
+    stage_chunks(dir.path(), &chunks).unwrap();
+
+    let graph = dir.path().join(".obsidian").join("graph.json");
+    let types = dir.path().join(".obsidian").join("types.json");
+    assert!(
+        graph.exists(),
+        "graph.json should be staged into content root"
+    );
+    assert!(
+        types.exists(),
+        "types.json should be staged into content root"
+    );
+    let g = std::fs::read_to_string(&graph).unwrap();
+    assert!(g.contains("colorGroups"), "graph.json missing colorGroups");
+}
+
 #[test]
 fn stage_chunks_email_skips_disk_write() {
     let dir = TempDir::new().unwrap();
