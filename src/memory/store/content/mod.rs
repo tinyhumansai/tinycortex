@@ -13,21 +13,27 @@
 //! - `read` — reads, SHA-256 verification, and front-matter splitting
 //! - `tags` — chunk-tag updates and Obsidian tag slugifiers
 //! - `raw` — verbatim per-item raw archive (`raw/<source>/<kind>/…`)
+//! - `obsidian` / `obsidian_registry` — Obsidian vault interop (`obsidian`
+//!   feature): stage bundled `.obsidian/` defaults, detect vault registration
+//! - `wiki_git` — git-backed mirror of summary nodes (`wiki-git` feature)
 //!
 //! ## Deferred
 //!
-//! The Obsidian-vault registry (`content::obsidian*`) and the git-backed wiki
-//! mirror (`content::wiki_git`) pull host config and git surfaces beyond this
-//! storage-primitive port; they are intentionally **not** ported here. The
-//! Config/SQLite-aware high-level readers (`read_chunk_body`, summary tag
+//! The Config/SQLite-aware high-level readers (`read_chunk_body`, summary tag
 //! rewrite, `stage_chunks` SQLite upsert) live with the chunk store.
 
 pub mod atomic;
 pub mod compose;
+#[cfg(feature = "obsidian")]
+pub mod obsidian;
+#[cfg(feature = "obsidian")]
+pub mod obsidian_registry;
 pub mod paths;
 pub mod raw;
 pub mod read;
 pub mod tags;
+#[cfg(feature = "wiki-git")]
+pub mod wiki_git;
 
 use std::path::Path;
 
