@@ -126,6 +126,15 @@ impl FailureCode {
         }
     }
 
+    /// Parses the stable wire string produced by [`Self::as_str`].
+    ///
+    /// Deliberately an inherent method returning `Option`, not a
+    /// [`std::str::FromStr`] impl: the trait must return `Result`, and this
+    /// arrived here as a verbatim relocation from the OpenHuman host. Changing
+    /// the signature would be an API change smuggled inside a move, which is
+    /// exactly what the port was structured to avoid. Revisit as its own
+    /// change if a `FromStr` impl is ever wanted.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         Some(match s {
             "budget_exhausted" => Self::BudgetExhausted,
