@@ -5,15 +5,15 @@
 //! otherwise the full page body is returned.
 //!
 //! The fetch-side SSRF guard (scheme/host policy plus a DNS resolver that
-//! pins connections to globally routable addresses) lives in the sibling
-//! `web_page_ssrf` module.
+//! pins connections to globally routable addresses) lives in the shared
+//! `ssrf` module, which the RSS reader uses too.
 
-#[path = "web_page_ssrf.rs"]
-mod web_page_ssrf;
+mod types;
 
 use async_trait::async_trait;
 
-use web_page_ssrf::{build_client, is_url_allowed};
+use super::ssrf::{build_client, is_url_allowed, read_body_capped};
+use types::SelectorSpec;
 
 use crate::memory::config::MemoryConfig;
 use crate::memory::error::MemoryEngineResult;
@@ -112,25 +112,10 @@ impl WebPageReader {
         }
 
         // Cap response body to 10 MiB so a hostile/giant page can't OOM us.
+        // The read is streamed so the cap is enforced while downloading, not
+        // after the whole body has been buffered into memory.
         const MAX_BODY_BYTES: u64 = 10 * 1024 * 1024;
-        if let Some(len) = resp.content_length() {
-            if len > MAX_BODY_BYTES {
-                return Err(format!(
-                    "page body exceeds {MAX_BODY_BYTES}-byte limit (Content-Length={len})"
-                ));
-            }
-        }
-
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| format!("failed to read page body: {e}"))?;
-        if bytes.len() as u64 > MAX_BODY_BYTES {
-            return Err(format!(
-                "page body exceeds {MAX_BODY_BYTES}-byte limit (read {} bytes)",
-                bytes.len()
-            ));
-        }
+        let bytes = read_body_capped(resp, MAX_BODY_BYTES).await?;
         let body = String::from_utf8_lossy(&bytes).into_owned();
 
         let extracted = if let Some(selector) = source.selector.as_deref() {
@@ -156,17 +141,6 @@ fn extract_title(html: &str) -> Option<String> {
     let content_start = html[start..].find('>')? + start + 1;
     let end = html[content_start..].find("</title>")? + content_start;
     Some(html[content_start..end].trim().to_string())
-}
-
-/// A parsed simple CSS selector: optional tag name, optional id, and class
-/// names. Supports `tag`, `tag.class`, `tag#id`, `.class`, `#id`, and stacked
-/// classes (`tag.a.b`, `.a.b`). A descendant/child chain (`div.content p`)
-/// targets the final compound selector — a full CSS engine is out of scope for
-/// this reader.
-struct SelectorSpec {
-    tag: Option<String>,
-    id: Option<String>,
-    classes: Vec<String>,
 }
 
 fn parse_selector(selector: &str) -> Option<SelectorSpec> {
@@ -242,10 +216,13 @@ fn extract_by_selector(html: &str, selector: &str) -> String {
     let mut offset = 0;
     while let Some(rel) = find_next_element(&lower, &spec, offset) {
         let abs_start = offset + rel;
-        let gt = lower[abs_start..]
-            .find('>')
-            .map(|i| abs_start + i)
-            .unwrap_or(lower.len());
+        let Some(gt_rel) = lower[abs_start..].find('>') else {
+            // An unclosed opening tag (e.g. a truncated `<div` at the end of
+            // the page) cannot contain a complete element, so stop scanning
+            // rather than computing an out-of-bounds content range.
+            break;
+        };
+        let gt = abs_start + gt_rel;
         let content_start = gt + 1;
         let tag = tag_name(&lower[abs_start..gt]).unwrap_or_default();
 

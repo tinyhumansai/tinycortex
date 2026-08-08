@@ -129,6 +129,17 @@ fn extract_by_selector_falls_back_when_class_missing() {
     assert!(result.contains("Fallback text"));
 }
 
+#[test]
+fn extract_by_selector_tolerates_unclosed_element() {
+    // A page truncated mid-tag (a `<div` with no closing `>`) must not panic:
+    // the unclosed element is skipped and extraction falls back to the
+    // stripped page text.
+    let html = "<html><body><article>Kept</article><div";
+    let result = extract_by_selector(html, "div");
+    assert!(result.contains("Kept"));
+    assert!(!result.contains('<'));
+}
+
 // ── Attribute parsing ───────────────────────────────────────────────
 
 #[test]

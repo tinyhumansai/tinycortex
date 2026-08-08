@@ -3,6 +3,14 @@
 //! Fetches and parses an RSS or Atom feed, returning entries as
 //! source items. Uses a lightweight XML parser (`quick-xml` via
 //! manual parsing) to avoid pulling in heavy feed crates.
+//!
+//! Fetches go through the shared `ssrf` guard (scheme/host policy, a DNS
+//! resolver that pins connections to globally routable addresses, and
+//! per-hop redirect re-checks), and the parsed feed is cached briefly so a
+//! list-then-read sync pass downloads it once rather than once per entry.
+
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 
@@ -12,12 +20,72 @@ use crate::memory::sources::types::{
     ContentType, MemorySourceEntry, SourceContent, SourceItem, SourceKind,
 };
 
+use super::ssrf::{build_client, is_url_allowed, read_body_capped};
 use super::{into_engine_error, SourceReader};
 
 const DEFAULT_MAX_ITEMS: u32 = 50;
 const MAX_FEED_BYTES: u64 = 5 * 1024 * 1024; // 5 MiB — guards against pathological feeds
 
-pub struct RssReader;
+/// How long a fetched feed is reused before the next read re-downloads it.
+///
+/// Kept short so a feed that updates mid-sync is picked up on the next sync;
+/// long enough to cover a list-then-read pass over a 50-entry feed.
+const FEED_CACHE_TTL: Duration = Duration::from_secs(60);
+
+/// A fetched feed snapshot cached across a list-then-read sync pass.
+struct FeedCache {
+    url: String,
+    fetched_at: Instant,
+    entries: Vec<FeedEntry>,
+}
+
+pub struct RssReader {
+    cache: Mutex<Option<FeedCache>>,
+}
+
+impl RssReader {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Fetch (or reuse a very fresh copy of) the feed at `url`.
+    ///
+    /// The workspace sync pipeline holds one reader across a tick and calls
+    /// `list_items` once, then `read_item` once per entry. Without a cache
+    /// that is N+1 downloads of the same feed per sync (and a rate-limit
+    /// risk against the feed host); the cache turns it into one fetch whose
+    /// results are reused for the read phase.
+    async fn fetch_entries(&self, url: &str) -> Result<Vec<FeedEntry>, String> {
+        // Read the cache in a nested scope so the mutex guard is dropped before
+        // the await below — the guard is not `Send`, and holding it across an
+        // await would make the reader's async methods non-`Send`.
+        {
+            let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(cached) = cache.as_ref() {
+                if cached.url == url && cached.fetched_at.elapsed() < FEED_CACHE_TTL {
+                    return Ok(cached.entries.clone());
+                }
+            }
+        }
+
+        let body = fetch_url(url).await?;
+        let entries = parse_feed_full(&body)?;
+        *self.cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(FeedCache {
+            url: url.to_string(),
+            fetched_at: Instant::now(),
+            entries: entries.clone(),
+        });
+        Ok(entries)
+    }
+}
+
+impl Default for RssReader {
+    fn default() -> Self {
+        Self {
+            cache: Mutex::new(None),
+        }
+    }
+}
 
 #[async_trait]
 impl SourceReader for RssReader {
@@ -62,12 +130,19 @@ impl RssReader {
             "[memory_sources:rss] listing items"
         );
 
-        let body = fetch_url(url).await?;
-        let entries = parse_feed(&body, max_items)?;
+        let entries = self.fetch_entries(url).await?;
 
         tracing::debug!(count = entries.len(), "[memory_sources:rss] parsed entries");
 
-        Ok(entries)
+        Ok(entries
+            .into_iter()
+            .take(max_items)
+            .map(|e| SourceItem {
+                id: e.id,
+                title: e.title,
+                updated_at_ms: e.updated_at_ms,
+            })
+            .collect())
     }
 
     async fn read_item_inner(
@@ -84,9 +159,7 @@ impl RssReader {
             "[memory_sources:rss] reading item"
         );
 
-        let body = fetch_url(url).await?;
-        let entries = parse_feed_full(&body)?;
-
+        let entries = self.fetch_entries(url).await?;
         let entry = entries
             .into_iter()
             .find(|e| e.id == item_id)
@@ -125,12 +198,19 @@ fn url_host(url: &str) -> String {
 }
 
 async fn fetch_url(url: &str) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
-        .map_err(|e| format!("failed to build http client: {e}"))?;
+    // SSRF guard: validate scheme and host, reject private/internal targets,
+    // and refuse redirects that would escape that policy.
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("invalid URL: {e}"))?;
+    if !is_url_allowed(&parsed) {
+        return Err(format!(
+            "rss source requires an http(s) URL to a public host, got: {}",
+            url.chars().take(64).collect::<String>()
+        ));
+    }
+
+    let client = build_client()?;
     let resp = client
-        .get(url)
+        .get(parsed)
         .header("User-Agent", "openhuman")
         .send()
         .await
@@ -140,50 +220,20 @@ async fn fetch_url(url: &str) -> Result<String, String> {
         return Err(format!("feed returned {}", resp.status()));
     }
 
-    // Guard against pathologically large feeds before buffering into memory.
-    if let Some(len) = resp.content_length() {
-        if len > MAX_FEED_BYTES {
-            return Err(format!(
-                "feed body too large: {len} bytes (limit {MAX_FEED_BYTES})"
-            ));
-        }
-    }
-
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("failed to read feed body: {e}"))?;
-
-    if bytes.len() as u64 > MAX_FEED_BYTES {
-        return Err(format!(
-            "feed body too large: {} bytes (limit {MAX_FEED_BYTES})",
-            bytes.len()
-        ));
-    }
-
-    String::from_utf8(bytes.to_vec()).map_err(|e| format!("feed body is not valid UTF-8: {e}"))
+    // Stream the body with a cap so a pathological feed can't OOM us before
+    // the size check runs (`Content-Length` can be omitted or understated).
+    let bytes = read_body_capped(resp, MAX_FEED_BYTES).await?;
+    String::from_utf8(bytes).map_err(|e| format!("feed body is not valid UTF-8: {e}"))
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct FeedEntry {
     id: String,
     title: String,
     body: String,
     link: Option<String>,
     published: Option<String>,
-}
-
-fn parse_feed(xml: &str, max_items: usize) -> Result<Vec<SourceItem>, String> {
-    let entries = parse_feed_full(xml)?;
-    Ok(entries
-        .into_iter()
-        .take(max_items)
-        .map(|e| SourceItem {
-            id: e.id,
-            title: e.title,
-            updated_at_ms: None,
-        })
-        .collect())
+    updated_at_ms: Option<i64>,
 }
 
 fn parse_feed_full(xml: &str) -> Result<Vec<FeedEntry>, String> {
@@ -222,6 +272,7 @@ fn parse_rss(xml: &str) -> Result<Vec<FeedEntry>, String> {
             .unwrap_or_else(|| format!("rss-{}", entries.len()));
 
         entries.push(FeedEntry {
+            updated_at_ms: pub_date.as_deref().and_then(rss_timestamp_ms),
             id,
             title,
             body: description,
@@ -257,6 +308,7 @@ fn parse_atom(xml: &str) -> Result<Vec<FeedEntry>, String> {
             extract_tag(entry_xml, "updated").or_else(|| extract_tag(entry_xml, "published"));
 
         entries.push(FeedEntry {
+            updated_at_ms: updated.as_deref().and_then(rss_timestamp_ms),
             id,
             title,
             body: content,
@@ -268,6 +320,16 @@ fn parse_atom(xml: &str) -> Result<Vec<FeedEntry>, String> {
     }
 
     Ok(entries)
+}
+
+/// Parse an RSS `pubDate` (RFC 2822) or Atom `updated`/`published` (RFC 3339)
+/// timestamp into epoch milliseconds, so workspace sync can skip unchanged
+/// entries instead of re-reading every item on every pass.
+fn rss_timestamp_ms(value: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc2822(value)
+        .or_else(|_| chrono::DateTime::parse_from_rfc3339(value))
+        .map(|dt| dt.timestamp_millis())
+        .ok()
 }
 
 /// Remove a surrounding `<![CDATA[ … ]]>` wrapper, if present.

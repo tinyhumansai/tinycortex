@@ -34,6 +34,11 @@ pub mod rss;
 #[cfg(feature = "sync")]
 pub mod web_page;
 
+/// SSRF guard + fetch hygiene shared by the sync-gated network readers
+/// (`web_page`, `rss`). See the `ssrf` module docs.
+#[cfg(feature = "sync")]
+mod ssrf;
+
 use async_trait::async_trait;
 
 use crate::memory::config::MemoryConfig;

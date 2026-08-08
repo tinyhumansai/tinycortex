@@ -1,23 +1,29 @@
-//! SSRF guard for the web-page reader: host/scheme policy plus a DNS
-//! resolver that pins connections to globally routable addresses.
+//! Shared SSRF guard and fetch hygiene for the network source readers.
 //!
-//! The hostname *text* check ([`is_blocked_host`]) rejects private IP
-//! literals, `localhost`, `.local` / `.internal` names, and single-label
-//! hostnames, but a public-looking name can resolve to a loopback / private /
-//! link-local address (including the cloud-metadata `169.254.169.254`) at
-//! lookup time. [`PublicOnlyResolver`] therefore vets the resolved addresses
-//! and only lets the connection proceed to a globally routable IP, so the
-//! request is pinned to an address we have already allowed (no re-resolution
-//! between the check and the connect). Redirects are re-checked through
-//! [`is_url_allowed`] so a public URL cannot bounce the fetch onto an internal
-//! host.
+//! The web-page and RSS readers both fetch user-configured URLs, so they share
+//! the policy in this module.
+//!
+//! The hostname *text* check (`is_blocked_host`) rejects private IP literals,
+//! `localhost`, `.local` / `.internal` names, and single-label hostnames, but
+//! a public-looking name can resolve to a loopback / private / link-local
+//! address (including the cloud-metadata `169.254.169.254`) at lookup time.
+//! `PublicOnlyResolver` therefore vets the resolved addresses and only lets the
+//! connection proceed to a globally routable IP, so the request is pinned to an
+//! address we have already allowed (no re-resolution between the check and the
+//! connect). Redirects are re-checked through `is_url_allowed` so a public URL
+//! cannot bounce the fetch onto an internal host.
+//!
+//! `read_body_capped` streams a response body and stops at a byte cap, so a
+//! hostile or gigantic page/feed cannot OOM the process before the size check
+//! runs.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
+use futures::stream::StreamExt;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 
-/// Build the HTTP client with a redirect policy that re-applies the SSRF
+/// Build an HTTP client with a redirect policy that re-applies the SSRF
 /// host/scheme check to every redirect hop, and a DNS resolver that only
 /// yields globally routable addresses.
 pub(super) fn build_client() -> Result<reqwest::Client, String> {
@@ -37,9 +43,41 @@ pub(super) fn build_client() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("failed to build http client: {e}"))
 }
 
+/// Stream a response body, failing once it exceeds `max` bytes.
+///
+/// `Response::bytes()` buffers the entire body before any size check, so a
+/// server that omits or understates `Content-Length` (for example a chunked
+/// response) could OOM the process despite the cap. Reading incrementally
+/// enforces the limit while the bytes arrive.
+pub(super) async fn read_body_capped(resp: reqwest::Response, max: u64) -> Result<Vec<u8>, String> {
+    // Trust a truthful Content-Length up front so a known-huge body is
+    // rejected before the first byte is read.
+    if let Some(len) = resp.content_length() {
+        if len > max {
+            return Err(format!(
+                "response body exceeds {max}-byte limit (Content-Length={len})"
+            ));
+        }
+    }
+
+    let mut body = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("failed to read response body: {e}"))?;
+        body.extend_from_slice(&chunk);
+        if body.len() as u64 > max {
+            return Err(format!(
+                "response body exceeds {max}-byte limit (read {} bytes)",
+                body.len()
+            ));
+        }
+    }
+    Ok(body)
+}
+
 /// A DNS resolver that only yields globally routable addresses.
 ///
-/// The text-based [`is_blocked_host`] check rejects private IP *literals* and
+/// The text-based `is_blocked_host` check rejects private IP *literals* and
 /// local hostnames, but a public-looking hostname can resolve to a loopback,
 /// private, link-local, or cloud-metadata address (`169.254.169.254`) at
 /// lookup time. Installing this resolver means reqwest connects to addresses
@@ -77,7 +115,7 @@ fn box_err(
 }
 
 /// Whether `ip` is a globally routable address — the resolved-address half of
-/// the SSRF guard. Mirrors the literal/name policy in [`is_blocked_host`]:
+/// the SSRF guard. Mirrors the literal/name policy in `is_blocked_host`:
 /// loopback, private, link-local, unique-local, multicast, broadcast,
 /// unspecified, and documentation/reserved ranges are not fetchable.
 fn is_public_ip(ip: IpAddr) -> bool {
@@ -172,5 +210,5 @@ fn is_private_ipv6(ip: std::net::Ipv6Addr) -> bool {
 }
 
 #[cfg(test)]
-#[path = "web_page_ssrf_tests.rs"]
+#[path = "ssrf_tests.rs"]
 mod tests;

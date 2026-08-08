@@ -51,12 +51,57 @@ fn parse_atom_extracts_entries() {
 #[test]
 fn parse_feed_detects_format() {
     let rss = "<rss><channel><item><title>T</title></item></channel></rss>";
-    assert!(parse_feed(rss, 10).is_ok());
+    assert!(parse_feed_full(rss).is_ok());
 
     let atom = "<feed><entry><title>T</title><id>1</id></entry></feed>";
-    assert!(parse_feed(atom, 10).is_ok());
+    assert!(parse_feed_full(atom).is_ok());
 
-    assert!(parse_feed("<html></html>", 10).is_err());
+    assert!(parse_feed_full("<html></html>").is_err());
+}
+
+// ── Entry timestamps ───────────────────────────────────────────────
+
+#[test]
+fn parse_rss_emits_pubdate_timestamp() {
+    let xml = r#"<rss version="2.0"><channel>
+        <item>
+            <title>Post</title>
+            <guid>1</guid>
+            <pubDate>Wed, 02 Oct 2002 13:00:00 GMT</pubDate>
+        </item>
+    </channel></rss>"#;
+
+    let entries = parse_rss(xml).unwrap();
+    // 2002-10-02T13:00:00Z in epoch milliseconds.
+    assert_eq!(entries[0].updated_at_ms, Some(1_033_563_600_000));
+}
+
+#[test]
+fn parse_atom_emits_updated_timestamp() {
+    let xml = r#"<feed xmlns="http://www.w3.org/2005/Atom">
+        <entry>
+            <title>Atom entry</title>
+            <id>urn:entry:1</id>
+            <updated>2026-03-01T12:00:00.000Z</updated>
+        </entry>
+    </feed>"#;
+
+    let entries = parse_atom(xml).unwrap();
+    // 2026-03-01T12:00:00Z in epoch milliseconds.
+    assert_eq!(entries[0].updated_at_ms, Some(1_772_366_400_000));
+}
+
+#[test]
+fn parse_item_without_timestamp_is_unknown() {
+    let xml = "<rss><channel><item><title>T</title></item></channel></rss>";
+    let entries = parse_rss(xml).unwrap();
+    assert_eq!(entries[0].updated_at_ms, None);
+}
+
+#[test]
+fn rss_timestamp_ms_rejects_garbage() {
+    assert_eq!(rss_timestamp_ms("not a date"), None);
+    assert_eq!(rss_timestamp_ms(""), None);
 }
 
 // ── CDATA unwrapping ────────────────────────────────────────────────
