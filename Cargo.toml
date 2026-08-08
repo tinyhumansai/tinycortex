@@ -63,6 +63,22 @@ sync = ["dep:reqwest", "dep:tracing", "tokio"]
 # the OpenRouter reference provider, but the pipeline depends only on the
 # `ChatProvider` / `Summariser` / `EmbeddingBackend` traits.
 persona = []
+
+# Git-backed wiki mirror of derived summary nodes
+# (`memory::store::content::wiki_git`): initialises `<content_root>/wiki/.git`,
+# commits `summaries/**`, and stores read high-water marks as lightweight
+# `refs/tags/read/*` pointers. Enables `git2` directly rather than implying
+# `git-diff`, which would additionally compile in the unrelated `memory::diff`
+# module — the same posture as `sync` and `providers-http` both enabling
+# `dep:reqwest` independently.
+wiki-git = ["dep:git2", "dep:hex"]
+
+# Obsidian vault interop (`memory::store::content::{obsidian,obsidian_registry}`):
+# stages the bundled `.obsidian/` defaults into the content root, and
+# best-effort detection of whether that root is a vault Obsidian already knows
+# about (its `obsidian.json` registry).
+obsidian = ["dep:dirs"]
+
 [dependencies]
 anyhow = "1"
 log = "0.4"
@@ -105,6 +121,10 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ], optional = true }
 tracing = { version = "0.1", optional = true }
+# Per-OS config/home dir probing for the Obsidian vault registry (`obsidian`).
+dirs = { version = "5", optional = true }
+# Hex-encodes summary read-pointer ids into git tag names (`wiki-git`).
+hex = { version = "0.4", optional = true }
 # tokio powers the optional background worker loops (`tokio` feature). It is
 # also listed under dev-dependencies so the async test suite always compiles.
 tokio = { version = "1", features = [
