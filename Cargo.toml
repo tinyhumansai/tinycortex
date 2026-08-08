@@ -113,6 +113,9 @@ tokio = { version = "1", features = [
     "macros",
     "time",
     "sync",
+    # `process` powers the GitHub source reader's `gh` / `git` subprocess calls
+    # (`memory::sources::readers::github`, behind the `sync` feature).
+    "process",
 ], optional = true }
 
 [dev-dependencies]
