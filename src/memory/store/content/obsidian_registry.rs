@@ -17,36 +17,12 @@
 //! never block the user — the caller still offers "open anyway" + "reveal
 //! folder" + a config-dir override that feeds back in here as `extra`.
 
+mod types;
+
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
-
-/// Outcome of a registration probe.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VaultRegistration {
-    /// `true` when some registered Obsidian vault's path equals or is an
-    /// ancestor of the content root.
-    pub registered: bool,
-    /// `true` when at least one candidate `obsidian.json` was found/read (even
-    /// if parsing it later fails — see the parse-error branch, which still
-    /// counts the file as found). Lets the UI distinguish "Obsidian is set up,
-    /// vault just not added yet" from "couldn't find Obsidian at all" (offer
-    /// install vs. offer add-as-vault).
-    pub config_found: bool,
-}
-
-/// Minimal shape of Obsidian's `obsidian.json`. We only need each vault's
-/// `path`; `ts`/`open` and any future keys are ignored by `serde`.
-#[derive(Debug, Deserialize)]
-struct ObsidianConfig {
-    #[serde(default)]
-    vaults: std::collections::HashMap<String, VaultEntry>,
-}
-
-#[derive(Debug, Deserialize)]
-struct VaultEntry {
-    path: String,
-}
+use types::ObsidianConfig;
+pub use types::VaultRegistration;
 
 /// Candidate `obsidian.json` locations, in priority order. `extra` (a
 /// user-supplied override pointing at Obsidian's *config dir*) is checked

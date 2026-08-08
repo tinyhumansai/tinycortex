@@ -7,8 +7,9 @@
 //! `workspace/git_cache/<owner>/<repo>.git`.
 //!
 //! Branch/path filters are honored here: a configured `branch` narrows `git
-//! log` to that ref (instead of `--all`), and configured `paths` become git
-//! pathspecs so commits touching unrelated paths are not ingested.
+//! log` to that ref (instead of the bare clone's `HEAD`), and configured
+//! `paths` become git pathspecs so commits touching unrelated paths are not
+//! ingested.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -115,8 +116,10 @@ async fn clone_bare(clone_url: &str, cache_dir: &Path) -> Result<(), String> {
 
 /// List commits in the bare clone, newest first, up to `max`.
 ///
-/// `branch` restricts the walk to a single ref (default `--all`), and `paths`
-/// narrows it to commits touching any of the given pathspecs.
+/// `branch` restricts the walk to a single ref (default `HEAD` — the bare
+/// clone's default branch, matching the REST fallback's default-branch
+/// scope), and `paths` narrows it to commits touching any of the given
+/// pathspecs.
 pub(super) async fn list_commits_git(
     owner: &str,
     repo: &str,
@@ -171,15 +174,16 @@ pub(super) async fn list_commits_git(
 
 /// Build the `git log` argument list for the commit walk.
 ///
-/// `branch` restricts the walk to a single ref (default `--all`), and `paths`
-/// narrows it to commits touching any of the given pathspecs (trailing
-/// `-- path1 path2`). Extracted as a pure helper so the filter wiring is
-/// unit-testable without a real clone.
+/// `branch` restricts the walk to a single ref (default `HEAD` — the bare
+/// clone's default branch, matching the REST fallback's default-branch
+/// scope), and `paths` narrows it to commits touching any of the given
+/// pathspecs (trailing `-- path1 path2`). Extracted as a pure helper so the
+/// filter wiring is unit-testable without a real clone.
 pub(super) fn log_args(max: u32, branch: Option<&str>, paths: &[String]) -> Vec<String> {
     let mut args: Vec<String> = vec!["log".to_string()];
     match branch {
         Some(b) if !b.is_empty() => args.push(b.to_string()),
-        _ => args.push("--all".to_string()),
+        _ => args.push("HEAD".to_string()),
     }
     args.push(format!("--max-count={max}"));
     args.push("--format=%H\t%s\t%aI".to_string());

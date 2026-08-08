@@ -94,7 +94,7 @@ impl Resolve for PublicOnlyResolver {
         Box::pin(async move {
             let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
                 .await
-                .map_err(|e| box_err(e))?
+                .map_err(box_err)?
                 .filter(|addr| is_public_ip(addr.ip()))
                 .collect();
             if addrs.is_empty() {

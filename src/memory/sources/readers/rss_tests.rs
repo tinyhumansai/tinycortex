@@ -160,6 +160,34 @@ fn parse_rss_description_with_cdata_is_clean() {
     assert!(!entries[0].body.contains("CDATA"));
 }
 
+// ── URL host redaction ──────────────────────────────────────────────
+
+#[test]
+fn url_host_redacts_userinfo() {
+    // Credentials embedded in a source URL must never reach debug traces —
+    // only the host is logged.
+    assert_eq!(
+        url_host("https://alice:secret@example.com/feed.xml"),
+        "example.com"
+    );
+}
+
+#[test]
+fn url_host_drops_path_query_and_fragment() {
+    assert_eq!(
+        url_host("https://example.com/feed?token=abc#top"),
+        "example.com"
+    );
+}
+
+#[test]
+fn url_host_fallback_strips_userinfo_without_scheme() {
+    // Scheme-less values are unparseable by reqwest; the textual fallback
+    // must still drop the `user:pass@` prefix and the path.
+    assert_eq!(url_host("alice:secret@example.com/feed"), "example.com");
+    assert_eq!(url_host("example.com/feed"), "example.com");
+}
+
 // ── Entity decoding ─────────────────────────────────────────────────
 
 #[test]

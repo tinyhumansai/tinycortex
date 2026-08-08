@@ -229,7 +229,7 @@ fn extract_by_selector(html: &str, selector: &str) -> String {
         let content_end = if tag.is_empty() {
             content_start
         } else {
-            find_matching_close(&lower, &tag, content_start).unwrap_or(content_start)
+            find_matching_close(&lower, tag, content_start).unwrap_or(content_start)
         };
         let close_len = tag.len() + 3;
 

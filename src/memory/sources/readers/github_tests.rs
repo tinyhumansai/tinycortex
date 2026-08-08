@@ -2,13 +2,16 @@ use super::*;
 use crate::memory::store::content::raw::RawKind;
 
 #[test]
-fn git_log_args_default_to_all_refs_without_branch() {
+fn git_log_args_default_to_head_without_branch() {
+    // With no branch configured the walk must stay on the bare clone's HEAD
+    // (the default branch), matching the REST fallback's default-branch scope
+    // rather than walking every ref.
     let args = git::log_args(50, None, &[]);
     assert_eq!(
         args,
         vec![
             "log".to_string(),
-            "--all".to_string(),
+            "HEAD".to_string(),
             "--max-count=50".to_string(),
             "--format=%H\t%s\t%aI".to_string(),
         ]
@@ -34,9 +37,9 @@ fn git_log_args_restrict_to_branch_and_paths() {
             "docs/".to_string(),
         ]
     );
-    // Empty/whitespace branch falls back to --all, never an empty ref.
+    // Empty/whitespace branch falls back to HEAD, never an empty ref.
     let args = git::log_args(1, Some(""), &[]);
-    assert_eq!(args[1], "--all");
+    assert_eq!(args[1], "HEAD");
 }
 
 #[test]
@@ -70,6 +73,23 @@ fn commit_list_queries_carry_branch_and_path_filters() {
     assert_eq!(
         api::commit_list_queries(Some(""), &["a/".to_string()]),
         vec![String::from("path=a/")]
+    );
+}
+
+#[test]
+fn commit_list_queries_percent_encode_special_chars() {
+    // `&`, `#`, `=` and spaces inside a branch or path value would be parsed
+    // as query syntax and corrupt the filter; they must be percent-encoded.
+    // `/` is left intact (legal in a query component, and GitHub's commits
+    // `path` filter expects the common `path=src/` shape unencoded).
+    assert_eq!(
+        api::commit_list_queries(Some("feature/one&two"), &["src/#1.rs".to_string()]),
+        vec![String::from("sha=feature/one%26two&path=src/%231.rs")]
+    );
+    // Unreserved values are unchanged.
+    assert_eq!(
+        api::commit_list_queries(Some("main"), &["docs/".to_string()]),
+        vec![String::from("sha=main&path=docs/")]
     );
 }
 

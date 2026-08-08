@@ -5,6 +5,8 @@
 //! `.gitignore`. Raw source mirrors, chunk intermediates, Obsidian defaults,
 //! and future non-summary wiki artifacts are left out of history.
 
+mod types;
+
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -13,6 +15,7 @@ use chrono::{DateTime, Utc};
 use git2::{ErrorCode, Oid, Repository, RepositoryOpenFlags, Signature};
 
 use super::paths::WIKI_PREFIX;
+pub use types::{SummaryCommitBatch, SummaryCommitEntry};
 
 static WIKI_GIT_LOCK: Mutex<()> = Mutex::new(());
 
@@ -31,27 +34,6 @@ fn lock_wiki_git() -> std::sync::MutexGuard<'static, ()> {
 const SIG_NAME: &str = "OpenHuman Memory";
 const SIG_EMAIL: &str = "memory-wiki@openhuman.local";
 const GITIGNORE_BODY: &str = "*\n!/.gitignore\n!/summaries/\n!/summaries/**\n";
-
-/// Metadata for one summary node included in a wiki git commit.
-#[derive(Clone, Debug)]
-pub struct SummaryCommitEntry {
-    pub summary_id: String,
-    pub content_path: String,
-    pub level: u32,
-    pub child_count: usize,
-    pub token_count: u32,
-    pub time_range_start: DateTime<Utc>,
-    pub time_range_end: DateTime<Utc>,
-}
-
-/// Metadata for one tree seal represented as a wiki git commit.
-#[derive(Clone, Debug)]
-pub struct SummaryCommitBatch {
-    pub reason: String,
-    pub tree_id: String,
-    pub tree_scope: String,
-    pub entries: Vec<SummaryCommitEntry>,
-}
 
 /// Ensure the wiki repository exists and has a commit containing the supplied
 /// summary files. Existing non-summary tracked entries are removed from the

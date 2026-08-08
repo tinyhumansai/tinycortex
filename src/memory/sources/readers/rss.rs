@@ -9,6 +9,8 @@
 //! per-hop redirect re-checks), and the parsed feed is cached briefly so a
 //! list-then-read sync pass downloads it once rather than once per entry.
 
+mod types;
+
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -22,6 +24,7 @@ use crate::memory::sources::types::{
 
 use super::ssrf::{build_client, is_url_allowed, read_body_capped};
 use super::{into_engine_error, SourceReader};
+use types::{FeedCache, FeedEntry};
 
 const DEFAULT_MAX_ITEMS: u32 = 50;
 const MAX_FEED_BYTES: u64 = 5 * 1024 * 1024; // 5 MiB — guards against pathological feeds
@@ -31,13 +34,6 @@ const MAX_FEED_BYTES: u64 = 5 * 1024 * 1024; // 5 MiB — guards against patholo
 /// Kept short so a feed that updates mid-sync is picked up on the next sync;
 /// long enough to cover a list-then-read pass over a 50-entry feed.
 const FEED_CACHE_TTL: Duration = Duration::from_secs(60);
-
-/// A fetched feed snapshot cached across a list-then-read sync pass.
-struct FeedCache {
-    url: String,
-    fetched_at: Instant,
-    entries: Vec<FeedEntry>,
-}
 
 pub struct RssReader {
     cache: Mutex<Option<FeedCache>>,
@@ -185,16 +181,30 @@ impl RssReader {
 }
 
 /// Extract just the host portion of a URL for debug-log redaction so we
-/// don't leak query params, paths, or embedded credentials.
+/// don't leak query params, paths, or embedded credentials (userinfo).
 fn url_host(url: &str) -> String {
-    let stripped = url
-        .trim_start_matches("https://")
-        .trim_start_matches("http://");
-    stripped
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(stripped)
-        .to_string()
+    // A real parse drops any `user:pass@` prefix via `host_str()`. When the
+    // value is not a parseable URL (it will be rejected by the SSRF guard
+    // later anyway), fall back to a textual host extraction that still strips
+    // userinfo and the path/query/fragment.
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+        .unwrap_or_else(|| {
+            let authority = url
+                .trim_start_matches("https://")
+                .trim_start_matches("http://")
+                .split(['/', '?', '#'])
+                .next()
+                .unwrap_or(url);
+            // Only the last `@`-separated segment can be the host; anything
+            // before it is credentials and must not reach the log.
+            authority
+                .rsplit('@')
+                .next()
+                .unwrap_or(authority)
+                .to_string()
+        })
 }
 
 async fn fetch_url(url: &str) -> Result<String, String> {
@@ -224,16 +234,6 @@ async fn fetch_url(url: &str) -> Result<String, String> {
     // the size check runs (`Content-Length` can be omitted or understated).
     let bytes = read_body_capped(resp, MAX_FEED_BYTES).await?;
     String::from_utf8(bytes).map_err(|e| format!("feed body is not valid UTF-8: {e}"))
-}
-
-#[derive(Debug, Clone)]
-struct FeedEntry {
-    id: String,
-    title: String,
-    body: String,
-    link: Option<String>,
-    published: Option<String>,
-    updated_at_ms: Option<i64>,
 }
 
 fn parse_feed_full(xml: &str) -> Result<Vec<FeedEntry>, String> {

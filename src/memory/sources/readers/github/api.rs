@@ -127,17 +127,44 @@ pub(super) async fn fetch_all_pages<T: serde::de::DeserializeOwned>(
     Ok(out)
 }
 
+/// Percent-encode a branch or path value for use as a URL query parameter.
+///
+/// RFC 3986 unreserved characters and `/` are kept as-is; everything else
+/// (`&`, `=`, `#`, `?`, `%`, spaces, …) is percent-encoded so a value cannot
+/// be misparsed as query syntax and corrupt the filter. `/` is left intact
+/// because it is legal in a query component and GitHub's commits `sha`/`path`
+/// filters expect the common `path=src/lib.rs` shape unencoded.
+fn percent_encode_query(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 /// Build the `extra_query` strings for the commits endpoint — one per
 /// configured path (the endpoint accepts a single `path` filter), each
 /// carrying the branch's `sha` when set. An empty path list means "no path
 /// filter" (a single query carrying only the branch filter, if any).
-/// Extracted as a pure helper so the filter wiring is unit-testable.
+/// Branch/path values are percent-encoded so `&`, `#`, `=` inside them cannot
+/// corrupt the query. Extracted as a pure helper so the filter wiring is
+/// unit-testable.
 pub(super) fn commit_list_queries(branch: Option<&str>, paths: &[String]) -> Vec<String> {
-    let sha_q = branch.filter(|b| !b.is_empty()).map(|b| format!("sha={b}"));
+    let sha_q = branch
+        .filter(|b| !b.is_empty())
+        .map(|b| format!("sha={}", percent_encode_query(b)));
     let path_qs: Vec<String> = if paths.is_empty() {
         vec![String::new()]
     } else {
-        paths.iter().map(|p| format!("path={p}")).collect()
+        paths
+            .iter()
+            .map(|p| format!("path={}", percent_encode_query(p)))
+            .collect()
     };
     path_qs
         .into_iter()
@@ -214,7 +241,7 @@ pub(super) fn merge_commit_batches(batches: Vec<Vec<GhCommit>>, max: u32) -> Vec
     // Each path's query returns its commits newest-first, but the merged set
     // is path-ordered. Re-sort by commit time (newest first) so the global
     // truncation keeps the most recent commits across all configured paths.
-    out.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+    out.sort_by_key(|b| std::cmp::Reverse(b.updated_at_ms));
     out.truncate(max as usize);
     out
 }
