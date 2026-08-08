@@ -6,7 +6,7 @@
 //!
 //! ## SSRF guard
 //!
-//! [`read_item_inner`](WebPageReader::read_item_inner) only fetches `http(s)`
+//! `read_item_inner` only fetches `http(s)`
 //! URLs and refuses hosts that could target non-public resources: loopback /
 //! private / link-local / unique-local IP literals, `localhost`, `.local` /
 //! `.internal` names, and single-label hostnames (internal service names).

@@ -218,7 +218,7 @@ impl PipelineFailure {
         }
     }
 
-    /// Attach a non-localized detail string (bounded by [`truncate_detail`];
+    /// Attach a non-localized detail string (bounded by `truncate_detail`;
     /// never log secrets).
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         let detail = detail.into();

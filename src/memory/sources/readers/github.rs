@@ -10,9 +10,9 @@
 //! - [`self`] — [`GithubReader`] orchestration: item listing/reading, URL
 //!   parsing, raw-archive coordinates, shared utilities, and the cached
 //!   `gh`-availability probe.
-//! - [`types`] — API response models and the `gh`-fallback list cache.
-//! - [`git`] — local bare-clone + `git log` / `git show` helpers.
-//! - [`api`] — `gh api` / REST list and read helpers.
+//! - `types` — API response models and the `gh`-fallback list cache.
+//! - `git` — local bare-clone + `git log` / `git show` helpers.
+//! - `api` — `gh api` / REST list and read helpers.
 
 mod api;
 mod git;
