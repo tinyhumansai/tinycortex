@@ -40,32 +40,54 @@ pub(super) async fn ensure_bare_clone(
     cache_dir: &Path,
 ) -> Result<(), String> {
     if cache_dir.join("HEAD").exists() {
-        tracing::debug!(
-            cache = %cache_dir.display(),
-            "[memory_sources:github:git] fetching into existing bare clone"
-        );
-        let output = tokio::time::timeout(
-            GIT_CLONE_TIMEOUT,
-            tokio::process::Command::new("git")
-                .args(["fetch", "--prune", "--quiet"])
-                .current_dir(cache_dir)
-                .output(),
-        )
-        .await
-        .map_err(|_| "git fetch timed out".to_string())?
-        .map_err(|e| format!("git fetch failed: {e}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("git fetch exited {}: {stderr}", output.status));
-        }
-        return Ok(());
+        return fetch_existing_bare(cache_dir).await;
     }
 
+    let clone_url = format!("https://github.com/{owner}/{repo}.git");
+    clone_bare(&clone_url, cache_dir).await
+}
+
+/// `git fetch` into an existing bare clone.
+///
+/// The refspec is explicit (`+refs/heads/*:refs/heads/*`): a bare
+/// `git clone` records no `remote.origin.fetch` mapping, so a bare `git fetch`
+/// without one would only update `FETCH_HEAD` and leave `refs/heads/*` at the
+/// initial clone — every later sync would silently miss new GitHub activity.
+/// `--prune` also drops local heads the remote has since deleted.
+async fn fetch_existing_bare(cache_dir: &Path) -> Result<(), String> {
+    tracing::debug!(
+        cache = %cache_dir.display(),
+        "[memory_sources:github:git] fetching into existing bare clone"
+    );
+    let output = tokio::time::timeout(
+        GIT_CLONE_TIMEOUT,
+        tokio::process::Command::new("git")
+            .args([
+                "fetch",
+                "--prune",
+                "--quiet",
+                "origin",
+                "+refs/heads/*:refs/heads/*",
+            ])
+            .current_dir(cache_dir)
+            .output(),
+    )
+    .await
+    .map_err(|_| "git fetch timed out".to_string())?
+    .map_err(|e| format!("git fetch failed: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git fetch exited {}: {stderr}", output.status));
+    }
+    Ok(())
+}
+
+/// Fresh bare clone of `clone_url` into `cache_dir`.
+async fn clone_bare(clone_url: &str, cache_dir: &Path) -> Result<(), String> {
     if let Some(parent) = cache_dir.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create cache dir: {e}"))?;
     }
 
-    let clone_url = format!("https://github.com/{owner}/{repo}.git");
     tracing::info!(
         url = %clone_url,
         cache = %cache_dir.display(),
@@ -75,7 +97,7 @@ pub(super) async fn ensure_bare_clone(
     let output = tokio::time::timeout(
         GIT_CLONE_TIMEOUT,
         tokio::process::Command::new("git")
-            .args(["clone", "--bare", "--quiet", &clone_url])
+            .args(["clone", "--bare", "--quiet", clone_url])
             .arg(cache_dir)
             .output(),
     )
@@ -230,3 +252,7 @@ pub(super) async fn read_commit_git(
         }),
     })
 }
+
+#[cfg(test)]
+#[path = "git_tests.rs"]
+mod tests;
