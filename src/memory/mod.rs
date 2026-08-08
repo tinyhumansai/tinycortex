@@ -73,6 +73,7 @@ pub mod entities;
 pub mod fsutil;
 pub mod goals;
 pub mod graph;
+pub mod health;
 pub mod ingest;
 pub mod queue;
 pub mod retrieval;

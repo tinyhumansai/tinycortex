@@ -13,25 +13,54 @@
 //! - `read` — reads, SHA-256 verification, and front-matter splitting
 //! - `tags` — chunk-tag updates and Obsidian tag slugifiers
 //! - `raw` — verbatim per-item raw archive (`raw/<source>/<kind>/…`)
+//! - `obsidian` / `obsidian_registry` — Obsidian vault interop (`obsidian`
+//!   feature): stage bundled `.obsidian/` defaults, detect vault registration
+//! - `wiki_git` — git-backed mirror of summary nodes (`wiki-git` feature)
 //!
 //! ## Deferred
 //!
-//! The Obsidian-vault registry (`content::obsidian*`) and the git-backed wiki
-//! mirror (`content::wiki_git`) pull host config and git surfaces beyond this
-//! storage-primitive port; they are intentionally **not** ported here. The
-//! Config/SQLite-aware high-level readers (`read_chunk_body`, summary tag
+//! The Config/SQLite-aware high-level readers (`read_chunk_body`, summary tag
 //! rewrite, `stage_chunks` SQLite upsert) live with the chunk store.
 
 pub mod atomic;
 pub mod compose;
+#[cfg(feature = "obsidian")]
+pub mod obsidian;
+#[cfg(feature = "obsidian")]
+pub mod obsidian_registry;
 pub mod paths;
 pub mod raw;
 pub mod read;
 pub mod tags;
+#[cfg(feature = "wiki-git")]
+pub mod wiki_git;
 
 use std::path::Path;
 
 use crate::memory::chunks::{Chunk, SourceKind, StagedChunk};
+
+/// Best-effort stage of the bundled `.obsidian/` vault defaults into
+/// `content_root`, no-op when the `obsidian` feature is disabled.
+///
+/// Every content-write route (`stage_chunks`, `stage_summary*`, raw writes)
+/// calls this before creating files, so a fresh content root gets its
+/// `.obsidian/` directory on first write. The underlying helper is idempotent
+/// (never overwrites an existing file) and never returns a hard error — a
+/// failed stage logs a warning and is ignored so persistence is never aborted
+/// over a cosmetic vault default.
+#[cfg(feature = "obsidian")]
+fn ensure_obsidian_defaults_if_enabled(content_root: &Path) {
+    if let Err(err) = obsidian::ensure_obsidian_defaults(content_root) {
+        log::warn!(
+            "[content_store] stage obsidian defaults failed at {:?}: {err:#}",
+            content_root
+        );
+    }
+}
+
+/// Feature-off twin: no-op so callers don't need `#[cfg]` per call site.
+#[cfg(not(feature = "obsidian"))]
+fn ensure_obsidian_defaults_if_enabled(_content_root: &Path) {}
 
 pub use atomic::{stage_summary, stage_summary_with_layout, StagedSummary};
 pub use compose::{
@@ -64,6 +93,8 @@ pub use tags::{entity_tag, slugify_tag_kind, slugify_tag_value, update_chunk_tag
 /// per-message raw archive, so a `StagedChunk` row with an empty `content_path`
 /// is emitted and read paths fall back to the raw archive.
 pub fn stage_chunks(content_root: &Path, chunks: &[Chunk]) -> anyhow::Result<Vec<StagedChunk>> {
+    ensure_obsidian_defaults_if_enabled(content_root);
+
     let mut staged = Vec::with_capacity(chunks.len());
 
     for chunk in chunks {
