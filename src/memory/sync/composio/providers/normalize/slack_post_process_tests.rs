@@ -70,6 +70,26 @@ fn history_drops_message_without_ts() {
     assert_eq!(msgs[0]["text"], "has ts");
 }
 
+#[test]
+fn history_removes_nested_envelope_after_reshape() {
+    let mut data = json!({
+        "data": {
+            "messages": [
+                { "ts": "1714003200.0", "user": "U1", "text": "hi" }
+            ]
+        }
+    });
+    post_process("SLACK_FETCH_CONVERSATION_HISTORY", None, &mut data);
+
+    let msgs = data["messages"].as_array().unwrap();
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0]["text"], "hi");
+    assert!(
+        data.pointer("/data").is_none(),
+        "consumed `data.messages` envelope must be removed, got: {data}"
+    );
+}
+
 // ─── SLACK_LIST_CONVERSATIONS ─────────────────────────────────────────────
 
 #[test]
@@ -108,6 +128,10 @@ fn list_conversations_falls_back_to_conversations_key() {
     let channels = data["channels"].as_array().unwrap();
     assert_eq!(channels.len(), 1);
     assert_eq!(channels[0]["id"], "C2");
+    assert!(
+        data.pointer("/conversations").is_none(),
+        "consumed `conversations` field must be removed"
+    );
 }
 
 // ─── SLACK_SEARCH_MESSAGES ────────────────────────────────────────────────
@@ -167,6 +191,59 @@ fn search_messages_no_matches_emits_empty_array() {
     post_process("SLACK_SEARCH_MESSAGES", None, &mut data);
     let msgs = data["messages"].as_array().unwrap();
     assert!(msgs.is_empty());
+}
+
+#[test]
+fn search_messages_removes_nested_envelope_after_reshape() {
+    let mut data = json!({
+        "data": {
+            "messages": {
+                "matches": [
+                    { "ts": "1714003200.0", "user": "U1", "text": "nested", "channel": { "id": "C2" } }
+                ],
+                "paging": { "pages": 1 }
+            }
+        }
+    });
+    post_process("SLACK_SEARCH_MESSAGES", None, &mut data);
+
+    let msgs = data["messages"].as_array().unwrap();
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0]["channel_id"], "C2");
+    assert_eq!(data["pages"], 1_u64);
+    assert!(
+        data.pointer("/data").is_none(),
+        "consumed `data.messages` envelope must be removed, got: {data}"
+    );
+}
+
+#[test]
+fn search_messages_doubly_nested_paging_preserved() {
+    let mut data = json!({
+        "data": {
+            "data": {
+                "messages": {
+                    "matches": [
+                        { "ts": "1714003200.0", "user": "U1", "text": "deep", "channel": { "id": "C3" } }
+                    ],
+                    "paging": { "pages": 4 }
+                }
+            }
+        }
+    });
+    post_process("SLACK_SEARCH_MESSAGES", None, &mut data);
+
+    let msgs = data["messages"].as_array().unwrap();
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0]["text"], "deep");
+    assert_eq!(
+        data["pages"], 4_u64,
+        "doubly-nested paging must be preserved"
+    );
+    assert!(
+        data.pointer("/data").is_none(),
+        "consumed `data.data.messages` envelope must be removed, got: {data}"
+    );
 }
 
 // ─── Unknown slug ─────────────────────────────────────────────────────────

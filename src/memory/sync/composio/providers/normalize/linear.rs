@@ -21,8 +21,10 @@ pub fn extract_issues(data: &Value) -> Vec<Value> {
     let candidates = [
         data.pointer("/data/nodes"),
         data.pointer("/nodes"),
-        data.pointer("/data/data/nodes"),
         data.pointer("/data/issues/nodes"),
+        data.pointer("/issues/nodes"),
+        data.pointer("/data/data/nodes"),
+        data.pointer("/data/data/issues/nodes"),
         data.pointer("/data/results"),
         data.pointer("/results"),
         data.pointer("/data/items"),
@@ -170,6 +172,19 @@ mod tests {
     fn extract_issues_from_data_issues_nodes() {
         let data = json!({ "data": { "issues": { "nodes": [{"id": "i4"}, {"id": "i5"}, {"id": "i6"}] } } });
         assert_eq!(extract_issues(&data).len(), 3);
+    }
+
+    #[test]
+    fn extract_issues_from_top_level_issues_nodes() {
+        let data = json!({ "issues": { "nodes": [{"id": "i7"}] } });
+        assert_eq!(extract_issues(&data).len(), 1);
+    }
+
+    #[test]
+    fn extract_issues_from_doubly_nested_issues_nodes() {
+        let data =
+            json!({ "data": { "data": { "issues": { "nodes": [{"id": "i8"}, {"id": "i9"}] } } } });
+        assert_eq!(extract_issues(&data).len(), 2);
     }
 
     #[test]

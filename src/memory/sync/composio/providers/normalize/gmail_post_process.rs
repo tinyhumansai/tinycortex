@@ -34,7 +34,7 @@
 //! along `\n---\n` boundaries (with `## ` heading fallbacks) and
 //! pin each slice to the corresponding entry in `messages[]` via
 //! [`apply_response_level_markdown`]. The reshape's
-//! [`extract_markdown_body`] then prefers that pinned field over
+//! `extract_markdown_body` then prefers that pinned field over
 //! falling back to the upstream `messageText`.
 //!
 //! No in-house HTML→markdown conversion lives here anymore — the
