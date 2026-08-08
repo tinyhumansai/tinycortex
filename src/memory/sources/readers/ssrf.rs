@@ -3,7 +3,8 @@
 //! The web-page and RSS readers both fetch user-configured URLs, so they share
 //! the policy in this module.
 //!
-//! The hostname *text* check (`is_blocked_host`) rejects private IP literals,
+//! The hostname *text* check (`is_blocked_host`) rejects private IP literals
+//! (including their IPv4-mapped IPv6 forms, e.g. `::ffff:127.0.0.1`),
 //! `localhost`, `.local` / `.internal` names, and single-label hostnames, but
 //! a public-looking name can resolve to a loopback / private / link-local
 //! address (including the cloud-metadata `169.254.169.254`) at lookup time.
@@ -170,9 +171,10 @@ pub(super) fn is_url_allowed(url: &reqwest::Url) -> bool {
 }
 
 /// Reject hosts that could target non-public resources: IP literals in
-/// loopback / private / link-local / unique-local / unspecified ranges, plus
-/// `localhost`, `.local` / `.internal` names, and single-label hostnames
-/// (internal service names such as `mongo` or `redis`).
+/// loopback / private / link-local / unique-local / unspecified ranges (and
+/// their IPv4-mapped IPv6 forms), plus `localhost`, `.local` / `.internal`
+/// names, and single-label hostnames (internal service names such as `mongo`
+/// or `redis`).
 fn is_blocked_host(host: &str) -> bool {
     let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
     if host.is_empty() {
@@ -182,7 +184,12 @@ fn is_blocked_host(host: &str) -> bool {
         return is_private_ipv4(ip);
     }
     if let Ok(ip) = host.parse::<std::net::Ipv6Addr>() {
-        return is_private_ipv6(ip);
+        // Use the same public-address classification as the resolved-address
+        // guard so an IPv4-mapped literal (`::ffff:127.0.0.1`,
+        // `::ffff:10.0.0.1`) is rejected like its bare IPv4 counterpart. A
+        // literal never goes through DNS resolution, so the `PublicOnlyResolver`
+        // never sees it — this text check is the only line of defense for it.
+        return !is_public_ipv6(ip);
     }
     if host == "localhost" || host.ends_with(".local") || host.ends_with(".internal") {
         return true;

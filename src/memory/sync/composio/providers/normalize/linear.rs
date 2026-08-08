@@ -117,11 +117,14 @@ pub fn extract_viewer_id(data: &Value) -> Option<String> {
 /// `None` when the last page has been reached or when the envelope does
 /// not carry `pageInfo` at all.
 pub fn extract_pagination_cursor(data: &Value) -> Option<String> {
+    // Mirrors the `extract_issues` envelope shapes, so every shape that can
+    // carry a node list can also carry its `pageInfo` cursor.
     let page_info_candidates = [
         data.pointer("/data/pageInfo"),
         data.pointer("/pageInfo"),
         data.pointer("/data/data/pageInfo"),
         data.pointer("/data/issues/pageInfo"),
+        data.pointer("/data/data/issues/pageInfo"),
     ];
     for cand in page_info_candidates.into_iter().flatten() {
         let has_next = cand

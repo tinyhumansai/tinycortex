@@ -87,9 +87,13 @@ pub(super) async fn fetch_github(api_path: &str, use_gh: bool) -> Result<String,
 
 /// Fetch up to `max` rows from a paginated GitHub list endpoint.
 ///
-/// Walks `?per_page=100&page=N` until `max` rows are collected or the API
-/// returns a short page (the last page). `extra_query` is appended verbatim
-/// (e.g. `"state=all"`). The result is truncated to exactly `max`.
+/// Walks `?per_page=100&page=N` with a constant page size — GitHub's
+/// offset-based pagination is per_page-relative, so shrinking the page size
+/// mid-walk would re-window the offsets and silently skip rows (e.g. `max=150`
+/// would fetch items 51-100 a second time instead of 101-150). Iteration stops
+/// once `max` rows are collected or the API returns a short page (the last
+/// page); `extra_query` is appended verbatim (e.g. `"state=all"`). The result
+/// is truncated to exactly `max`.
 pub(super) async fn fetch_all_pages<T: serde::de::DeserializeOwned>(
     owner: &str,
     repo: &str,
@@ -98,26 +102,55 @@ pub(super) async fn fetch_all_pages<T: serde::de::DeserializeOwned>(
     max: u32,
     use_gh: bool,
 ) -> Result<Vec<T>, String> {
+    let fetch = |page: u32| async_fetch_page(page, owner, repo, resource, extra_query, use_gh);
+    collect_pages(resource, max, fetch).await
+}
+
+/// Fetch one page's raw JSON at a constant [`GH_PAGE_SIZE`].
+async fn async_fetch_page(
+    page: u32,
+    owner: &str,
+    repo: &str,
+    resource: &str,
+    extra_query: &str,
+    use_gh: bool,
+) -> Result<String, String> {
+    let mut path = format!("repos/{owner}/{repo}/{resource}?per_page={GH_PAGE_SIZE}&page={page}");
+    if !extra_query.is_empty() {
+        path.push('&');
+        path.push_str(extra_query);
+    }
+    fetch_github(&path, use_gh).await
+}
+
+/// Core pagination walk, split out from [`fetch_all_pages`] so the loop is
+/// unit-testable with a fake fetch instead of a live GitHub API.
+///
+/// `fetch` maps a 1-based page number to the raw JSON for that page. The page
+/// size the fetch encodes must stay constant across pages — see
+/// [`fetch_all_pages`] for why shrinking it mid-walk skips rows.
+pub(super) async fn collect_pages<T, F, Fut>(
+    label: &str,
+    max: u32,
+    mut fetch: F,
+) -> Result<Vec<T>, String>
+where
+    T: serde::de::DeserializeOwned,
+    F: FnMut(u32) -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
     let mut out: Vec<T> = Vec::new();
     let mut page = 1u32;
 
     while (out.len() as u32) < max && page <= GH_MAX_PAGES {
-        let remaining = max - out.len() as u32;
-        let per_page = remaining.min(GH_PAGE_SIZE);
-        let mut path = format!("repos/{owner}/{repo}/{resource}?per_page={per_page}&page={page}");
-        if !extra_query.is_empty() {
-            path.push('&');
-            path.push_str(extra_query);
-        }
-
-        let json_str = fetch_github(&path, use_gh).await?;
+        let json_str = fetch(page).await?;
         let batch: Vec<T> = serde_json::from_str(&json_str)
-            .map_err(|e| format!("parse {resource} page {page}: {e}"))?;
+            .map_err(|e| format!("parse {label} page {page}: {e}"))?;
         let got = batch.len();
         out.extend(batch);
 
         // Short page ⇒ no more rows upstream.
-        if got < per_page as usize {
+        if got < GH_PAGE_SIZE as usize {
             break;
         }
         page += 1;

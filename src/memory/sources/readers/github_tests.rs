@@ -93,6 +93,63 @@ fn commit_list_queries_percent_encode_special_chars() {
     );
 }
 
+#[tokio::test]
+async fn fetch_all_pages_keeps_page_size_constant_and_truncates() {
+    // Regression: the page size must not shrink mid-walk. With `max = 150`
+    // (not a multiple of 100), a shrinking `per_page` would re-window the
+    // offsets — page 2 at per_page=50 returns items 51-100 again, skipping
+    // 101-150. A constant page size walks page 1 and page 2 both at
+    // per_page=100 and truncates the 200 collected rows to 150.
+    let mut requested: Vec<String> = Vec::new();
+    let pages = api::collect_pages::<u64, _, _>("commits", 150, |page| {
+        let url = format!("per_page=100&page={page}");
+        requested.push(url);
+        // 100 rows per page, all full (never a short page before the cap).
+        let rows: Vec<String> = (1..=100)
+            .map(|i| format!("{}", (page - 1) * 100 + i))
+            .collect();
+        async move { Ok(format!("[{}]", rows.join(","))) }
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        requested,
+        vec![
+            "per_page=100&page=1".to_string(),
+            "per_page=100&page=2".to_string(),
+        ]
+    );
+    assert_eq!(pages.len(), 150);
+    // No overlap: the second page is the next window (101..), not 51..100.
+    assert_eq!(pages[0], 1);
+    assert_eq!(pages[100], 101);
+    assert_eq!(pages[149], 150);
+}
+
+#[tokio::test]
+async fn fetch_all_pages_stops_at_a_short_page() {
+    // A short page (fewer than GH_PAGE_SIZE rows) is the last page; the walk
+    // must not request page 2 after it.
+    let mut requested: Vec<u32> = Vec::new();
+    let pages = crate::memory::sources::readers::github::api::collect_pages::<u64, _, _>(
+        "commits",
+        1000,
+        |page| {
+            requested.push(page);
+            async move {
+                // Page 1 is short (3 rows) — stop after it even though max is large.
+                Ok("[1,2,3]".to_string())
+            }
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(requested, vec![1]);
+    assert_eq!(pages, vec![1, 2, 3]);
+}
+
 /// Build a synthetic `GhCommit` for merge tests.
 fn gh_commit(sha: &str, subject: &str, ts: &str) -> types::GhCommit {
     types::GhCommit {

@@ -149,6 +149,28 @@ fn extract_pagination_cursor_returns_none_when_last_page() {
 }
 
 #[test]
+fn extract_pagination_cursor_from_doubly_nested_issues() {
+    // The same `data.data.issues` shape `extract_issues` reads must also
+    // expose its pageInfo cursor, or a doubly-nested payload never pages.
+    let data = json!({
+        "data": {
+            "data": {
+                "issues": {
+                    "pageInfo": {
+                        "hasNextPage": true,
+                        "endCursor": "cursor_issue_2"
+                    }
+                }
+            }
+        }
+    });
+    assert_eq!(
+        extract_pagination_cursor(&data),
+        Some("cursor_issue_2".to_string())
+    );
+}
+
+#[test]
 fn extract_pagination_cursor_returns_none_when_absent() {
     let data = json!({ "nodes": [{"id": "i1"}] });
     assert!(extract_pagination_cursor(&data).is_none());

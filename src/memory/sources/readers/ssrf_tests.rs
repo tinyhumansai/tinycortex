@@ -71,8 +71,11 @@ fn is_blocked_host_rejects_ip_ranges_and_local_names() {
         "bar.internal",
         "mongo",
         "::1",
-        "fc00::1", // unique-local
-        "fe80::1", // link-local
+        "fc00::1",                // unique-local
+        "fe80::1",                // link-local
+        "::ffff:127.0.0.1",       // IPv4-mapped loopback literal
+        "::ffff:10.0.0.1",        // IPv4-mapped private literal
+        "::ffff:169.254.169.254", // IPv4-mapped link-local / cloud metadata
     ];
     for host in blocked {
         assert!(is_blocked_host(host), "expected {host:?} to be blocked");
@@ -90,6 +93,7 @@ fn is_blocked_host_accepts_public_hosts() {
         "8.8.8.8.",    // trailing dot is normalized away
         "EXAMPLE.com", // case-insensitive
         "2001:4860:4860::8888",
+        "::ffff:8.8.8.8", // IPv4-mapped public literal
     ];
     for host in allowed {
         assert!(!is_blocked_host(host), "expected {host:?} to be allowed");
