@@ -136,6 +136,9 @@ tokio = { version = "1", features = [
     # `process` powers the GitHub source reader's `gh` / `git` subprocess calls
     # (`memory::sources::readers::github`, behind the `sync` feature).
     "process",
+    # `net` powers the web-page reader's DNS-resolution SSRF guard
+    # (`tokio::net::lookup_host`, behind the `sync` feature).
+    "net",
 ], optional = true }
 
 [dev-dependencies]

@@ -4,16 +4,16 @@
 //! `selector` is configured, only matching elements are included;
 //! otherwise the full page body is returned.
 //!
-//! ## SSRF guard
-//!
-//! `read_item_inner` only fetches `http(s)`
-//! URLs and refuses hosts that could target non-public resources: loopback /
-//! private / link-local / unique-local IP literals, `localhost`, `.local` /
-//! `.internal` names, and single-label hostnames (internal service names).
-//! Redirects are re-checked against the same policy, so a public URL cannot
-//! redirect the fetch onto an internal host.
+//! The fetch-side SSRF guard (scheme/host policy plus a DNS resolver that
+//! pins connections to globally routable addresses) lives in the sibling
+//! `web_page_ssrf` module.
+
+#[path = "web_page_ssrf.rs"]
+mod web_page_ssrf;
 
 use async_trait::async_trait;
+
+use web_page_ssrf::{build_client, is_url_allowed};
 
 use crate::memory::config::MemoryConfig;
 use crate::memory::error::MemoryEngineResult;
@@ -147,78 +147,6 @@ impl WebPageReader {
             metadata: serde_json::json!({ "url": url }),
         })
     }
-}
-
-// ── HTTP client + SSRF policy ───────────────────────────────────────
-
-/// Build the HTTP client with a redirect policy that re-applies the SSRF
-/// host/scheme check to every redirect hop.
-fn build_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if is_url_allowed(attempt.url()) {
-                attempt.follow()
-            } else {
-                // `stop` returns the redirect response to the caller instead
-                // of following it; the read then fails on the non-2xx status.
-                attempt.stop()
-            }
-        }))
-        .build()
-        .map_err(|e| format!("failed to build http client: {e}"))
-}
-
-/// Whether a URL may be fetched: `http(s)` scheme against a public host.
-fn is_url_allowed(url: &reqwest::Url) -> bool {
-    match url.scheme() {
-        "http" | "https" => {}
-        _ => return false,
-    }
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    !is_blocked_host(host)
-}
-
-/// Reject hosts that could target non-public resources: IP literals in
-/// loopback / private / link-local / unique-local / unspecified ranges, plus
-/// `localhost`, `.local` / `.internal` names, and single-label hostnames
-/// (internal service names such as `mongo` or `redis`).
-fn is_blocked_host(host: &str) -> bool {
-    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    if host.is_empty() {
-        return true;
-    }
-    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
-        return is_private_ipv4(ip);
-    }
-    if let Ok(ip) = host.parse::<std::net::Ipv6Addr>() {
-        return is_private_ipv6(ip);
-    }
-    if host == "localhost" || host.ends_with(".local") || host.ends_with(".internal") {
-        return true;
-    }
-    // A single-label name is an internal-service name, not a public domain.
-    !host.contains('.')
-}
-
-fn is_private_ipv4(ip: std::net::Ipv4Addr) -> bool {
-    if ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified() {
-        return true;
-    }
-    let o = ip.octets();
-    // 100.64.0.0/10 CGNAT and 192.0.0.0/24 (IETF protocol assignments).
-    (o[0] == 100 && o[1] & 0xc0 == 0x40) || (o[0] == 192 && o[1] == 0)
-}
-
-fn is_private_ipv6(ip: std::net::Ipv6Addr) -> bool {
-    if ip.is_loopback() || ip.is_unspecified() {
-        return true;
-    }
-    let o = ip.octets();
-    // Unique-local fc00::/7 and link-local fe80::/10.
-    (o[0] == 0xfc || o[0] == 0xfd) || (o[0] == 0xfe && o[1] & 0xc0 == 0x80)
 }
 
 // ── Text extraction ─────────────────────────────────────────────────
