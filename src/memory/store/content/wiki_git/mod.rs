@@ -16,6 +16,18 @@ use super::paths::WIKI_PREFIX;
 
 static WIKI_GIT_LOCK: Mutex<()> = Mutex::new(());
 
+/// Acquire the process-wide wiki-git mutex, recovering from a poisoned lock.
+///
+/// The mutex guards no data — it only serialises git operations. If a prior
+/// call panicked while holding the guard, a plain `.lock().expect(...)` would
+/// poison every later wiki-git operation for the process lifetime. Recovering
+/// the guard via [`PoisonError::into_inner`] keeps later operations working.
+fn lock_wiki_git() -> std::sync::MutexGuard<'static, ()> {
+    WIKI_GIT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 const SIG_NAME: &str = "OpenHuman Memory";
 const SIG_EMAIL: &str = "memory-wiki@openhuman.local";
 const GITIGNORE_BODY: &str = "*\n!/.gitignore\n!/summaries/\n!/summaries/**\n";
@@ -53,7 +65,7 @@ pub fn commit_summaries(content_root: &Path, batch: &SummaryCommitBatch) -> Resu
         .iter()
         .map(|entry| summary_repo_path(&entry.content_path))
         .collect::<Result<Vec<_>>>()?;
-    let _guard = WIKI_GIT_LOCK.lock().expect("memory wiki git lock poisoned");
+    let _guard = lock_wiki_git();
 
     let repo = open_prepared_repo(content_root)?;
     let wiki_root = content_root.join(WIKI_PREFIX);
@@ -88,11 +100,18 @@ pub fn set_read_pointer_tag(
     pointer_id: &str,
     target_commit: Option<&str>,
 ) -> Result<String> {
-    let _guard = WIKI_GIT_LOCK.lock().expect("memory wiki git lock poisoned");
+    let _guard = lock_wiki_git();
     let repo = open_prepared_repo(content_root)?;
     let oid = match target_commit {
         Some(commit) => {
-            Oid::from_str(commit).with_context(|| format!("bad commit id: {commit}"))?
+            // Parse then resolve against this repo so an abbreviated, invalid,
+            // or foreign commit id fails here — before `repo.reference` writes
+            // a tag pointing at an object that doesn't exist in this repo.
+            let parsed =
+                Oid::from_str(commit).with_context(|| format!("bad commit id: {commit}"))?;
+            repo.find_commit(parsed)
+                .with_context(|| format!("commit not in wiki repo: {commit}"))?
+                .id()
         }
         None => repo.head()?.peel_to_commit()?.id(),
     };
@@ -118,7 +137,7 @@ pub fn set_read_pointer_tag(
 
 /// Return the commit id a read-pointer tag currently references.
 pub fn get_read_pointer_tag(content_root: &Path, pointer_id: &str) -> Result<Option<String>> {
-    let _guard = WIKI_GIT_LOCK.lock().expect("memory wiki git lock poisoned");
+    let _guard = lock_wiki_git();
     let wiki_root = content_root.join(WIKI_PREFIX);
     let repo = match open_existing_repo(&wiki_root) {
         Ok(repo) => repo,
@@ -230,10 +249,18 @@ fn stage_summary_dir(index: &mut git2::Index, wiki_root: &Path, dir: &Path) -> R
         std::fs::read_dir(dir).with_context(|| format!("read summary dir: {}", dir.display()))?
     {
         let entry = entry.with_context(|| format!("read summary dir entry: {}", dir.display()))?;
+        // `DirEntry::file_type` does not follow symlinks. `Path::is_dir` /
+        // `is_file` would, so a symlink inside `summaries/` pointing at an
+        // ancestor directory would recurse without bound (stack overflow), and
+        // one pointing at a file outside the wiki root would be staged as
+        // content. Skipping symlinks entirely keeps the walk bounded.
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("stat summary dir entry: {}", entry.path().display()))?;
         let path = entry.path();
-        if path.is_dir() {
+        if file_type.is_dir() {
             stage_summary_dir(index, wiki_root, &path)?;
-        } else if path.is_file() {
+        } else if file_type.is_file() {
             let repo_path = path
                 .strip_prefix(wiki_root)
                 .with_context(|| format!("summary path outside wiki root: {}", path.display()))?;
@@ -251,7 +278,12 @@ fn commit_index_if_changed(repo: &Repository, batch: &SummaryCommitBatch) -> Res
 
     let parent_commit = match repo.head() {
         Ok(head) => Some(head.peel_to_commit()?),
-        Err(_) => None,
+        // A freshly-initialised repo has an unborn HEAD (no commits yet) — the
+        // first commit has no parent. Any other `head()` failure is a real
+        // error (corrupt HEAD, missing ref) and must not be silently treated
+        // as "no parent".
+        Err(err) if err.code() == ErrorCode::UnbornBranch => None,
+        Err(err) => return Err(err).context("resolve wiki git HEAD"),
     };
 
     if let Some(parent) = &parent_commit {
@@ -361,4 +393,5 @@ fn read_pointer_timestamp_ref(pointer_id: &str, timestamp: DateTime<Utc>) -> Str
 }
 
 #[cfg(test)]
+#[path = "wiki_git_tests.rs"]
 mod tests;

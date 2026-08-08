@@ -302,6 +302,81 @@ fn read_pointer_tags_are_timestamped_and_move_latest_without_new_commit() {
     );
 }
 
+#[test]
+fn lock_wiki_git_recovers_after_poison() {
+    // A panic while holding the guard poisons the mutex; a naive
+    // `.lock().expect(...)` would then permanently disable wiki history for
+    // the process lifetime. `lock_wiki_git` must recover the guard instead.
+    let handle = std::thread::spawn(|| {
+        let _guard = WIKI_GIT_LOCK.lock().unwrap();
+        panic!("intentional poison");
+    });
+    assert!(handle.join().is_err(), "lock should have been poisoned");
+    let _guard = lock_wiki_git();
+}
+
+#[test]
+fn set_read_pointer_tag_rejects_commit_not_in_wiki_repo() {
+    // A well-formed Oid that doesn't exist in this repo must fail before
+    // `repo.reference` writes a tag pointing at nothing.
+    let dir = TempDir::new().unwrap();
+    let wiki = dir.path().join("wiki");
+    let summary = wiki.join("summaries/source/L1/summary-1.md");
+    std::fs::create_dir_all(summary.parent().unwrap()).unwrap();
+    std::fs::write(&summary, "---\nkind: summary\n---\nbody").unwrap();
+    commit_summaries(
+        dir.path(),
+        &batch(
+            "queued_seal",
+            vec![entry("summary-1", "wiki/summaries/source/L1/summary-1.md")],
+        ),
+    )
+    .unwrap();
+
+    let foreign = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    let err = set_read_pointer_tag(dir.path(), "agent:default", Some(foreign)).unwrap_err();
+    assert!(
+        err.to_string().contains("commit not in wiki repo"),
+        "expected validation error, got: {err:#}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn stage_summary_skips_symlink_loops() {
+    // A symlink inside `summaries/` pointing back at an ancestor directory
+    // must be skipped (via DirEntry::file_type) rather than recursed into
+    // without bound, which would abort on stack overflow.
+    use std::os::unix::fs::symlink;
+
+    let dir = TempDir::new().unwrap();
+    let wiki = dir.path().join("wiki");
+    let summary = wiki.join("summaries/source/L1/summary-1.md");
+    std::fs::create_dir_all(summary.parent().unwrap()).unwrap();
+    std::fs::write(&summary, "---\nkind: summary\n---\nbody").unwrap();
+    symlink("summaries", wiki.join("summaries/loop")).unwrap();
+
+    commit_summaries(
+        dir.path(),
+        &batch(
+            "queued_seal",
+            vec![entry("summary-1", "wiki/summaries/source/L1/summary-1.md")],
+        ),
+    )
+    .unwrap();
+
+    let repo = Repository::open(&wiki).unwrap();
+    let head = repo.head().unwrap().peel_to_commit().unwrap();
+    let tree = head.tree().unwrap();
+    assert!(tree
+        .get_path(Path::new("summaries/source/L1/summary-1.md"))
+        .is_ok());
+    assert!(
+        tree.get_path(Path::new("summaries/loop")).is_err(),
+        "symlink must not be staged as content"
+    );
+}
+
 fn batch(reason: &str, entries: Vec<SummaryCommitEntry>) -> SummaryCommitBatch {
     SummaryCommitBatch {
         reason: reason.to_string(),
