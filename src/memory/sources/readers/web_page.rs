@@ -214,7 +214,10 @@ fn extract_by_selector(html: &str, selector: &str) -> String {
 
     let mut result = String::new();
     let mut offset = 0;
-    while let Some(rel) = find_next_element(&lower, &spec, offset) {
+    // Match against the lowercased copy for the case-insensitive tag scan, but
+    // pass the original-cased `stripped` through so id/class *values* are
+    // compared case-sensitively (CSS ids/classes are case-sensitive).
+    while let Some(rel) = find_next_element(&lower, &stripped, &spec, offset) {
         let abs_start = offset + rel;
         let Some(gt_rel) = lower[abs_start..].find('>') else {
             // An unclosed opening tag (e.g. a truncated `<div` at the end of
@@ -253,7 +256,17 @@ fn extract_by_selector(html: &str, selector: &str) -> String {
 /// Find the offset (relative to `from`) of the next element opening tag that
 /// matches `spec`, skipping comments, doctype/`!` declarations, and closing
 /// tags.
-fn find_next_element(lower_html: &str, spec: &SelectorSpec, from: usize) -> Option<usize> {
+///
+/// `lower_html` is a lowercased copy used for the case-insensitive tag scan;
+/// `orig_html` is the same byte range in the original-cased HTML (ASCII
+/// lowercasing is length-preserving, so offsets align) and is where id/class
+/// values are read from, so CSS's case-sensitive values match.
+fn find_next_element(
+    lower_html: &str,
+    orig_html: &str,
+    spec: &SelectorSpec,
+    from: usize,
+) -> Option<usize> {
     let mut offset = from;
     while let Some(rel) = lower_html[offset..].find('<') {
         let abs = offset + rel;
@@ -283,14 +296,15 @@ fn find_next_element(lower_html: &str, spec: &SelectorSpec, from: usize) -> Opti
             .map(|i| abs + i)
             .unwrap_or(lower_html.len());
         let open_tag = &lower_html[abs..gt];
+        let orig_open_tag = &orig_html[abs..gt];
         if let Some(expected_id) = &spec.id {
-            if attr_value(open_tag, "id").as_deref() != Some(expected_id.as_str()) {
+            if attr_value(open_tag, orig_open_tag, "id").as_deref() != Some(expected_id.as_str()) {
                 offset = abs + 1;
                 continue;
             }
         }
         if !spec.classes.is_empty() {
-            let class_attr = attr_value(open_tag, "class").unwrap_or_default();
+            let class_attr = attr_value(open_tag, orig_open_tag, "class").unwrap_or_default();
             let classes: std::collections::HashSet<&str> = class_attr.split_whitespace().collect();
             if spec.classes.iter().any(|c| !classes.contains(c.as_str())) {
                 offset = abs + 1;
@@ -314,11 +328,17 @@ fn tag_name(open_tag: &str) -> Option<&str> {
     )
 }
 
-/// Read an attribute value (lowercase name) from a lowercase opening tag,
-/// handling single- and double-quoted values.
-fn attr_value(open_tag: &str, name: &str) -> Option<String> {
+/// Read an attribute value (case-insensitive name) from a lowercase opening
+/// tag, preserving the original case of the value. `orig_open_tag` is the
+/// same byte range in the original-cased HTML — `to_ascii_lowercase` is
+/// length-preserving, so the offsets align and the value keeps the page's
+/// casing. CSS ids/classes are case-sensitive, so matching against the
+/// lowercased value would silently fail for `#Main` / `.ArticleBody`.
+fn attr_value(open_tag: &str, orig_open_tag: &str, name: &str) -> Option<String> {
+    let mut offset = 0usize;
     let mut rest = open_tag;
     while let Some(rel) = rest.find(name) {
+        let abs = offset + rel;
         let after = &rest[rel + name.len()..];
         // Reject a prefix match inside a longer word (`classy=` is not
         // `class`).
@@ -326,23 +346,29 @@ fn attr_value(open_tag: &str, name: &str) -> Option<String> {
             let prev = rest[..rel].chars().last().unwrap();
             if prev.is_ascii_alphanumeric() || prev == '-' || prev == '_' {
                 rest = after;
+                offset = abs + name.len();
                 continue;
             }
         }
-        let after = after.trim_start();
-        if let Some(eq) = after.strip_prefix('=') {
-            let eq = eq.trim_start();
-            if let Some(v) = eq.strip_prefix('"') {
-                if let Some(end) = v.find('"') {
-                    return Some(v[..end].to_string());
+        let trimmed = after.trim_start();
+        let eq_abs = abs + name.len() + (after.len() - trimmed.len());
+        if let Some(eq) = trimmed.strip_prefix('=') {
+            let eq_trimmed = eq.trim_start();
+            let value_abs = eq_abs + 1 + (eq.len() - eq_trimmed.len());
+            // Locate the value span in the lowercase tag, then read the value
+            // out of the original-cased copy.
+            if let Some(v) = eq_trimmed.strip_prefix('"') {
+                if let Some(end_rel) = v.find('"') {
+                    return Some(orig_open_tag[value_abs + 1..value_abs + 1 + end_rel].to_string());
                 }
-            } else if let Some(v) = eq.strip_prefix('\'') {
-                if let Some(end) = v.find('\'') {
-                    return Some(v[..end].to_string());
+            } else if let Some(v) = eq_trimmed.strip_prefix('\'') {
+                if let Some(end_rel) = v.find('\'') {
+                    return Some(orig_open_tag[value_abs + 1..value_abs + 1 + end_rel].to_string());
                 }
             }
         }
-        rest = after;
+        rest = trimmed;
+        offset = eq_abs;
     }
     None
 }

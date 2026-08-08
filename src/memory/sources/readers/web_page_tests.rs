@@ -115,6 +115,29 @@ fn extract_by_selector_requires_all_stacked_classes() {
 }
 
 #[test]
+fn extract_by_selector_preserves_case_for_ids_and_classes() {
+    // CSS ids/classes are case-sensitive: `#Main` must match `id="Main"` and
+    // `.ArticleBody` must match `class="ArticleBody"` rather than falling back
+    // to whole-page extraction.
+    let html = "<html><body><div id=\"Main\">Main text</div><p>Other</p></body></html>";
+    let result = extract_by_selector(html, "#Main");
+    assert!(result.contains("Main text"));
+    assert!(!result.contains("Other"));
+
+    let html =
+        "<html><body><div class=\"ArticleBody\">Article text</div><p>Other</p></body></html>";
+    let result = extract_by_selector(html, ".ArticleBody");
+    assert!(result.contains("Article text"));
+    assert!(!result.contains("Other"));
+
+    // A selector in the wrong case must NOT match (id/class matching stays
+    // case-sensitive): the result falls back to the whole stripped page, so
+    // the unrelated sibling text leaks in — a targeted match would exclude it.
+    let result = extract_by_selector(html, ".articlebody");
+    assert!(result.contains("Other"));
+}
+
+#[test]
 fn extract_by_selector_handles_nested_same_tag() {
     let html = "<html><body><div class=\"outer\"><div class=\"inner\">Inner</div> Outer</div></body></html>";
     let result = extract_by_selector(html, ".outer");
@@ -144,19 +167,49 @@ fn extract_by_selector_tolerates_unclosed_element() {
 
 #[test]
 fn attr_value_reads_quoted_values() {
-    assert_eq!(attr_value("<div id=\"a\">", "id").as_deref(), Some("a"));
-    assert_eq!(attr_value("<div id='b'>", "id").as_deref(), Some("b"));
+    // The second argument is the original-cased copy; for already-lowercase
+    // input both are the same string.
     assert_eq!(
-        attr_value("<div class=\"x y\">", "class").as_deref(),
+        attr_value("<div id=\"a\">", "<div id=\"a\">", "id").as_deref(),
+        Some("a")
+    );
+    assert_eq!(
+        attr_value("<div id='b'>", "<div id='b'>", "id").as_deref(),
+        Some("b")
+    );
+    assert_eq!(
+        attr_value("<div class=\"x y\">", "<div class=\"x y\">", "class").as_deref(),
         Some("x y")
     );
-    assert_eq!(attr_value("<div>", "id"), None);
+    assert_eq!(attr_value("<div>", "<div>", "id"), None);
 }
 
 #[test]
 fn attr_value_does_not_match_word_prefix() {
     // `classy=` must not be read as the `class` attribute.
-    assert_eq!(attr_value("<div classy=\"z\">", "class"), None);
+    assert_eq!(
+        attr_value("<div classy=\"z\">", "<div classy=\"z\">", "class"),
+        None
+    );
+}
+
+#[test]
+fn attr_value_preserves_original_case() {
+    // The scan runs on the lowercased tag, but the value is read from the
+    // original-cased copy so case-sensitive CSS ids/classes still match.
+    assert_eq!(
+        attr_value("<div id=\"main\">", "<div id=\"Main\">", "id").as_deref(),
+        Some("Main")
+    );
+    assert_eq!(
+        attr_value(
+            "<div class=\"articlebody\">",
+            "<div class=\"ArticleBody\">",
+            "class"
+        )
+        .as_deref(),
+        Some("ArticleBody")
+    );
 }
 
 #[test]
