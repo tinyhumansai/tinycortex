@@ -41,7 +41,6 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-
 /// Whether a failure should be retried (`Transient`) or fail fast
 /// (`Unrecoverable`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -110,8 +110,7 @@ fn degraded_state_default_is_healthy() {
 
 #[test]
 fn pipeline_failure_is_error_and_downcasts_from_anyhow() {
-    let err: anyhow::Error =
-        anyhow::Error::new(PipelineFailure::new(FailureCode::BudgetExhausted));
+    let err: anyhow::Error = anyhow::Error::new(PipelineFailure::new(FailureCode::BudgetExhausted));
     let downcast = err.downcast_ref::<PipelineFailure>();
     assert!(downcast.is_some());
     assert!(downcast.unwrap().is_unrecoverable());
