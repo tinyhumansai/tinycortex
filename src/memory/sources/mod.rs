@@ -17,11 +17,12 @@
 //!
 //! ## Ownership boundary
 //!
-//! Per the engine spec, TinyCortex does **not** own live sync, polling, or
-//! OAuth. Network-backed kinds keep their type contracts and validation here,
-//! but their live fetchers are host-owned. Only the local kinds — `folder` and
-//! `conversation` — ship real readers (see [`readers::reader_for`]). The host's
-//! sync runner consumes this registry to decide what to sync and when.
+//! TinyCortex owns fetching and parsing — `github_repo`, `rss_feed`, and
+//! `web_page` ship readers here behind the `sync` feature — but it does **not**
+//! own live sync scheduling, polling cadence, OAuth, or credentials. The host's
+//! sync runner consumes this registry to decide what to sync and when, and
+//! [`readers::reader_for`] hands out only the two kinds (`folder`,
+//! `conversation`) that are safe to read on a timer with no network egress.
 
 pub mod readers;
 pub mod registry;
