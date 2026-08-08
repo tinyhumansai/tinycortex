@@ -270,6 +270,13 @@ fn parse_atom(xml: &str) -> Result<Vec<FeedEntry>, String> {
     Ok(entries)
 }
 
+/// Remove a surrounding `<![CDATA[ … ]]>` wrapper, if present.
+fn unwrap_cdata(s: &str) -> &str {
+    s.strip_prefix("<![CDATA[")
+        .and_then(|inner| inner.strip_suffix("]]>"))
+        .unwrap_or(s)
+}
+
 fn extract_tag(xml: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}");
     let close = format!("</{tag}>");
@@ -277,22 +284,21 @@ fn extract_tag(xml: &str, tag: &str) -> Option<String> {
     let content_start = xml[start..].find('>')? + start + 1;
     let end = xml[content_start..].find(&close)? + content_start;
     let content = &xml[content_start..end];
-    Some(decode_xml_entities(content.trim()))
+    let trimmed = content.trim();
+    let unwrapped = unwrap_cdata(trimmed).trim();
+    // CDATA content is literal text, so entity decoding applies only outside
+    // a CDATA wrapper; decoding `&lt;` inside one would corrupt the content.
+    if trimmed.starts_with("<![CDATA[") {
+        Some(unwrapped.to_string())
+    } else {
+        Some(decode_xml_entities(unwrapped))
+    }
 }
 
 fn extract_cdata(xml: &str, tag: &str) -> Option<String> {
-    let open = format!("<{tag}");
-    let close = format!("</{tag}>");
-    let start = xml.find(&open)?;
-    let content_start = xml[start..].find('>')? + start + 1;
-    let end = xml[content_start..].find(&close)? + content_start;
-    let content = &xml[content_start..end];
-    let cleaned = content
-        .trim()
-        .strip_prefix("<![CDATA[")
-        .and_then(|s| s.strip_suffix("]]>"))
-        .unwrap_or(content);
-    Some(cleaned.trim().to_string())
+    // `extract_tag` already unwraps `<![CDATA[ … ]]>`, so it serves both the
+    // plain-text and CDATA-wrapped shapes.
+    extract_tag(xml, tag)
 }
 
 fn extract_attr(xml: &str, tag: &str, attr: &str) -> Option<String> {
@@ -306,73 +312,15 @@ fn extract_attr(xml: &str, tag: &str, attr: &str) -> Option<String> {
 }
 
 fn decode_xml_entities(s: &str) -> String {
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
+    // `&amp;` is decoded last so escaped entity text (`&amp;lt;` → `&lt;`)
+    // survives as literal text instead of being decoded a second time.
+    s.replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&apos;", "'")
+        .replace("&amp;", "&")
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_rss_extracts_items() {
-        let xml = r#"<?xml version="1.0"?>
-        <rss version="2.0">
-        <channel>
-            <title>Test Feed</title>
-            <item>
-                <title>First post</title>
-                <link>https://example.com/1</link>
-                <description>Body of first post</description>
-            </item>
-            <item>
-                <title>Second post</title>
-                <guid>guid-2</guid>
-                <description>Body of second</description>
-            </item>
-        </channel>
-        </rss>"#;
-
-        let entries = parse_rss(xml).unwrap();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].title, "First post");
-        assert_eq!(entries[0].id, "https://example.com/1");
-        assert_eq!(entries[1].id, "guid-2");
-    }
-
-    #[test]
-    fn parse_atom_extracts_entries() {
-        let xml = r#"<?xml version="1.0"?>
-        <feed xmlns="http://www.w3.org/2005/Atom">
-            <entry>
-                <title>Atom entry</title>
-                <id>urn:entry:1</id>
-                <content>Content here</content>
-                <link href="https://example.com/atom/1" />
-            </entry>
-        </feed>"#;
-
-        let entries = parse_atom(xml).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].title, "Atom entry");
-        assert_eq!(entries[0].id, "urn:entry:1");
-        assert_eq!(
-            entries[0].link.as_deref(),
-            Some("https://example.com/atom/1")
-        );
-    }
-
-    #[test]
-    fn parse_feed_detects_format() {
-        let rss = "<rss><channel><item><title>T</title></item></channel></rss>";
-        assert!(parse_feed(rss, 10).is_ok());
-
-        let atom = "<feed><entry><title>T</title><id>1</id></entry></feed>";
-        assert!(parse_feed(atom, 10).is_ok());
-
-        assert!(parse_feed("<html></html>", 10).is_err());
-    }
-}
+#[path = "rss_tests.rs"]
+mod tests;
