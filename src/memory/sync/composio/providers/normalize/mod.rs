@@ -10,4 +10,14 @@
 //!
 //! [`SyncPipeline`]: crate::memory::sync::traits::SyncPipeline
 
+pub mod clickup;
+pub mod github;
 pub mod helpers;
+pub mod linear;
+pub mod notion;
+
+// Named `<provider>_post_process` rather than `<provider>`: `slack.rs` and
+// `github.rs` (the SyncPipeline implementations) already occupy those names one
+// directory up, and `gmail.rs` one directory above that.
+pub mod gmail_post_process;
+pub mod slack_post_process;
