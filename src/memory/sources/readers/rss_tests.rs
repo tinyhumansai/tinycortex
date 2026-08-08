@@ -160,6 +160,42 @@ fn parse_rss_description_with_cdata_is_clean() {
     assert!(!entries[0].body.contains("CDATA"));
 }
 
+#[test]
+fn parse_rss_empty_description_falls_back_to_encoded_content() {
+    // A present-but-empty `<description></description>` must not block the
+    // `content:encoded` fallback — the item carries its body there instead.
+    let xml = r#"<rss version="2.0"><channel>
+        <item>
+            <title>Post</title>
+            <guid>1</guid>
+            <description></description>
+            <content:encoded><![CDATA[<p>Full body from content:encoded</p>]]></content:encoded>
+        </item>
+    </channel></rss>"#;
+
+    let entries = parse_rss(xml).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].body, "<p>Full body from content:encoded</p>");
+}
+
+#[test]
+fn parse_atom_empty_content_falls_back_to_summary() {
+    // Mirrors the RSS `description`/`content:encoded` pair: an empty
+    // `<content></content>` must fall through to a populated `<summary>`.
+    let xml = r#"<feed xmlns="http://www.w3.org/2005/Atom">
+        <entry>
+            <title>Atom entry</title>
+            <id>urn:entry:1</id>
+            <content></content>
+            <summary>Summary body</summary>
+        </entry>
+    </feed>"#;
+
+    let entries = parse_atom(xml).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].body, "Summary body");
+}
+
 // ── URL host redaction ──────────────────────────────────────────────
 
 #[test]

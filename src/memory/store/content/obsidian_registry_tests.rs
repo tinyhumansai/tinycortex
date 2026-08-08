@@ -55,6 +55,23 @@ fn trailing_slash_does_not_matter() {
 }
 
 #[test]
+fn relative_content_root_matches_absolute_vault() {
+    // `MemoryConfig::from_toml_file` accepts a relative workspace/content_root.
+    // The registry check must absolutize that root against the CWD before the
+    // prefix comparison, or an already-registered vault is always reported
+    // unregistered.
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = std::env::current_dir().unwrap();
+    let abs_root = cwd.join("memory_tree/content");
+    let cfg = write_config(tmp.path(), &[abs_root.to_str().unwrap()]);
+    let got = registration_in_files(Path::new("memory_tree/content"), &[cfg]);
+    assert!(
+        got.registered,
+        "relative content root must be absolutized against the CWD before matching"
+    );
+}
+
+#[test]
 fn unrelated_vault_is_not_registered_but_config_found() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("memory_tree/content");

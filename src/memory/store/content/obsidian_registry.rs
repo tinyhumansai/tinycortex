@@ -69,7 +69,15 @@ pub fn vault_registration_status(
 /// explicit, isolated set of `obsidian.json` paths instead of depending on
 /// whatever Obsidian config happens to exist on the host.
 fn registration_in_files(content_root: &Path, files: &[PathBuf]) -> VaultRegistration {
-    let target = lexically_normalize(content_root);
+    // Absolutize the content root against the current directory (lexically,
+    // without touching the filesystem) so a relative workspace/content_root
+    // — supported by `MemoryConfig::from_toml_file` — compares equal to the
+    // absolute vault paths Obsidian records in `obsidian.json`. Without this,
+    // a relative root can never be a prefix of an absolute vault path and an
+    // already-registered vault is always reported unregistered.
+    let target = std::path::absolute(content_root)
+        .map(|abs| lexically_normalize(&abs))
+        .unwrap_or_else(|_| lexically_normalize(content_root));
     let mut config_found = false;
 
     for path in files {

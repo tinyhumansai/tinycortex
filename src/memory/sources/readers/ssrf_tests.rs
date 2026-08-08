@@ -76,6 +76,17 @@ fn is_blocked_host_rejects_ip_ranges_and_local_names() {
         "::ffff:127.0.0.1",       // IPv4-mapped loopback literal
         "::ffff:10.0.0.1",        // IPv4-mapped private literal
         "::ffff:169.254.169.254", // IPv4-mapped link-local / cloud metadata
+        // Special IPv4 literals that are not globally routable: multicast,
+        // broadcast, documentation, benchmarking, and reserved ranges. A
+        // literal never goes through DNS resolution, so the text check is the
+        // only line of defense for these.
+        "224.0.0.1",       // multicast
+        "255.255.255.255", // broadcast
+        "192.0.2.1",       // documentation
+        "198.51.100.1",    // documentation
+        "203.0.113.1",     // documentation
+        "198.18.0.1",      // benchmarking
+        "240.0.0.1",       // reserved
     ];
     for host in blocked {
         assert!(is_blocked_host(host), "expected {host:?} to be blocked");

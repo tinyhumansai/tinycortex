@@ -55,6 +55,10 @@ pub(super) async fn ensure_bare_clone(
 /// without one would only update `FETCH_HEAD` and leave `refs/heads/*` at the
 /// initial clone — every later sync would silently miss new GitHub activity.
 /// `--prune` also drops local heads the remote has since deleted.
+///
+/// After the fetch, `HEAD` is refreshed to the remote's current default branch
+/// so an unconfigured sync keeps following the repo's default even when that
+/// default changes between clones (see [`refresh_default_branch_head`]).
 async fn fetch_existing_bare(cache_dir: &Path) -> Result<(), String> {
     tracing::debug!(
         cache = %cache_dir.display(),
@@ -80,7 +84,61 @@ async fn fetch_existing_bare(cache_dir: &Path) -> Result<(), String> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("git fetch exited {}: {stderr}", output.status));
     }
+    refresh_default_branch_head(cache_dir).await;
     Ok(())
+}
+
+/// Repoint the bare clone's `HEAD` to the remote's current default branch.
+///
+/// `git clone --bare` pins `HEAD` to the default branch selected at clone
+/// time, and the fetch refspec above updates `refs/heads/*` but never `HEAD`.
+/// If the remote later changes its default branch (while keeping the old
+/// branch alive), an unconfigured `git log HEAD` would keep walking the old
+/// branch forever, diverging from the REST fallback which follows the new
+/// default. Reading the remote `HEAD` symref (`ref: refs/heads/<branch>`) and
+/// writing it back keeps the clone's default in sync.
+///
+/// Best-effort: `git ls-remote` can fail transiently (network), and there is
+/// nothing to refresh on an unborn default branch; neither should fail the
+/// fetch that already succeeded.
+async fn refresh_default_branch_head(cache_dir: &Path) {
+    let Ok(output) = tokio::time::timeout(
+        GIT_CLONE_TIMEOUT,
+        tokio::process::Command::new("git")
+            .args(["ls-remote", "--symref", "origin", "HEAD"])
+            .current_dir(cache_dir)
+            .output(),
+    )
+    .await
+    else {
+        return;
+    };
+    let Ok(output) = output else { return };
+    if !output.status.success() {
+        return;
+    }
+    // `--symref` prints `ref: refs/heads/<branch>\tHEAD` on the first line.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let Some(first) = stdout.lines().next() else {
+        return;
+    };
+    let Some(remote_ref) = first
+        .strip_prefix("ref: ")
+        .and_then(|r| r.split_whitespace().next())
+    else {
+        return;
+    };
+    if !remote_ref.starts_with("refs/heads/") {
+        return;
+    }
+    let _ = tokio::time::timeout(
+        GIT_CLONE_TIMEOUT,
+        tokio::process::Command::new("git")
+            .args(["symbolic-ref", "HEAD", remote_ref])
+            .current_dir(cache_dir)
+            .output(),
+    )
+    .await;
 }
 
 /// Fresh bare clone of `clone_url` into `cache_dir`.

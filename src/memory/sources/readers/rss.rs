@@ -263,6 +263,11 @@ fn parse_rss(xml: &str) -> Result<Vec<FeedEntry>, String> {
         let link = extract_tag(item_xml, "link");
         let guid = extract_tag(item_xml, "guid");
         let description = extract_tag(item_xml, "description")
+            // An empty `<description></description>` is a present-but-empty
+            // tag: `extract_tag` returns `Some("")`, which would short-circuit
+            // the `content:encoded` fallback below and ingest an empty body.
+            // Filter it out so a populated `content:encoded` still wins.
+            .filter(|s| !s.is_empty())
             .or_else(|| extract_cdata(item_xml, "content:encoded"))
             .unwrap_or_default();
         let pub_date = extract_tag(item_xml, "pubDate");
@@ -301,6 +306,10 @@ fn parse_atom(xml: &str) -> Result<Vec<FeedEntry>, String> {
         let title = extract_tag(entry_xml, "title").unwrap_or_default();
         let id = extract_tag(entry_xml, "id").unwrap_or_else(|| format!("atom-{}", entries.len()));
         let content = extract_tag(entry_xml, "content")
+            // Same shape as the RSS `description`/`content:encoded` pair: an
+            // empty `<content></content>` must not block the `summary`
+            // fallback.
+            .filter(|s| !s.is_empty())
             .or_else(|| extract_tag(entry_xml, "summary"))
             .unwrap_or_default();
         let link = extract_attr(entry_xml, "link", "href");

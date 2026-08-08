@@ -181,7 +181,12 @@ fn is_blocked_host(host: &str) -> bool {
         return true;
     }
     if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
-        return is_private_ipv4(ip);
+        // Use the same public-address classification as the resolved-address
+        // guard (and the IPv6 literal branch) so reserved/multicast/broadcast/
+        // documentation/benchmarking literals are rejected too. A literal never
+        // goes through DNS resolution, so the `PublicOnlyResolver` never sees
+        // it — this text check is the only line of defense for it.
+        return !is_public_ipv4(ip);
     }
     if let Ok(ip) = host.parse::<std::net::Ipv6Addr>() {
         // Use the same public-address classification as the resolved-address
