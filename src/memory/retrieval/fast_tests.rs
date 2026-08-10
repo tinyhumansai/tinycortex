@@ -238,7 +238,6 @@ fn extract_mem_src_id_parses_collection_id_case_insensitively() {
     for scope in [
         "mem_src:src_vault_hob_local:path/to/note.md",
         "Mem_Src:src_vault_hob_local:path/to/note.md",
-        "mem_src:SRC_Vault_Hob:path/to/note.md",
     ] {
         assert_eq!(
             extract_mem_src_id(scope),
@@ -246,11 +245,12 @@ fn extract_mem_src_id_parses_collection_id_case_insensitively() {
             "scope: {scope}"
         );
     }
-    // The collection id itself keeps its original case so it matches the
-    // caller-supplied `source_scope` entry verbatim.
+    // A fully-uppercased prefix still matches, and the collection id itself
+    // keeps its original case so it matches the caller-supplied `source_scope`
+    // entry verbatim.
     assert_eq!(
-        extract_mem_src_id("Mem_Src:SRC_Vault:path/to/note.md"),
-        Some("SRC_Vault")
+        extract_mem_src_id("MEM_SRC:SRC_Vault_Hob:path/to/note.md"),
+        Some("SRC_Vault_Hob")
     );
     // Non-`mem_src` and malformed scopes yield nothing.
     for scope in [
