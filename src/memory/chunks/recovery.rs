@@ -43,6 +43,10 @@ const SQLITE_IOERR_SHMSIZE: i32 = 4874;
 const SQLITE_IOERR_SHMMAP: i32 = 5386;
 /// `IOERR_IN_PAGE` — an mmap-page I/O fault, also seen under WAL cold-start.
 const SQLITE_IOERR_IN_PAGE: i32 = 8714;
+/// `IOERR_FSTAT` — an `fstat()` on the db/side-file failed, observed when a
+/// sibling connection is creating or truncating the file at the same instant
+/// (seen as flaky `Error code 1802: disk I/O error` under parallel cold opens).
+const SQLITE_IOERR_FSTAT: i32 = 1802;
 
 /// True if `err` (or anything in its cause chain) is one of the SQLite codes
 /// that fire during cold-start WAL/SHM bootstrap races.
@@ -67,6 +71,7 @@ pub fn is_transient_cold_start(err: &anyhow::Error) -> bool {
                     | SQLITE_IOERR_SHMSIZE
                     | SQLITE_IOERR_SHMMAP
                     | SQLITE_IOERR_IN_PAGE
+                    | SQLITE_IOERR_FSTAT
             );
         }
         false

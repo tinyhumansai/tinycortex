@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::client::ActionExecutor;
+use super::page_size::{apply_page_size, is_payload_too_large, shrink_page_size};
 use crate::memory::config::MemoryConfig;
 use crate::memory::sync::state::SyncState;
 use crate::memory::sync::traits::{
@@ -89,6 +90,16 @@ pub trait IncrementalSource: Send + Sync {
         _state: &mut SyncState,
     ) -> anyhow::Result<Vec<SyncScope>> {
         Ok(vec![SyncScope::flat()])
+    }
+    /// Name of the argument that caps how many items one page requests
+    /// (`max_results` for Gmail), when the action has one.
+    ///
+    /// Returning `Some` opts the source into the too-large-page retry: a page
+    /// the provider refuses purely for size is re-requested with the cap
+    /// halved, instead of failing the whole run. A source whose action has no
+    /// such knob returns `None` and keeps the previous behaviour.
+    fn page_size_arg_key(&self) -> Option<&'static str> {
+        None
     }
     fn arguments(
         &self,
@@ -218,45 +229,96 @@ async fn run_pages(
         .then(|| source.depth_floor(config, state))
         .flatten();
 
+    // Once a page proves too large for the provider, every later page of this
+    // run asks for the smaller size straight away rather than paying a rejected
+    // round-trip to rediscover the same limit.
+    let mut page_size_override: Option<u64> = None;
+
     'scopes: for scope in scopes {
         let mut page_token = None;
         let mut scope_newest_cursor: Option<String> = None;
         let mut scope_failed = false;
-        for page_index in 0..source.max_pages().max(1) {
+        'pages: for page_index in 0..source.max_pages().max(1) {
             if state.budget_exhausted() {
                 more_pending = true;
                 break 'scopes;
             }
-            let response = match executor
-                .execute(
-                    source.action(),
-                    source.arguments(scope, config, state, page_token.as_deref()),
-                    Some(connection_id),
-                )
-                .await
-            {
-                Ok(response) => response,
-                Err(error) if source.tolerate_scope_errors() => {
-                    if let Some(execute_error) = error.downcast_ref::<super::client::ExecuteError>()
-                    {
-                        state.record_requests(execute_error.attempts);
+            let mut arguments = source.arguments(scope, config, state, page_token.as_deref());
+            apply_page_size(
+                &mut arguments,
+                source.page_size_arg_key(),
+                page_size_override,
+            );
+            // The size a shrink most recently *tried*. Promoted to the run's
+            // sticky override only once the provider accepts a page at it —
+            // before that it names a size that may itself be refused.
+            let mut attempted_page_size: Option<u64> = None;
+            let response = loop {
+                let response = match executor
+                    .execute(source.action(), arguments.clone(), Some(connection_id))
+                    .await
+                {
+                    Ok(response) => response,
+                    Err(error) if source.tolerate_scope_errors() => {
+                        if let Some(execute_error) =
+                            error.downcast_ref::<super::client::ExecuteError>()
+                        {
+                            state.record_requests(execute_error.attempts);
+                        }
+                        tracing::warn!(toolkit = source.toolkit(), connection_id, scope = %scope.label, %error, "[sync:orchestrator] scope fetch failed; continuing");
+                        scope_failed = true;
+                        break 'pages;
                     }
-                    tracing::warn!(toolkit = source.toolkit(), connection_id, scope = %scope.label, %error, "[sync:orchestrator] scope fetch failed; continuing");
-                    scope_failed = true;
-                    break;
-                }
-                Err(error) => {
-                    if let Some(execute_error) = error.downcast_ref::<super::client::ExecuteError>()
-                    {
-                        state.record_requests(execute_error.attempts);
+                    Err(error) => {
+                        if let Some(execute_error) =
+                            error.downcast_ref::<super::client::ExecuteError>()
+                        {
+                            state.record_requests(execute_error.attempts);
+                        }
+                        return Err(error);
                     }
-                    return Err(error);
+                };
+                // A completed provider round-trip is billable even when its
+                // envelope reports failure. Transport failures return before
+                // this point.
+                state.record_action(response.attempts, response.cost_usd);
+                if response.successful {
+                    // Sticky for the rest of the run, and set HERE rather than
+                    // at the shrink: with several halvings (25 → 12 → 6) an
+                    // assignment per attempt leaves the last *rejected* size in
+                    // the override on every step but the final one, and is
+                    // correct at the end only because that step happens to be
+                    // the accepted one. Recording the accepted size makes the
+                    // intent independent of the retry order.
+                    if let Some(accepted) = attempted_page_size {
+                        page_size_override = Some(accepted);
+                    }
+                    break response;
                 }
-            };
-            // A completed provider round-trip is billable even when its envelope
-            // reports failure. Transport failures return before this point.
-            state.record_action(response.attempts, response.cost_usd);
-            if !response.successful {
+                // A page refused purely for its size is the one provider
+                // failure a *smaller request* can fix, so shrink and retry
+                // instead of failing the run. Without this a single oversized
+                // page stops the source dead until someone notices: on one live
+                // workspace Gmail sync sat broken for nine days that way.
+                if is_payload_too_large(response.error.as_deref()) {
+                    if state.budget_exhausted() {
+                        more_pending = true;
+                        break 'scopes;
+                    }
+                    if let Some(reduced) =
+                        shrink_page_size(&mut arguments, source.page_size_arg_key())
+                    {
+                        attempted_page_size = Some(reduced);
+                        tracing::warn!(
+                            toolkit = source.toolkit(),
+                            connection_id,
+                            scope = %scope.label,
+                            reduced_page_size = reduced,
+                            "[sync:orchestrator] provider refused the page as too large; retrying with a smaller page"
+                        );
+                        continue;
+                    }
+                }
                 let error = anyhow::anyhow!(
                     "{} provider failure: {}",
                     source.toolkit(),
@@ -267,10 +329,10 @@ async fn run_pages(
                 if source.tolerate_scope_errors() {
                     tracing::warn!(toolkit = source.toolkit(), connection_id, scope = %scope.label, %error, "[sync:orchestrator] provider rejected scope; continuing");
                     scope_failed = true;
-                    break;
+                    break 'pages;
                 }
                 return Err(error);
-            }
+            };
 
             let fetched = source.extract_page(&response.data, page_token.as_deref());
             let mut reached_cursor_boundary = false;
@@ -447,3 +509,7 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
         .as_millis() as u64
 }
+
+#[cfg(test)]
+#[path = "orchestrator_tests.rs"]
+mod tests;

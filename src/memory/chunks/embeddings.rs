@@ -6,6 +6,7 @@
 //! ported here) — callers pass vectors in.
 
 use super::connection::with_connection;
+use super::signature::{format_signature, signature_in_clause, signature_variants};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension};
@@ -20,11 +21,20 @@ pub(crate) fn active_embedding_dims(config: &MemoryConfig) -> usize {
 }
 
 /// Resolve the active embedding signature — the canonical key every per-model
-/// sidecar read/write is scoped by. Derived from the configured model + dim so
-/// a provider/model/dimension switch becomes a query-time filter rather than a
-/// destructive rewrite.
+/// sidecar read/write is scoped by. Derived from the configured provider, model
+/// and dim so a provider/model/dimension switch becomes a query-time filter
+/// rather than a destructive rewrite.
+///
+/// This is the canonical `provider=…;model=…;dims=…` spelling, shared with the
+/// namespace store. Rows written under the tree's older `{model}@{dims}`
+/// spelling are still found, because per-signature reads match every variant
+/// (see [`signature_variants`]) rather than one exact string.
 pub fn tree_active_signature(config: &MemoryConfig) -> String {
-    format!("{}@{}", config.embedding.model, config.embedding.dim)
+    format_signature(
+        &config.embedding.provider,
+        &config.embedding.model,
+        config.embedding.dim,
+    )
 }
 
 /// Store a chunk's embedding under the active model signature (see
@@ -292,7 +302,8 @@ pub(crate) fn validate_reembed_skip_key<'a>(label: &str, value: &'a str) -> Resu
     Ok(trimmed)
 }
 
-/// Fetch a chunk embedding for exactly one provider/model/dimension signature.
+/// Fetch a chunk embedding for one provider/model/dimension signature — under
+/// any of its spellings (see [`signature_variants`]).
 ///
 /// Returns `Ok(None)` when no row exists for `(chunk_id, model_signature)` —
 /// absence is not an error.
@@ -307,13 +318,22 @@ pub fn get_chunk_embedding_for_signature(
     chunk_id: &str,
     model_signature: &str,
 ) -> Result<Option<Vec<f32>>> {
+    let variants = signature_variants(model_signature);
     with_connection(config, |conn| {
+        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(variants.len() + 1);
+        params.push(&chunk_id as &dyn rusqlite::ToSql);
+        for variant in &variants {
+            params.push(variant as &dyn rusqlite::ToSql);
+        }
         let row: Option<(Vec<u8>, i64)> = conn
             .query_row(
-                "SELECT vector, dim
-                   FROM mem_tree_chunk_embeddings
-                  WHERE chunk_id = ?1 AND model_signature = ?2",
-                rusqlite::params![chunk_id, model_signature],
+                &format!(
+                    "SELECT vector, dim
+                       FROM mem_tree_chunk_embeddings
+                      WHERE chunk_id = ?1 AND model_signature {}",
+                    signature_in_clause(variants.len(), 2)
+                ),
+                params.as_slice(),
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
@@ -374,26 +394,40 @@ fn embedding_from_blob(bytes: &[u8], dim: i64, label: &str) -> Result<Option<Vec
     Ok(Some(floats))
 }
 
-/// Whether any live chunk or summary lacks both an embedding and terminal tombstone.
+/// Whether any live chunk or summary lacks both an embedding and terminal
+/// tombstone.
+///
+/// Coverage counts a vector written under *any* spelling of the signature: a
+/// row that only looks uncovered because the convention changed is not work,
+/// and re-embedding it would spend provider quota to reproduce a vector that
+/// is already on disk.
 pub fn has_uncovered_reembed_work(
     conn: &Connection,
     model_signature: &str,
 ) -> rusqlite::Result<bool> {
+    let variants = signature_variants(model_signature);
+    let sig_clause = signature_in_clause(variants.len(), 1);
+    let params: Vec<&dyn rusqlite::ToSql> = variants
+        .iter()
+        .map(|variant| variant as &dyn rusqlite::ToSql)
+        .collect();
     conn.query_row(
-        "SELECT EXISTS(
-             SELECT 1 FROM mem_tree_chunks c
-              WHERE NOT EXISTS (SELECT 1 FROM mem_tree_chunk_embeddings e
-                                 WHERE e.chunk_id = c.id AND e.model_signature = ?1)
-                AND NOT EXISTS (SELECT 1 FROM mem_tree_chunk_reembed_skipped sk
-                                 WHERE sk.chunk_id = c.id AND sk.model_signature = ?1))
-           OR EXISTS(
-             SELECT 1 FROM mem_tree_summaries s
-              WHERE s.deleted = 0
-                AND NOT EXISTS (SELECT 1 FROM mem_tree_summary_embeddings e
-                                 WHERE e.summary_id = s.id AND e.model_signature = ?1)
-                AND NOT EXISTS (SELECT 1 FROM mem_tree_summary_reembed_skipped sk
-                                 WHERE sk.summary_id = s.id AND sk.model_signature = ?1))",
-        rusqlite::params![model_signature],
+        &format!(
+            "SELECT EXISTS(
+                 SELECT 1 FROM mem_tree_chunks c
+                  WHERE NOT EXISTS (SELECT 1 FROM mem_tree_chunk_embeddings e
+                                     WHERE e.chunk_id = c.id AND e.model_signature {sig_clause})
+                    AND NOT EXISTS (SELECT 1 FROM mem_tree_chunk_reembed_skipped sk
+                                     WHERE sk.chunk_id = c.id AND sk.model_signature {sig_clause}))
+               OR EXISTS(
+                 SELECT 1 FROM mem_tree_summaries s
+                  WHERE s.deleted = 0
+                    AND NOT EXISTS (SELECT 1 FROM mem_tree_summary_embeddings e
+                                     WHERE e.summary_id = s.id AND e.model_signature {sig_clause})
+                    AND NOT EXISTS (SELECT 1 FROM mem_tree_summary_reembed_skipped sk
+                                     WHERE sk.summary_id = s.id AND sk.model_signature {sig_clause}))"
+        ),
+        params.as_slice(),
         |row| row.get(0),
     )
 }
@@ -427,6 +461,7 @@ pub fn get_chunk_embeddings_for_signature_batch(
     if chunk_ids.is_empty() {
         return Ok(HashMap::new());
     }
+    let variants = signature_variants(model_signature);
     with_connection(config, |conn| {
         let mut out: HashMap<String, Vec<f32>> = HashMap::with_capacity(chunk_ids.len());
         for window in chunk_ids.chunks(MAX_EMBEDDING_BATCH) {
@@ -437,17 +472,20 @@ pub fn get_chunk_embeddings_for_signature_batch(
                 "SELECT chunk_id, vector, dim
                    FROM mem_tree_chunk_embeddings
                   WHERE chunk_id IN ({placeholders})
-                    AND model_signature = ?{sig_idx}",
-                sig_idx = window.len() + 1,
+                    AND model_signature {sig_clause}",
+                sig_clause = signature_in_clause(variants.len(), window.len() + 1),
             );
             let mut stmt = conn
                 .prepare(&sql)
                 .context("prepare get_chunk_embeddings_for_signature_batch")?;
-            let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(window.len() + 1);
+            let mut params: Vec<&dyn rusqlite::ToSql> =
+                Vec::with_capacity(window.len() + variants.len());
             for id in window {
                 params.push(id as &dyn rusqlite::ToSql);
             }
-            params.push(&model_signature as &dyn rusqlite::ToSql);
+            for variant in &variants {
+                params.push(variant as &dyn rusqlite::ToSql);
+            }
             let rows = stmt
                 .query_map(params.as_slice(), |row| {
                     Ok((

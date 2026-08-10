@@ -147,3 +147,22 @@ fn recover_corrupt_db_is_noop_on_healthy_db() {
         .any(|e| e.file_name().to_string_lossy().contains(".corrupt-"));
     assert!(!quarantined, "no quarantine file should be created");
 }
+
+#[test]
+fn is_transient_cold_start_classifies_ioerr_fstat() {
+    // `IOERR_FSTAT` (1802) is the flaky `disk I/O error` a parallel cold open
+    // hits; it must be treated as transient so `open_and_init` retries instead
+    // of surfacing it. A non-transient sqlite error must stay non-transient.
+    use super::is_transient_cold_start;
+    let fstat = rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(1802),
+        Some("disk I/O error".to_string()),
+    );
+    assert!(is_transient_cold_start(&anyhow::Error::from(fstat)));
+
+    let constraint = rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(19),
+        Some("constraint".to_string()),
+    );
+    assert!(!is_transient_cold_start(&anyhow::Error::from(constraint)));
+}
