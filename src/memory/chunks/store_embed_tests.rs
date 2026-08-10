@@ -19,11 +19,16 @@ use super::{
     clear_summary_reembed_skipped, content_root, count_chunks, db_path_for, delete_chunks_by_owner,
     delete_chunks_by_source, extraction_coverage, get_chunk, get_chunk_embedding,
     get_chunk_embedding_for_signature, get_chunk_embeddings_for_signature_batch, get_chunks_batch,
-    is_source_ingested, list_chunks, mark_chunk_reembed_skipped, mark_summary_reembed_skipped,
-    set_chunk_embedding, set_chunk_embedding_for_signature, tree_active_signature, upsert_chunks,
-    ListChunksQuery, DB_DIR, GLOBAL_TOPIC_PURGE_MIGRATION_VERSION,
+    has_uncovered_reembed_work, is_source_ingested, list_chunks, mark_chunk_reembed_skipped,
+    mark_summary_reembed_skipped, set_chunk_embedding, set_chunk_embedding_for_signature,
+    tree_active_signature, upsert_chunks, ListChunksQuery, DB_DIR,
+    GLOBAL_TOPIC_PURGE_MIGRATION_VERSION,
 };
 use crate::memory::config::MemoryConfig;
+use crate::memory::store::content::read::{
+    LEGACY_EMPTY_CHUNK_CONTENT_REASON_PREFIX, LEGACY_EMPTY_CONTENT_POINTER_REASON_PREFIX,
+    LEGACY_NO_CONTENT_POINTER_REASON_PREFIX,
+};
 use crate::memory::tree::store::{
     insert_summary_tx, insert_tree, SummaryNode, Tree, TreeKind, TreeStatus,
 };
@@ -69,6 +74,28 @@ fn clear_chunk_reembed_skipped_is_idempotent() {
     mark_chunk_reembed_skipped(&cfg, &c.id, &sig, "test orphan").unwrap();
     clear_chunk_reembed_skipped(&cfg, &c.id, &sig).unwrap();
     clear_chunk_reembed_skipped(&cfg, &c.id, &sig).unwrap();
+    let count: i64 = with_connection(&cfg, |conn| {
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM mem_tree_chunk_reembed_skipped
+              WHERE chunk_id = ?1 AND model_signature = ?2",
+            params![c.id, sig],
+            |r| r.get(0),
+        )?)
+    })
+    .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn setting_chunk_embedding_clears_matching_skip_marker() {
+    let (_tmp, cfg) = test_config();
+    let c = sample_chunk("slack:#eng", 0, 1_700_000_000_000);
+    upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap();
+    let sig = tree_active_signature(&cfg);
+    mark_chunk_reembed_skipped(&cfg, &c.id, &sig, "body read failed: no content pointer").unwrap();
+
+    set_chunk_embedding_for_signature(&cfg, &c.id, &sig, &[0.1, 0.2]).unwrap();
+
     let count: i64 = with_connection(&cfg, |conn| {
         Ok(conn.query_row(
             "SELECT COUNT(*) FROM mem_tree_chunk_reembed_skipped
@@ -319,6 +346,93 @@ fn batch_embedding_lookup_unknown_ids_absent_from_map() {
 }
 
 #[test]
+fn legacy_body_read_skip_does_not_hide_reembed_work() {
+    let (_tmp, cfg) = test_config();
+    let c = sample_chunk("persona/communication", 0, 1_700_000_000_000);
+    upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap();
+    let sig = "bge-m3@1024";
+    mark_chunk_reembed_skipped(
+        &cfg,
+        &c.id,
+        sig,
+        &format!(
+            "body read failed: {LEGACY_NO_CONTENT_POINTER_REASON_PREFIX}{}",
+            c.id
+        ),
+    )
+    .unwrap();
+
+    with_connection(&cfg, |conn| {
+        assert!(has_uncovered_reembed_work(conn, sig)?);
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn legacy_empty_pointer_skip_does_not_hide_reembed_work() {
+    let (_tmp, cfg) = test_config();
+    let c = sample_chunk("persona/communication", 0, 1_700_000_000_000);
+    upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap();
+    let sig = "bge-m3@1024";
+    mark_chunk_reembed_skipped(
+        &cfg,
+        &c.id,
+        sig,
+        &format!(
+            "body read failed: {LEGACY_EMPTY_CONTENT_POINTER_REASON_PREFIX}{}",
+            c.id
+        ),
+    )
+    .unwrap();
+
+    with_connection(&cfg, |conn| {
+        assert!(has_uncovered_reembed_work(conn, sig)?);
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn empty_legacy_content_skip_hides_reembed_work() {
+    let (_tmp, cfg) = test_config();
+    let c = sample_chunk("persona/communication", 0, 1_700_000_000_000);
+    upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap();
+    let sig = "bge-m3@1024";
+    mark_chunk_reembed_skipped(
+        &cfg,
+        &c.id,
+        sig,
+        &format!(
+            "body read failed: {LEGACY_EMPTY_CHUNK_CONTENT_REASON_PREFIX}{}",
+            c.id
+        ),
+    )
+    .unwrap();
+
+    with_connection(&cfg, |conn| {
+        assert!(!has_uncovered_reembed_work(conn, sig)?);
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn non_legacy_skip_still_hides_reembed_work() {
+    let (_tmp, cfg) = test_config();
+    let c = sample_chunk("persona/communication", 0, 1_700_000_000_000);
+    upsert_chunks(&cfg, std::slice::from_ref(&c)).unwrap();
+    let sig = "bge-m3@1024";
+    mark_chunk_reembed_skipped(&cfg, &c.id, sig, "embed failed: provider rejected input").unwrap();
+
+    with_connection(&cfg, |conn| {
+        assert!(!has_uncovered_reembed_work(conn, sig)?);
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
 fn batch_embedding_lookup_splits_id_list_above_per_batch_threshold() {
     let (_tmp, cfg) = test_config();
     let c1 = sample_chunk("slack:#a", 0, 1_700_000_000_000);
@@ -452,4 +566,54 @@ fn extraction_coverage_reflects_indexed_fraction() {
     })
     .unwrap();
     assert!((extraction_coverage(&cfg).unwrap() - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn a_vector_written_under_the_legacy_spelling_is_readable_under_the_active_signature() {
+    // The regression this exists for: the tree used to key sidecars by
+    // `{model}@{dims}`. After the convention was unified on the canonical
+    // `provider=…;model=…;dims=…` string, an exact-match read stopped seeing
+    // those rows — hundreds of live chunks scored against nothing, from a
+    // format change that was never a model change. Nothing is rewritten on
+    // disk; the read simply accepts both spellings.
+    let (_tmp, mut cfg) = test_config();
+    cfg.embedding.provider = "cloud".into();
+    cfg.embedding.model = "embedding-v1".into();
+    cfg.embedding.dim = 3;
+
+    let chunk = sample_chunk("gmail:inbox", 0, 1_700_000_000_000);
+    upsert_chunks(&cfg, std::slice::from_ref(&chunk)).unwrap();
+    set_chunk_embedding_for_signature(&cfg, &chunk.id, "embedding-v1@3", &[0.1, 0.2, 0.3]).unwrap();
+
+    let active = tree_active_signature(&cfg);
+    assert_eq!(active, "provider=cloud;model=embedding-v1;dims=3");
+    assert_eq!(
+        get_chunk_embedding(&cfg, &chunk.id).unwrap(),
+        Some(vec![0.1, 0.2, 0.3]),
+        "a legacy-spelled vector must be visible under the canonical signature"
+    );
+
+    // Batch read — the retrieval hot path — sees it too.
+    let batch =
+        get_chunk_embeddings_for_signature_batch(&cfg, std::slice::from_ref(&chunk.id), &active)
+            .unwrap();
+    assert_eq!(batch.get(&chunk.id), Some(&vec![0.1, 0.2, 0.3]));
+
+    // …and it counts as covered, so the re-embed chain does not pay to
+    // recompute a vector that is already on disk.
+    with_connection(&cfg, |conn| {
+        assert!(
+            !super::has_uncovered_reembed_work(conn, &active)?,
+            "a legacy-spelled vector must count as coverage"
+        );
+        Ok(())
+    })
+    .unwrap();
+
+    // A genuinely different space is still separate.
+    assert_eq!(
+        get_chunk_embedding_for_signature(&cfg, &chunk.id, "provider=cloud;model=other-v2;dims=3")
+            .unwrap(),
+        None
+    );
 }

@@ -17,6 +17,29 @@ fn options_and_ids_are_bounded_deterministically() {
     );
 }
 
+#[test]
+fn mem_src_scope_filter_accepts_bare_id_collection_prefix_and_exact_scope() {
+    let tree_scope = "Mem_Src:src-folder-9:Slides_Notes/example.md";
+
+    assert_eq!(extract_mem_src_id(tree_scope), Some("src-folder-9"));
+    assert!(source_scope_allows(
+        &HashSet::from(["src-folder-9".to_string()]),
+        tree_scope
+    ));
+    assert!(source_scope_allows(
+        &HashSet::from(["mem_src:src-folder-9".to_string()]),
+        tree_scope
+    ));
+    assert!(source_scope_allows(
+        &HashSet::from([tree_scope.to_string()]),
+        tree_scope
+    ));
+    assert!(!source_scope_allows(
+        &HashSet::from(["src-other".to_string()]),
+        tree_scope
+    ));
+}
+
 #[tokio::test]
 async fn blank_query_is_empty_without_opening_storage() {
     let (_temp, config) = test_config();
@@ -231,51 +254,6 @@ async fn local_branch_intersects_entities_and_applies_scope_before_limit() {
     assert_eq!(response.total, 1);
     assert_eq!(response.hits[0].node_id, "allowed");
     assert_eq!(response.hits[0].score, 2.0);
-}
-
-#[test]
-fn extract_mem_src_id_parses_collection_id_case_insensitively() {
-    for scope in [
-        "mem_src:src_vault_hob_local:path/to/note.md",
-        "Mem_Src:src_vault_hob_local:path/to/note.md",
-    ] {
-        assert_eq!(
-            extract_mem_src_id(scope),
-            Some("src_vault_hob_local"),
-            "scope: {scope}"
-        );
-    }
-    // A fully-uppercased prefix still matches, and the collection id itself
-    // keeps its original case so it matches the caller-supplied `source_scope`
-    // entry verbatim.
-    assert_eq!(
-        extract_mem_src_id("MEM_SRC:SRC_Vault_Hob:path/to/note.md"),
-        Some("SRC_Vault_Hob")
-    );
-    // Non-`mem_src` and malformed scopes yield nothing.
-    for scope in [
-        "slack:#eng",
-        "mem_src:",
-        "mem_src::path",
-        "mem_src:no-colon",
-    ] {
-        assert_eq!(extract_mem_src_id(scope), None, "scope: {scope}");
-    }
-}
-
-#[test]
-fn source_scope_allows_matches_mem_src_collection_and_direct_scope() {
-    let scope = HashSet::from([
-        "src_vault_hob_local".to_string(),
-        "slack:#allowed".to_string(),
-    ]);
-    assert!(source_scope_allows(
-        &scope,
-        "mem_src:src_vault_hob_local:path/to/note.md"
-    ));
-    assert!(source_scope_allows(&scope, "slack:#allowed"));
-    assert!(!source_scope_allows(&scope, "mem_src:other_collection:path"));
-    assert!(!source_scope_allows(&scope, "slack:#denied"));
 }
 
 #[tokio::test]

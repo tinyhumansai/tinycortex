@@ -13,7 +13,9 @@ use rusqlite::{params, OptionalExtension, Transaction};
 
 use super::common::{decode_signature_blob, ms_to_utc, pack_embedding_blob};
 use super::types::{SummaryNode, TreeKind};
-use crate::memory::chunks::{tree_active_signature, with_connection};
+use crate::memory::chunks::{
+    signature_in_clause, signature_variants, tree_active_signature, with_connection,
+};
 use crate::memory::config::MemoryConfig;
 use crate::memory::score::embed::decode_optional_blob;
 use crate::memory::store::content::StagedSummary;
@@ -281,18 +283,28 @@ pub fn set_summary_embedding(
     Ok(1)
 }
 
-/// Fetch a summary embedding for exactly one signature.
+/// Fetch a summary embedding for one signature, under any of its spellings
+/// (see `chunks::signature_variants`).
 pub fn get_summary_embedding_for_signature(
     config: &MemoryConfig,
     summary_id: &str,
     model_signature: &str,
 ) -> Result<Option<Vec<f32>>> {
+    let variants = signature_variants(model_signature);
     with_connection(config, |conn| {
+        let mut bound: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(variants.len() + 1);
+        bound.push(&summary_id as &dyn rusqlite::ToSql);
+        for variant in &variants {
+            bound.push(variant as &dyn rusqlite::ToSql);
+        }
         let row: Option<(Option<Vec<u8>>, i64)> = conn
             .query_row(
-                "SELECT vector, dim FROM mem_tree_summary_embeddings
-                  WHERE summary_id = ?1 AND model_signature = ?2",
-                params![summary_id, model_signature],
+                &format!(
+                    "SELECT vector, dim FROM mem_tree_summary_embeddings
+                      WHERE summary_id = ?1 AND model_signature {}",
+                    signature_in_clause(variants.len(), 2)
+                ),
+                bound.as_slice(),
                 |r| Ok((Some(r.get(0)?), r.get(1)?)),
             )
             .optional()?;
@@ -323,6 +335,7 @@ pub fn get_summary_embeddings_for_signature_batch(
     if summary_ids.is_empty() {
         return Ok(HashMap::new());
     }
+    let variants = signature_variants(model_signature);
     with_connection(config, |conn| {
         let mut out: HashMap<String, Vec<f32>> = HashMap::with_capacity(summary_ids.len());
         for window in summary_ids.chunks(MAX_EMBEDDING_BATCH) {
@@ -331,15 +344,18 @@ pub fn get_summary_embeddings_for_signature_batch(
                 .join(",");
             let sql = format!(
                 "SELECT summary_id, vector, dim FROM mem_tree_summary_embeddings
-                  WHERE summary_id IN ({placeholders}) AND model_signature = ?{sig_idx}",
-                sig_idx = window.len() + 1,
+                  WHERE summary_id IN ({placeholders}) AND model_signature {sig_clause}",
+                sig_clause = signature_in_clause(variants.len(), window.len() + 1),
             );
             let mut stmt = conn.prepare(&sql)?;
-            let mut bound: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(window.len() + 1);
+            let mut bound: Vec<&dyn rusqlite::ToSql> =
+                Vec::with_capacity(window.len() + variants.len());
             for id in window {
                 bound.push(id as &dyn rusqlite::ToSql);
             }
-            bound.push(&model_signature as &dyn rusqlite::ToSql);
+            for variant in &variants {
+                bound.push(variant as &dyn rusqlite::ToSql);
+            }
             let rows = stmt.query_map(bound.as_slice(), |row| {
                 Ok((
                     row.get::<_, String>(0)?,

@@ -4,6 +4,7 @@ pub mod client;
 pub mod connect;
 pub mod gmail;
 pub mod orchestrator;
+pub(crate) mod page_size;
 pub mod providers;
 
 pub use client::{ActionExecutor, ComposioClient, ExecuteError, ExecuteResponse};
@@ -14,6 +15,7 @@ pub use connect::{
 pub use gmail::GmailSyncPipeline;
 pub use orchestrator::{run_incremental_sync, IncrementalSource, PageFetch, SyncItem, SyncScope};
 pub use providers::{
-    ClickUpSyncPipeline, GitHubSyncPipeline, LinearSyncPipeline, NotionSyncPipeline,
-    SlackSearchBackfillPipeline, SlackSyncPipeline,
+    ClickUpSyncPipeline, GitHubSyncPipeline, GoogleCalendarSyncPipeline, GoogleDocsSyncPipeline,
+    GoogleDriveSyncPipeline, GoogleSheetsSyncPipeline, LinearSyncPipeline, NotionSyncPipeline,
+    OutlookSyncPipeline, SlackSearchBackfillPipeline, SlackSyncPipeline, TodoistSyncPipeline,
 };

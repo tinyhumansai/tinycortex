@@ -12,9 +12,11 @@
 //! - `semantic` — heading- and paragraph-aware chunker used to split large
 //!   documents into LLM-context-sized pieces while preserving heading context.
 //!   Exported as [`chunk_semantic`].
-//! - `store` / `connection` / `migrations` / `raw_refs` / `embeddings` —
-//!   the SQLite-backed chunk store (the `mem_tree_chunks` table plus its
-//!   per-model embedding sidecars and source ingest gates).
+//! - `store` / `connection` / `migrations` / `raw_refs` / `embeddings` /
+//!   `embeddings_query` — the SQLite-backed chunk store (the `mem_tree_chunks`
+//!   table plus its per-model embedding sidecars and source ingest gates).
+//!   `embeddings` owns the writes and re-embed tombstones; `embeddings_query`
+//!   owns the signature-aware reads and the re-embed coverage probe.
 //!
 //! ## Differences from OpenHuman
 //!
@@ -41,6 +43,8 @@ mod recovery;
 
 #[path = "embeddings.rs"]
 mod embeddings;
+#[path = "embeddings_query.rs"]
+mod embeddings_query;
 #[path = "migrations.rs"]
 mod migrations;
 #[path = "produce.rs"]
@@ -51,6 +55,8 @@ mod produce_split;
 mod raw_refs;
 #[path = "semantic.rs"]
 mod semantic;
+#[path = "signature.rs"]
+mod signature;
 #[path = "store.rs"]
 mod store;
 #[path = "store_delete.rs"]
@@ -58,8 +64,13 @@ mod store_delete;
 mod store_list;
 #[path = "store_sources.rs"]
 mod store_sources;
-#[path = "types.rs"]
-mod types;
+
+/// The persisted chunk value types now live in the dependency-light
+/// `tinycortex-api` crate. Aliasing the whole module (rather than importing
+/// the individual items) keeps every `super::types::…` path inside this module
+/// tree resolving exactly as before, at the same private visibility the local
+/// `mod types;` had.
+use tinycortex_api::chunks as types;
 
 #[cfg(test)]
 #[path = "store_conn_tests.rs"]
@@ -83,12 +94,14 @@ pub use types::{
 pub use connection::{shared_connection, with_connection};
 pub use embeddings::{
     clear_chunk_reembed_skipped, clear_reembed_skipped_for_signature,
-    clear_summary_reembed_skipped, embedding_to_blob, get_chunk_embedding,
-    get_chunk_embedding_for_signature, get_chunk_embeddings_batch,
+    clear_summary_reembed_skipped, embedding_to_blob, mark_chunk_reembed_skipped,
+    mark_summary_reembed_skipped, set_chunk_embedding, set_chunk_embedding_for_signature,
+    set_chunk_embedding_for_signature_tx, set_summary_embedding_for_signature_tx,
+    tree_active_signature, REEMBED_SKIP_KEY_MAX_LEN,
+};
+pub use embeddings_query::{
+    get_chunk_embedding, get_chunk_embedding_for_signature, get_chunk_embeddings_batch,
     get_chunk_embeddings_for_signature_batch, has_uncovered_reembed_work,
-    mark_chunk_reembed_skipped, mark_summary_reembed_skipped, set_chunk_embedding,
-    set_chunk_embedding_for_signature, set_chunk_embedding_for_signature_tx,
-    set_summary_embedding_for_signature_tx, tree_active_signature, REEMBED_SKIP_KEY_MAX_LEN,
 };
 pub use raw_refs::{
     get_chunk_content_path, get_chunk_content_pointers, get_chunk_raw_refs,
@@ -97,6 +110,10 @@ pub use raw_refs::{
 };
 pub use recovery::{
     is_io_open_error, is_transient_cold_start, recover_corrupt_db, try_cleanup_stale_files,
+};
+pub(crate) use signature::signature_in_clause;
+pub use signature::{
+    format_signature, parse_signature, signature_variants, signatures_equivalent, SignatureParts,
 };
 pub use store::{
     claim_source_ingest_tx, count_chunks, count_chunks_by_lifecycle_status,

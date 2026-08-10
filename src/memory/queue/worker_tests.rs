@@ -73,6 +73,45 @@ async fn run_once_parks_unparseable_payload_as_unrecoverable() {
     );
 }
 
+/// A handler that propagates the pipeline taxonomy
+/// (`health::PipelineFailure`) must still fail fast: the worker downcasts it
+/// and maps `code`/`class` onto the queue settlement type.
+#[test]
+fn pipeline_failure_downcast_fails_fast_as_unrecoverable() {
+    use crate::memory::health::{FailureCode, PipelineFailure};
+    use crate::memory::queue::types::JobKind;
+
+    let (_tmp, cfg) = test_config();
+    let poison = NewJob {
+        kind: JobKind::FlushStale,
+        payload_json: "{}".into(),
+        dedupe_key: None,
+        available_at_ms: None,
+        max_attempts: Some(5),
+    };
+    let id = enqueue(&cfg, &poison).unwrap().expect("enqueued");
+    let claimed = claim_next(&cfg, DEFAULT_LOCK_DURATION_MS).unwrap().unwrap();
+
+    // The production shape: a handler returns a `PipelineFailure` and the
+    // processor wraps it in anyhow context on the way up. The worker's
+    // downcast must still find it through the chain.
+    let err = anyhow::Error::new(
+        PipelineFailure::new(FailureCode::BudgetExhausted)
+            .with_detail("managed voyage route exhausted"),
+    )
+    .context("flush stale handler failed");
+    settle_job(&cfg, &claimed, Err(err)).unwrap();
+
+    let job = get_job(&cfg, &id).unwrap().unwrap();
+    assert_eq!(
+        job.status,
+        JobStatus::Failed,
+        "budget_exhausted PipelineFailure must fail fast, not retry"
+    );
+    assert_eq!(job.failure_class.as_deref(), Some("unrecoverable"));
+    assert_eq!(job.failure_reason.as_deref(), Some("budget_exhausted"));
+}
+
 #[tokio::test]
 async fn run_once_claims_and_completes_a_flush_stale_job() {
     let (_tmp, cfg) = test_config();

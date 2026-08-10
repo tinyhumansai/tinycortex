@@ -3,13 +3,15 @@
 //! Embeddings are stored in the `mem_tree_chunk_embeddings` sidecar table keyed
 //! by `(chunk_id, model_signature)` so multiple vector spaces can coexist. This
 //! module is pure storage: it does not compute embeddings (that backend is not
-//! ported here) — callers pass vectors in.
+//! ported here) — callers pass vectors in. The signature-aware *read* side
+//! lives in the [`super::embeddings_query`] sibling, which this module's
+//! re-exports also expose at the `chunks` level.
 
 use super::connection::with_connection;
+use super::signature::format_signature;
 use anyhow::{Context, Result};
 use chrono::Utc;
-use rusqlite::{Connection, OptionalExtension};
-use std::collections::HashMap;
+use rusqlite::Connection;
 
 use crate::memory::config::MemoryConfig;
 
@@ -20,11 +22,20 @@ pub(crate) fn active_embedding_dims(config: &MemoryConfig) -> usize {
 }
 
 /// Resolve the active embedding signature — the canonical key every per-model
-/// sidecar read/write is scoped by. Derived from the configured model + dim so
-/// a provider/model/dimension switch becomes a query-time filter rather than a
-/// destructive rewrite.
+/// sidecar read/write is scoped by. Derived from the configured provider, model
+/// and dim so a provider/model/dimension switch becomes a query-time filter
+/// rather than a destructive rewrite.
+///
+/// This is the canonical `provider=…;model=…;dims=…` spelling, shared with the
+/// namespace store. Rows written under the tree's older `{model}@{dims}`
+/// spelling are still found, because per-signature reads match every variant
+/// (see [`super::signature::signature_variants`]) rather than one exact string.
 pub fn tree_active_signature(config: &MemoryConfig) -> String {
-    format!("{}@{}", config.embedding.model, config.embedding.dim)
+    format_signature(
+        &config.embedding.provider,
+        &config.embedding.model,
+        config.embedding.dim,
+    )
 }
 
 /// Store a chunk's embedding under the active model signature (see
@@ -66,6 +77,11 @@ fn upsert_chunk_embedding_conn(
                 dim = excluded.dim,
                 created_at = excluded.created_at",
         rusqlite::params![chunk_id, model_signature, bytes, dim, created_at],
+    )?;
+    conn.execute(
+        "DELETE FROM mem_tree_chunk_reembed_skipped
+          WHERE chunk_id = ?1 AND model_signature = ?2",
+        rusqlite::params![chunk_id, model_signature],
     )?;
     Ok(())
 }
@@ -292,189 +308,7 @@ pub(crate) fn validate_reembed_skip_key<'a>(label: &str, value: &'a str) -> Resu
     Ok(trimmed)
 }
 
-/// Fetch a chunk embedding for exactly one provider/model/dimension signature.
-///
-/// Returns `Ok(None)` when no row exists for `(chunk_id, model_signature)` —
-/// absence is not an error.
-///
-/// # Errors
-/// Returns `Err` if the query fails, or if `embedding_from_blob` rejects
-/// the stored blob (negative/zero-remainder-mismatched dim, or a blob length
-/// not a multiple of 4 bytes — both indicate on-disk corruption of this row,
-/// not a normal "no embedding" state).
-pub fn get_chunk_embedding_for_signature(
-    config: &MemoryConfig,
-    chunk_id: &str,
-    model_signature: &str,
-) -> Result<Option<Vec<f32>>> {
-    with_connection(config, |conn| {
-        let row: Option<(Vec<u8>, i64)> = conn
-            .query_row(
-                "SELECT vector, dim
-                   FROM mem_tree_chunk_embeddings
-                  WHERE chunk_id = ?1 AND model_signature = ?2",
-                rusqlite::params![chunk_id, model_signature],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        match row {
-            None => Ok(None),
-            Some((bytes, dim)) => embedding_from_blob(&bytes, dim, "chunk embedding"),
-        }
-    })
-}
-
-/// Fetch a chunk's embedding for the active model signature (see
-/// [`tree_active_signature`]). See [`get_chunk_embedding_for_signature`] for
-/// the return/error contract.
-pub fn get_chunk_embedding(config: &MemoryConfig, chunk_id: &str) -> Result<Option<Vec<f32>>> {
-    let signature = tree_active_signature(config);
-    get_chunk_embedding_for_signature(config, chunk_id, &signature)
-}
-
 /// Little-endian `f32` vector → `BLOB`. The inverse of `embedding_from_blob`.
 pub fn embedding_to_blob(embedding: &[f32]) -> Vec<u8> {
     embedding.iter().flat_map(|f| f.to_le_bytes()).collect()
-}
-
-/// Decode a little-endian `f32` vector `BLOB` back into `Vec<f32>`, validating
-/// it against the DB's own recorded `dim` column. `label` only qualifies the
-/// error message (e.g. `"chunk embedding"` vs. a future summary-embedding
-/// caller).
-///
-/// Always returns `Ok(Some(_))` on success — the `Option` in the return type
-/// exists purely so callers can `?`-propagate this directly from inside a
-/// `match row { None => Ok(None), Some(..) => embedding_from_blob(..) }` arm
-/// without an extra `.map`.
-///
-/// # Errors
-/// Returns `Err` if `dim` is negative, if `bytes.len()` is not a multiple of
-/// 4, or if the decoded float count does not equal `dim` — all three
-/// indicate the stored row is internally inconsistent (corruption or a bug
-/// upstream), not a normal "different embedding space" mismatch (that case is
-/// handled by comparing signatures/dims *before* calling this, e.g. in
-/// [`super::migrations::migrate_legacy_embeddings_to_sidecar`]).
-fn embedding_from_blob(bytes: &[u8], dim: i64, label: &str) -> Result<Option<Vec<f32>>> {
-    if dim < 0 {
-        anyhow::bail!("{label} has negative dimension {dim}");
-    }
-    if !bytes.len().is_multiple_of(4) {
-        anyhow::bail!("{label} blob length {} not a multiple of 4", bytes.len());
-    }
-    let floats: Vec<f32> = bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect();
-    if floats.len() != dim as usize {
-        anyhow::bail!(
-            "{label} dimension mismatch: dim column says {dim}, blob contains {} floats",
-            floats.len()
-        );
-    }
-    Ok(Some(floats))
-}
-
-/// Whether any live chunk or summary lacks both an embedding and terminal tombstone.
-pub fn has_uncovered_reembed_work(
-    conn: &Connection,
-    model_signature: &str,
-) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT EXISTS(
-             SELECT 1 FROM mem_tree_chunks c
-              WHERE NOT EXISTS (SELECT 1 FROM mem_tree_chunk_embeddings e
-                                 WHERE e.chunk_id = c.id AND e.model_signature = ?1)
-                AND NOT EXISTS (SELECT 1 FROM mem_tree_chunk_reembed_skipped sk
-                                 WHERE sk.chunk_id = c.id AND sk.model_signature = ?1))
-           OR EXISTS(
-             SELECT 1 FROM mem_tree_summaries s
-              WHERE s.deleted = 0
-                AND NOT EXISTS (SELECT 1 FROM mem_tree_summary_embeddings e
-                                 WHERE e.summary_id = s.id AND e.model_signature = ?1)
-                AND NOT EXISTS (SELECT 1 FROM mem_tree_summary_reembed_skipped sk
-                                 WHERE sk.summary_id = s.id AND sk.model_signature = ?1))",
-        rusqlite::params![model_signature],
-        |row| row.get(0),
-    )
-}
-
-/// Defensive cap for batched `IN (?,?,…)` reads, well below SQLite's
-/// `SQLITE_MAX_VARIABLE_NUMBER` (32 766).
-const MAX_EMBEDDING_BATCH: usize = 500;
-
-/// Batched read of chunk embeddings under a single `model_signature`.
-///
-/// Returns a `HashMap<chunk_id, Vec<f32>>` containing only the chunks that have
-/// a vector under `model_signature`. Missing chunks are simply absent (callers
-/// treat that the same as a `None` from the single-row helper).
-///
-/// `chunk_ids` is split into windows of at most `MAX_EMBEDDING_BATCH` so a
-/// single query never approaches SQLite's bound-parameter limit; each window
-/// runs as its own `SELECT ... WHERE chunk_id IN (...)` inside the same
-/// [`super::connection::with_connection`] call (not separately transacted —
-/// reads only).
-///
-/// # Errors
-/// Returns `Err` if `chunk_ids` is non-empty and any window's query
-/// preparation, execution, or blob decoding (`embedding_from_blob`) fails.
-/// Returns `Ok(HashMap::new())` immediately (no DB access) when `chunk_ids`
-/// is empty.
-pub fn get_chunk_embeddings_for_signature_batch(
-    config: &MemoryConfig,
-    chunk_ids: &[String],
-    model_signature: &str,
-) -> Result<HashMap<String, Vec<f32>>> {
-    if chunk_ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-    with_connection(config, |conn| {
-        let mut out: HashMap<String, Vec<f32>> = HashMap::with_capacity(chunk_ids.len());
-        for window in chunk_ids.chunks(MAX_EMBEDDING_BATCH) {
-            let placeholders = std::iter::repeat_n("?", window.len())
-                .collect::<Vec<_>>()
-                .join(",");
-            let sql = format!(
-                "SELECT chunk_id, vector, dim
-                   FROM mem_tree_chunk_embeddings
-                  WHERE chunk_id IN ({placeholders})
-                    AND model_signature = ?{sig_idx}",
-                sig_idx = window.len() + 1,
-            );
-            let mut stmt = conn
-                .prepare(&sql)
-                .context("prepare get_chunk_embeddings_for_signature_batch")?;
-            let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(window.len() + 1);
-            for id in window {
-                params.push(id as &dyn rusqlite::ToSql);
-            }
-            params.push(&model_signature as &dyn rusqlite::ToSql);
-            let rows = stmt
-                .query_map(params.as_slice(), |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Vec<u8>>(1)?,
-                        row.get::<_, i64>(2)?,
-                    ))
-                })
-                .context("query get_chunk_embeddings_for_signature_batch")?;
-            for row in rows {
-                let (chunk_id, bytes, dim) = row?;
-                if let Some(v) = embedding_from_blob(&bytes, dim, "chunk embedding")? {
-                    out.insert(chunk_id, v);
-                }
-            }
-        }
-        Ok(out)
-    })
-}
-
-/// Batched read of chunk embeddings under the **active** model signature. See
-/// [`get_chunk_embeddings_for_signature_batch`] for the batching and error
-/// contract.
-pub fn get_chunk_embeddings_batch(
-    config: &MemoryConfig,
-    chunk_ids: &[String],
-) -> Result<HashMap<String, Vec<f32>>> {
-    let signature = tree_active_signature(config);
-    get_chunk_embeddings_for_signature_batch(config, chunk_ids, &signature)
 }
