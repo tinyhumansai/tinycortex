@@ -232,3 +232,95 @@ async fn local_branch_intersects_entities_and_applies_scope_before_limit() {
     assert_eq!(response.hits[0].node_id, "allowed");
     assert_eq!(response.hits[0].score, 2.0);
 }
+
+#[test]
+fn extract_mem_src_id_parses_collection_id_case_insensitively() {
+    for scope in [
+        "mem_src:src_vault_hob_local:path/to/note.md",
+        "Mem_Src:src_vault_hob_local:path/to/note.md",
+        "mem_src:SRC_Vault_Hob:path/to/note.md",
+    ] {
+        assert_eq!(
+            extract_mem_src_id(scope),
+            Some("src_vault_hob_local"),
+            "scope: {scope}"
+        );
+    }
+    // The collection id itself keeps its original case so it matches the
+    // caller-supplied `source_scope` entry verbatim.
+    assert_eq!(
+        extract_mem_src_id("Mem_Src:SRC_Vault:path/to/note.md"),
+        Some("SRC_Vault")
+    );
+    // Non-`mem_src` and malformed scopes yield nothing.
+    for scope in [
+        "slack:#eng",
+        "mem_src:",
+        "mem_src::path",
+        "mem_src:no-colon",
+    ] {
+        assert_eq!(extract_mem_src_id(scope), None, "scope: {scope}");
+    }
+}
+
+#[test]
+fn source_scope_allows_matches_mem_src_collection_and_direct_scope() {
+    let scope = HashSet::from([
+        "src_vault_hob_local".to_string(),
+        "slack:#allowed".to_string(),
+    ]);
+    assert!(source_scope_allows(
+        &scope,
+        "mem_src:src_vault_hob_local:path/to/note.md"
+    ));
+    assert!(source_scope_allows(&scope, "slack:#allowed"));
+    assert!(!source_scope_allows(&scope, "mem_src:other_collection:path"));
+    assert!(!source_scope_allows(&scope, "slack:#denied"));
+}
+
+#[tokio::test]
+async fn dense_fallback_filters_by_mem_src_collection_id() {
+    let (_temp, config) = test_config();
+    insert_tree_row(
+        &config,
+        &source_tree(
+            "note-tree",
+            "mem_src:src_vault_hob_local:path/to/note.md",
+            Some("note"),
+            1,
+        ),
+    );
+    insert_summary(
+        &config,
+        &summary_node("note", "note-tree", 1, None, &[], "note", fixed_ts()),
+    );
+
+    let allowed = HashSet::from(["src_vault_hob_local".to_string()]);
+    let response = fast_retrieve(
+        &config,
+        "note",
+        &[],
+        &InertEmbedder,
+        Some(&allowed),
+        FastRetrieveOptions::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.total, 1);
+    assert_eq!(response.hits[0].node_id, "note");
+
+    // A scope naming a different collection filters the hit out.
+    let denied = HashSet::from(["other_collection".to_string()]);
+    let response = fast_retrieve(
+        &config,
+        "note",
+        &[],
+        &InertEmbedder,
+        Some(&denied),
+        FastRetrieveOptions::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.total, 0);
+    assert!(response.hits.is_empty());
+}
