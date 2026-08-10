@@ -10,7 +10,15 @@ use tempfile::TempDir;
 
 fn test_config() -> (TempDir, MemoryConfig) {
     let tmp = TempDir::new().unwrap();
-    let cfg = MemoryConfig::new(tmp.path());
+    let mut cfg = MemoryConfig::new(tmp.path());
+    // Drain tests enqueue LLM-bound jobs (ExtractChunk / ReembedBackfill /
+    // Seal). `run_once` routes them to a process-wide gate keyed by
+    // `queue.llm_permits`, so the default of `1` would share a single slot
+    // with the worker gate-semantics tests, which can briefly hold the sole
+    // permit and defer this test's job (`llm concurrency gate busy`), ending
+    // the drain early. Use a distinct count so these tests get their own
+    // gate and never contend for the shared slot.
+    cfg.queue.llm_permits = crate::memory::queue::DEFAULT_LLM_PERMITS.saturating_mul(16);
     (tmp, cfg)
 }
 
