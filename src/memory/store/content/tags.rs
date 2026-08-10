@@ -35,6 +35,8 @@ pub fn update_chunk_tags(abs_path: &Path, tags: &[String]) -> anyhow::Result<()>
     let new_bytes = rewrite_tags(&old_bytes, &augmented)
         .map_err(|e| anyhow::anyhow!("rewrite_tags {:?}: {e}", abs_path))?;
 
+    ensure_tag_rewrite_preserves_body(&old_bytes, &new_bytes, abs_path)?;
+
     let parent = abs_path.parent().unwrap_or_else(|| Path::new("."));
     let tmp_name = format!(".tmp_tags_{}.md", crate_temp_id());
     let tmp_path = parent.join(&tmp_name);
@@ -55,6 +57,32 @@ pub fn update_chunk_tags(abs_path: &Path, tags: &[String]) -> anyhow::Result<()>
     })?;
 
     Ok(())
+}
+
+/// Reject a front-matter rewrite unless both files parse and their bodies are
+/// byte-identical.
+///
+/// The body hash is persisted separately from the markdown file, so silently
+/// accepting an invalid or changed body would corrupt later retrieval.
+fn ensure_tag_rewrite_preserves_body(
+    old_bytes: &[u8],
+    new_bytes: &[u8],
+    abs_path: &Path,
+) -> anyhow::Result<()> {
+    let body = |bytes: &[u8]| -> Option<String> {
+        std::str::from_utf8(bytes)
+            .ok()
+            .and_then(split_front_matter)
+            .map(|(_, body)| body.to_owned())
+    };
+
+    match (body(old_bytes), body(new_bytes)) {
+        (Some(old), Some(new)) if old == new => Ok(()),
+        _ => Err(anyhow::anyhow!(
+            "tag rewrite would mutate or invalidate the body for {:?}",
+            abs_path
+        )),
+    }
 }
 
 /// Slugify an entity kind string for an Obsidian hierarchical tag.

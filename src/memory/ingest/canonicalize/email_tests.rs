@@ -204,3 +204,54 @@ fn headers_and_body_cannot_inject_email_boundaries() {
         .markdown
         .contains("\\---\nFrom: body-forgery@example.com"));
 }
+
+// ── Serde regression tests (sibling of #5169) ───────────────────────────────
+
+/// A payload with no `sent_at` field must deserialize gracefully (defaulting
+/// to `Utc::now()`) instead of failing with "missing field `sent_at`". This is
+/// the email-arm counterpart of the chat-arm fix in #5169.
+#[test]
+fn missing_sent_at_defaults_to_now() {
+    let json = r#"{
+        "from": "alice@example.com",
+        "subject": "hi",
+        "body": "hello"
+    }"#;
+    let msg: EmailMessage = serde_json::from_str(json).expect("missing sent_at should not fail");
+    let diff = Utc::now().signed_duration_since(msg.sent_at);
+    assert!(
+        diff.num_seconds().unsigned_abs() < 5,
+        "defaulted sent_at should be within ~5s of now, got {diff:?}"
+    );
+}
+
+/// A null `sent_at` should also fall back to the default.
+#[test]
+fn null_sent_at_defaults_to_now() {
+    let json = r#"{
+        "from": "alice@example.com",
+        "subject": "hi",
+        "sent_at": null,
+        "body": "hello"
+    }"#;
+    let msg: EmailMessage = serde_json::from_str(json).expect("null sent_at should not fail");
+    let diff = Utc::now().signed_duration_since(msg.sent_at);
+    assert!(
+        diff.num_seconds().unsigned_abs() < 5,
+        "defaulted sent_at should be within ~5s of now, got {diff:?}"
+    );
+}
+
+/// Explicit epoch-ms `sent_at` still parses exactly (guards against the default
+/// masking a real value).
+#[test]
+fn explicit_sent_at_still_parses() {
+    let json = r#"{
+        "from": "alice@example.com",
+        "subject": "hi",
+        "sent_at": 1700000000000,
+        "body": "hello"
+    }"#;
+    let msg: EmailMessage = serde_json::from_str(json).expect("epoch-ms sent_at should parse");
+    assert_eq!(msg.sent_at.timestamp_millis(), 1_700_000_000_000);
+}

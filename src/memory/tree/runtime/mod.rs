@@ -12,7 +12,12 @@ pub mod engine;
 mod fold;
 mod rebuild_fs;
 pub mod store;
-pub mod types;
+/// The summary-tree node value types now live in the dependency-light
+/// `tinycortex-api` crate. Aliasing the whole module (rather than the
+/// individual items) keeps every `super::types::…` /
+/// `crate::memory::tree::runtime::types::…` path — inside this crate and in
+/// embedding hosts — resolving exactly as before.
+pub use tinycortex_api::tree as types;
 
 pub use engine::{
     discover_active_namespaces, rebuild_tree, rebuild_tree_observed, run_summarization,

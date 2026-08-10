@@ -242,3 +242,20 @@ pub(super) fn default_entry() -> MemorySourceEntry {
         sync_depth_days: None,
     }
 }
+
+#[test]
+fn max_items_is_applicable_to_composio_and_rss_but_not_other_kinds() {
+    // The host UI exposes `max_items` for Composio sources and creates them with
+    // a toolkit default, so editing one must not be rejected — the regression
+    // this guards ("field 'max_items' is not applicable to source kind
+    // 'composio'"). RSS keeps it; kinds with no per-run item cap still reject.
+    let patch = || MemorySourcePatch {
+        max_items: Some(Some(100)),
+        ..Default::default()
+    };
+    assert!(patch().validate_for_kind(SourceKind::Composio).is_ok());
+    assert!(patch().validate_for_kind(SourceKind::RssFeed).is_ok());
+    assert!(patch().validate_for_kind(SourceKind::Folder).is_err());
+    assert!(patch().validate_for_kind(SourceKind::GithubRepo).is_err());
+    assert!(patch().validate_for_kind(SourceKind::WebPage).is_err());
+}

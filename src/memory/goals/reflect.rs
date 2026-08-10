@@ -24,6 +24,7 @@ use crate::memory::config::MemoryConfig;
 use crate::memory::error::MemoryEngineResult;
 
 use super::store;
+use super::store::GoalsDocMutations;
 use super::types::GoalsDoc;
 
 /// A single proposed change to the goals list, emitted by a [`GoalsGenerator`].

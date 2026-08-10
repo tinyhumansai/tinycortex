@@ -89,6 +89,37 @@ fn update_chunk_tags_is_noop_for_missing_file() {
 }
 
 #[test]
+fn update_chunk_tags_rejects_unparseable_front_matter_without_overwriting() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("malformed.md");
+    let original = b"not front matter\nBODY";
+    std::fs::write(&path, original).unwrap();
+
+    let result = update_chunk_tags(&path, &["person/Alice".into()]);
+
+    assert!(result.is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+}
+
+#[test]
+fn body_guard_accepts_front_matter_only_changes() {
+    let path = Path::new("chunk.md");
+    let old = b"---\ntags: []\n---\nBODY";
+    let new = b"---\ntags:\n  - person/Alice\n---\nBODY";
+
+    assert!(ensure_tag_rewrite_preserves_body(old, new, path).is_ok());
+}
+
+#[test]
+fn body_guard_rejects_body_drift() {
+    let path = Path::new("chunk.md");
+    let old = b"---\ntags: []\n---\nBODY";
+    let new = b"---\ntags:\n  - person/Alice\n---\nDIFFERENT";
+
+    assert!(ensure_tag_rewrite_preserves_body(old, new, path).is_err());
+}
+
+#[test]
 fn slugify_tag_kind_examples() {
     assert_eq!(slugify_tag_kind("Person"), "person");
     assert_eq!(slugify_tag_kind("GitHub Repo"), "github-repo");

@@ -1,0 +1,43 @@
+[package]
+name = "tinycortex-api"
+version = "0.1.1"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/tinyhumansai/tinycortex"
+description = "Stable public contracts for the TinyCortex memory system"
+
+# Deliberately dependency-light: this crate is the stable contract surface that
+# hosts compile against, so it must stay free of native, async-runtime, and
+# storage dependencies. Anything heavier belongs in the `tinycortex` engine
+# crate, never here.
+#
+# The full set is intentionally small and pure-Rust. Beyond the
+# serde/error/async-trait baseline it carries exactly three additions, each
+# pulled in by a value type that has to keep behaving identically after the
+# move out of the engine crate:
+#
+# - `chrono`  — timestamps on chunk/tree nodes; the `serde` feature backs
+#               `chunks::Metadata`'s `chrono::serde::ts_milliseconds`.
+# - `sha2`    — the deterministic `chunks::chunk_id`.
+# - `uuid`    — `tool_memory::ToolMemoryRule::generate_id` (v4 bytes, nibble
+#               encoded). Only the `v4` feature is needed here; the engine
+#               crate additionally enables `serde`.
+#
+# Nothing here may pull in `rusqlite`, `git2`, `reqwest`, `regex`, or an async
+# runtime. Guard with the FORWARD form, which is scoped to this package:
+#
+#   cargo tree -p tinycortex-api -e normal,build --prefix none \
+#     | grep -Ei 'rusqlite|libsqlite|git2|reqwest|regex|tokio'   # expect no match
+#
+# Do NOT use `cargo tree -i <crate> -p tinycortex-api`: `-i` discards the `-p`
+# scope and prints the whole-workspace inverse tree, so it exits 0 and looks
+# clean even when this crate is the one pulling the dependency in.
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }

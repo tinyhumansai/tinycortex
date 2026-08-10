@@ -189,11 +189,24 @@ fn settle_planned_job(
         }
         Err(err) => {
             // Preserve the full anyhow cause chain in `last_error` so a reader
-            // can see the root cause. If the chain carries a typed `JobFailure`,
+            // can see the root cause. If the chain carries a typed failure,
             // pass it through so an unrecoverable cause fails fast instead of
             // burning the retry budget.
             let message = format!("{err:#}");
-            let typed = err.downcast_ref::<JobFailure>();
+            // The pipeline's own failure taxonomy (`health::PipelineFailure`) is
+            // the type `classify_embed_error` returns; handlers wrap it in the
+            // anyhow chain with `.context(...)`. Map it onto the queue's
+            // settlement type so unrecoverable codes (`budget_exhausted`,
+            // `auth_invalid`, …) still fail fast.
+            let converted_pipeline_failure = err
+                .downcast_ref::<crate::memory::health::PipelineFailure>()
+                .map(|f| JobFailure {
+                    code: f.code.as_str(),
+                    class: f.class.as_str(),
+                });
+            let typed = err
+                .downcast_ref::<JobFailure>()
+                .or(converted_pipeline_failure.as_ref());
             mark_failed_typed(config, job, &message, typed)?;
 
             // The handler clears this flag on every successful terminal

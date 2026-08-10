@@ -14,8 +14,10 @@
 //! - [`tree`]: summary-tree mechanics (append, seal, summarise, retrieve).
 //! - [`queue`]: async job model (extract, append, seal, flush, backfill).
 //! - [`retrieval`]: vector / keyword / graph / tree / hybrid search.
-//! - `diff`: git-backed source snapshots, diffs, checkpoints, read markers
-//!   (feature `git-diff`; gates the heavy native `git2`/libgit2 dependency).
+//! - `diff`: git-backed source snapshots, diffs, checkpoints, read markers.
+//!   Its inert `types`/`source` submodules are always compiled; computing a
+//!   diff needs feature `git-diff`, which gates the heavy native
+//!   `git2`/libgit2 dependency.
 //! - [`entities`] / [`graph`]: entity files and derived co-occurrence graph.
 //! - [`goals`] / [`tool_memory`]: specialized long-term memory surfaces.
 //! - [`conversations`] / [`archivist`]: transcript storage and tree archival.
@@ -41,16 +43,20 @@
 //!   any unrecognised persisted value decodes as
 //!   [`types::MemoryTaint::ExternalSync`] — the more restrictive setting — so
 //!   policy gates never under-trust content of unknown provenance.
-//! - **Feature-gated modules add no default-build cost.** `diff`, `providers`,
-//!   and `persona` are compiled out entirely unless their feature is enabled (see
-//!   the crate-level feature-flag docs in `lib.rs`); code in this module must
-//!   not assume they are present.
+//! - **Feature-gated modules add no default-build cost.** `providers` and
+//!   `persona` are compiled out entirely unless their feature is enabled, and
+//!   `diff` keeps only its inert `types`/`source` submodules without `git-diff`
+//!   (see the crate-level feature-flag docs in `lib.rs`). Code in this module
+//!   must not assume any of them is present.
 
 // ── Shared contracts ────────────────────────────────────────────────────────
 pub mod config;
-pub mod error;
-pub mod traits;
-pub mod types;
+/// The stable value types, error enum, and storage trait now live in the
+/// dependency-light `tinycortex-api` crate. Re-exporting the modules (rather
+/// than the individual items) keeps every `memory::types::…` /
+/// `super::types::…` path inside this crate — and in embedding hosts —
+/// resolving exactly as before.
+pub use tinycortex_api::{error, traits, types};
 
 // ── Storage primitives ──────────────────────────────────────────────────────
 pub mod store;
@@ -61,15 +67,19 @@ pub mod chunks;
 pub mod conversations;
 /// Git-backed source snapshots, diffs, checkpoints, and read markers.
 ///
-/// Gated behind the `git-diff` feature: the entire module (and the heavy native
-/// `git2`/libgit2 dependency it needs) compiles out when the feature is off.
-#[cfg(feature = "git-diff")]
+/// Always compiled, but mostly hollow without the `git-diff` feature: the inert
+/// `types` and `source` submodules are `serde`/`std`-only and stay available so
+/// a host can still *describe* a diff, while everything that computes one —
+/// `Ledger`, `DiffEngine`, and the checkpoint/snapshot/diff operations — is
+/// gated along with the heavy native `git2`/libgit2 dependency it needs. See
+/// the module's own docs for why the split falls where it does.
 pub mod diff;
 pub mod entities;
 /// Shared filesystem primitives (crash-safe atomic writes).
 pub mod fsutil;
 pub mod goals;
 pub mod graph;
+pub mod health;
 pub mod ingest;
 pub mod queue;
 pub mod retrieval;

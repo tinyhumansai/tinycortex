@@ -14,6 +14,24 @@ use crate::memory::chunks::{
 };
 use crate::memory::config::MemoryConfig;
 
+/// Prefix for retryable legacy rows that were written before staged content
+/// files/raw references existed. `has_uncovered_reembed_work` matches this text
+/// inside `body read failed: ...` skip reasons to keep those chunks eligible for
+/// backfill once a legacy `content` column fallback is available.
+pub(crate) const LEGACY_NO_CONTENT_POINTER_REASON_PREFIX: &str =
+    "no content pointer or raw refs for chunk ";
+
+/// Prefix preserved for pre-fix skip rows written by older readers when the
+/// staged content pointer was present-but-empty. Current reads no longer emit
+/// this text because `get_chunk_content_pointers` filters empty paths before
+/// returning `Some`.
+pub(crate) const LEGACY_EMPTY_CONTENT_POINTER_REASON_PREFIX: &str =
+    "empty content pointer and no raw refs for chunk ";
+
+/// Prefix for terminal legacy rows whose inline content column is empty.
+pub(crate) const LEGACY_EMPTY_CHUNK_CONTENT_REASON_PREFIX: &str =
+    "legacy chunk content empty for chunk ";
+
 /// Resolve a DB-stored relative forward-slash path against `content_root`,
 /// rejecting any traversal (`..`), absolute, or non-normal component.
 ///
@@ -140,9 +158,6 @@ pub fn read_chunk_body(config: &MemoryConfig, chunk_id: &str) -> anyhow::Result<
     let Some((rel_path, expected_sha256)) = get_chunk_content_pointers(config, chunk_id)? else {
         return read_legacy_chunk_preview(config, chunk_id);
     };
-    if rel_path.is_empty() {
-        return read_legacy_chunk_preview(config, chunk_id);
-    }
     let abs_path = resolve_within_content_root(&content_root(config), &rel_path)?;
     let result = read_chunk_file(&abs_path)?;
     if result.sha256 != expected_sha256 {
@@ -156,12 +171,19 @@ pub fn read_chunk_body(config: &MemoryConfig, chunk_id: &str) -> anyhow::Result<
     Ok(result.body)
 }
 
+/// Fallback reader for pre-content-store chunk rows.
+///
+/// Its error text prefixes are part of the reembed-backfill contract:
+/// `embeddings::has_uncovered_reembed_work` matches the wrapped
+/// `body read failed: ...` skip reasons to decide which historical failures are
+/// retryable after this fallback exists. Keep the constants above in sync with
+/// that SQL before changing wording here.
 fn read_legacy_chunk_preview(config: &MemoryConfig, chunk_id: &str) -> anyhow::Result<String> {
     let Some(chunk) = get_chunk(config, chunk_id)? else {
-        anyhow::bail!("no content pointer or raw refs for chunk {chunk_id}");
+        anyhow::bail!("{LEGACY_NO_CONTENT_POINTER_REASON_PREFIX}{chunk_id}");
     };
     if chunk.content.is_empty() {
-        anyhow::bail!("legacy chunk content empty for chunk {chunk_id}");
+        anyhow::bail!("{LEGACY_EMPTY_CHUNK_CONTENT_REASON_PREFIX}{chunk_id}");
     }
     Ok(chunk.content)
 }

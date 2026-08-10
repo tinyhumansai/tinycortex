@@ -195,6 +195,14 @@ fn scope_prefix_matching_known_platforms() {
     assert!(scope_matches_kind("gmail:alice", "email"));
     assert!(scope_matches_kind("notion:page123", "document"));
     assert!(scope_matches_kind("linear:conn-1:issue-abc", "document"));
+    assert!(scope_matches_kind(
+        "mem_src:src-folder-9:Slides_Notes/example.md",
+        "document"
+    ));
+    assert!(scope_matches_kind(
+        "Mem_Src:src-folder-9:Slides_Notes/example.md",
+        "document"
+    ));
     assert!(!scope_matches_kind("slack:#eng", "email"));
     assert!(scope_matches_kind("chat:custom", "chat"));
 }

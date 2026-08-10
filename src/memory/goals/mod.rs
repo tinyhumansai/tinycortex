@@ -42,13 +42,19 @@
 
 pub mod reflect;
 pub mod store;
-pub mod types;
+/// The goals value types now live in the dependency-light `tinycortex-api`
+/// crate. Aliasing the whole module (rather than the individual items) keeps
+/// every `super::types::…` / `crate::memory::goals::types::…` path — inside
+/// this crate and in embedding hosts — resolving exactly as before. The
+/// validating mutation surface stayed behind in [`store::GoalsDocMutations`],
+/// next to the `regex`-backed PII/secret guards it calls.
+pub use tinycortex_api::goals as types;
 
 pub use reflect::{
     build_prompt, reflect, GoalMutation, GoalsGenerator, NoopGenerator, ReflectOutcome,
 };
 pub use store::{
-    add, add_for, delete, delete_for, edit, edit_for, goals_path, list_for, load, save, GOALS_FILE,
-    GOALS_FILE_MAX_CHARS, GOALS_MAX_ITEMS,
+    add, add_for, delete, delete_for, edit, edit_for, goals_path, list_for, load, save,
+    GoalsDocMutations, GOALS_FILE, GOALS_FILE_MAX_CHARS, GOALS_MAX_ITEMS,
 };
 pub use types::{GoalItem, GoalsDoc};
