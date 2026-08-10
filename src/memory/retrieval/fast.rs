@@ -291,8 +291,20 @@ fn source_scope_allows(scope: &HashSet<String>, tree_scope: &str) -> bool {
     extract_mem_src_id(tree_scope).is_some_and(|id| scope.contains(id))
 }
 
+/// Collection id embedded in a `mem_src:<collection_id>:<path>` tree scope, if
+/// `value` carries one. The `mem_src:` prefix is matched case-insensitively to
+/// mirror `source::scope_matches_kind`, while the returned id keeps its original
+/// case so it still compares equal to the caller-supplied `source_scope` entry.
 fn extract_mem_src_id(value: &str) -> Option<&str> {
-    let rest = value.strip_prefix("mem_src:")?;
+    const PREFIX: &str = "mem_src:";
+    if value.len() < PREFIX.len()
+        || !value
+            .as_bytes()
+            .eq_ignore_ascii_case(PREFIX.as_bytes())
+    {
+        return None;
+    }
+    let rest = &value[PREFIX.len()..];
     let (id, _) = rest.split_once(':')?;
     (!id.is_empty()).then_some(id)
 }
