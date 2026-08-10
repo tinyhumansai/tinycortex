@@ -134,38 +134,10 @@ mod tests;
 /// Proves the type carve-out holds in the build that motivates it.
 ///
 /// The whole point of leaving `types`/`source` ungated is that a host without
-/// libgit2 can still name a diff. Only the disabled build can catch a regression
-/// here — re-gating them would compile fine everywhere else and only break
-/// downstream, which is exactly the failure this test exists to make loud.
+/// libgit2 can still name a diff. Only the disabled build can catch a
+/// regression here — re-gating them would compile fine everywhere else and
+/// only break downstream, which is exactly the failure this exists to make
+/// loud.
 #[cfg(all(test, not(feature = "git-diff")))]
-mod carve_out_tests {
-    use super::types::{ChangeKind, CrossSourceDiff, DiffSummary, SnapshotItem};
-    use super::SnapshotItemSource;
-
-    #[test]
-    fn inert_diff_types_are_available_without_the_git_diff_feature() {
-        // Constructed field-by-field, and round-tripped through serde, because
-        // these types exist to cross a boundary: a host renders them and stores
-        // them. Merely naming them would not catch a derive being gated away.
-        let diff = CrossSourceDiff {
-            checkpoint_id: Some("ckpt_1".into()),
-            computed_at_ms: 0,
-            summary: DiffSummary::default(),
-            per_source: Vec::new(),
-        };
-        let json = serde_json::to_string(&diff).expect("CrossSourceDiff serialises");
-        assert!(json.contains("ckpt_1"));
-        let _kind = ChangeKind::Added;
-    }
-
-    #[test]
-    fn the_item_source_trait_can_still_be_implemented_without_git() {
-        struct Empty;
-        impl SnapshotItemSource for Empty {
-            fn items_for_source(&self, _source_id: &str) -> Vec<SnapshotItem> {
-                Vec::new()
-            }
-        }
-        assert!(Empty.items_for_source("anything").is_empty());
-    }
-}
+#[path = "carve_out_tests.rs"]
+mod carve_out_tests;
