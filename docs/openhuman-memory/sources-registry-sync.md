@@ -191,5 +191,7 @@ src/memory/ingest/canonicalize/
 
 Port order: source kind/types/validation, registry patch semantics, reader
 trait and static reader contracts, canonicalizer pure functions, then
-OpenHuman-facing ingest and sync adapters. The provider pipeline is crate-owned;
-the live scheduler, credentials, policy, and product events stay in OpenHuman.
+OpenHuman-facing ingest and sync adapters. Reusable provider fetch, pagination,
+and canonicalization pipeline mechanics are crate-owned; the live sync runner,
+credentials, scheduling, callbacks, policy, RPC, and product events stay in
+OpenHuman.

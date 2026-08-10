@@ -118,7 +118,7 @@ pub fn signatures_equivalent(a: &str, b: &str) -> bool {
 
 /// Every spelling of `signature` a stored row might carry, `signature` first.
 ///
-/// Bind these into an `IN (…)` predicate (see [`signature_in_clause`]) instead
+/// Bind these into an `IN (…)` predicate (see `signature_in_clause`) instead
 /// of `= ?`: that is what makes a read find rows written under the other
 /// convention without rewriting them.
 pub fn signature_variants(signature: &str) -> Vec<String> {

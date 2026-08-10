@@ -17,6 +17,29 @@ fn options_and_ids_are_bounded_deterministically() {
     );
 }
 
+#[test]
+fn mem_src_scope_filter_accepts_bare_id_collection_prefix_and_exact_scope() {
+    let tree_scope = "Mem_Src:src-folder-9:Slides_Notes/example.md";
+
+    assert_eq!(extract_mem_src_id(tree_scope), Some("src-folder-9"));
+    assert!(source_scope_allows(
+        &HashSet::from(["src-folder-9".to_string()]),
+        tree_scope
+    ));
+    assert!(source_scope_allows(
+        &HashSet::from(["mem_src:src-folder-9".to_string()]),
+        tree_scope
+    ));
+    assert!(source_scope_allows(
+        &HashSet::from([tree_scope.to_string()]),
+        tree_scope
+    ));
+    assert!(!source_scope_allows(
+        &HashSet::from(["src-other".to_string()]),
+        tree_scope
+    ));
+}
+
 #[tokio::test]
 async fn blank_query_is_empty_without_opening_storage() {
     let (_temp, config) = test_config();

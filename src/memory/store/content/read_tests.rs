@@ -200,6 +200,32 @@ fn high_level_chunk_reader_uses_custom_root_and_repairs_checksum() {
 }
 
 #[test]
+fn high_level_chunk_reader_falls_back_to_legacy_content_column() {
+    let dir = TempDir::new().unwrap();
+    let config = crate::memory::MemoryConfig::new(dir.path());
+    let chunk = sample_chunk();
+    crate::memory::chunks::upsert_chunks(&config, std::slice::from_ref(&chunk)).unwrap();
+
+    assert_eq!(read_chunk_body(&config, &chunk.id).unwrap(), chunk.content);
+}
+
+#[test]
+fn high_level_chunk_reader_empty_legacy_content_uses_terminal_error() {
+    let dir = TempDir::new().unwrap();
+    let config = crate::memory::MemoryConfig::new(dir.path());
+    let mut chunk = sample_chunk();
+    chunk.content.clear();
+    crate::memory::chunks::upsert_chunks(&config, std::slice::from_ref(&chunk)).unwrap();
+
+    let err = read_chunk_body(&config, &chunk.id).unwrap_err();
+
+    assert_eq!(
+        err.to_string(),
+        format!("{LEGACY_EMPTY_CHUNK_CONTENT_REASON_PREFIX}{}", chunk.id)
+    );
+}
+
+#[test]
 fn high_level_chunk_reader_joins_clamped_raw_references() {
     let dir = TempDir::new().unwrap();
     let mut config = crate::memory::MemoryConfig::new(dir.path());
