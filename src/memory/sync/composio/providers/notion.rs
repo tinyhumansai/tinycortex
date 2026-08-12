@@ -71,7 +71,7 @@ impl IncrementalSource for NotionSyncPipeline {
         _: &SyncState,
         page: Option<&str>,
     ) -> Value {
-        let mut args = serde_json::json!({"page_size": self.page_size, "filter": {"value": "page", "property": "object"}, "sort": {"direction": "descending", "timestamp": "last_edited_time"}});
+        let mut args = serde_json::json!({"fetch_type": "pages", "page_size": self.page_size, "filter": {"value": "page", "property": "object"}, "sort": {"direction": "descending", "timestamp": "last_edited_time"}});
         if let Some(page) = page {
             args["start_cursor"] = serde_json::json!(page);
         }
