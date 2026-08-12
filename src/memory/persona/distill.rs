@@ -110,7 +110,7 @@ fn windows(session: &RawSession) -> Vec<String> {
 ///   exhausted, 401/403, transport) *and* a response we could not parse (most
 ///   often a **truncated** JSON array — the model hit its output-token cap
 ///   mid-list, so the observations it *did* find would be lost forever if we
-///   committed). See [`DigestError`].
+///   committed). See the module-private `DigestError`.
 /// - **Genuinely empty digest** (a valid call whose response parsed to zero
 ///   observations, e.g. `{"observations":[]}`) → returns `Ok` with an empty
 ///   digest. Re-running would reproduce it, so the cursor IS committed.
