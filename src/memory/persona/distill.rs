@@ -19,8 +19,21 @@ use crate::memory::store::safety::sanitize_text;
 /// Max characters of evidence sent in a single digest call. Larger sessions are
 /// split into windows and digested part-by-part.
 const WINDOW_CHARS: usize = 12_000;
-/// Output-token cap for a digest response (one small JSON object).
-const DIGEST_MAX_OUTPUT_TOKENS: u32 = 4_096;
+/// Output-token cap for a digest response.
+///
+/// A window holds up to [`WINDOW_CHARS`] of evidence, and a dense window of
+/// corrections/directives (e.g. Codex sessions) can distil into *many* facet
+/// observations, each carrying an `observation` string and a supporting `quote`.
+/// The response is a single JSON object, but its size scales with the observation
+/// count — not with the "one small object" a 4 K cap assumed. At 4 K the model
+/// ran out of output mid-array and emitted a well-formed prefix with no closing
+/// `]`, which `parse_digest` then rejected (`EOF while parsing a list`, observed
+/// at column ~15–19 K); B3 stops that from silently dropping the window, and this
+/// larger cap stops it from happening in the first place. 16 K comfortably covers
+/// the observed truncations while still bounding a runaway generation. Coupled to
+/// [`WINDOW_CHARS`]: raising the input window raises the observations a window can
+/// yield, so the two move together.
+const DIGEST_MAX_OUTPUT_TOKENS: u32 = 16_384;
 
 /// The strict-JSON system prompt: schema + extraction contract.
 fn system_prompt() -> String {
@@ -90,12 +103,16 @@ fn windows(session: &RawSession) -> Vec<String> {
 
 /// Digest one session into a [`SessionDigest`] via the chat provider.
 ///
-/// Distinguishes two failure modes so the pipeline can checkpoint correctly:
-/// - **Provider/transport failure** (a `chat_for_json` error — budget exhausted,
-///   401/403, transport) → returns `Err`. The caller must NOT commit the
-///   session's cursor, so the evidence is re-attempted on the next run.
-/// - **Model produced no usable output** (a valid call whose response wasn't
-///   parseable JSON, or yielded zero observations) → returns `Ok` with an empty
+/// Distinguishes two outcomes so the pipeline can checkpoint correctly:
+/// - **Non-committable failure** → returns `Err`. The caller must NOT commit the
+///   session's cursor, so the evidence is re-attempted on the next run. This
+///   covers both a provider/transport error (a `chat_for_json` error — budget
+///   exhausted, 401/403, transport) *and* a response we could not parse (most
+///   often a **truncated** JSON array — the model hit its output-token cap
+///   mid-list, so the observations it *did* find would be lost forever if we
+///   committed). See [`DigestError`].
+/// - **Genuinely empty digest** (a valid call whose response parsed to zero
+///   observations, e.g. `{"observations":[]}`) → returns `Ok` with an empty
 ///   digest. Re-running would reproduce it, so the cursor IS committed.
 pub async fn digest_session(
     provider: &dyn ChatProvider,
@@ -106,8 +123,9 @@ pub async fn digest_session(
     }
     let mut observations: Vec<DigestObservation> = Vec::new();
     for window in windows(session) {
-        // A hard provider failure bubbles up (the whole session is retried next
-        // run); a soft parse failure yields an empty window and is tolerated.
+        // A hard provider failure OR an unparseable/truncated window bubbles up
+        // as `Err` (the whole session is retried next run, nothing committed);
+        // only a cleanly-parsed empty window is tolerated as `Ok(vec![])`.
         let obs = digest_window(provider, session, &window).await?;
         observations.extend(obs);
     }
@@ -117,9 +135,35 @@ pub async fn digest_session(
     })
 }
 
-/// One window → observations. A `chat_for_json` failure bubbles up as `Err`
-/// (hard, non-committable); an unparseable-but-received response degrades to an
-/// empty window (`Ok(vec![])`) since retrying reproduces it.
+/// Why a window could not be digested into committable observations.
+///
+/// Both variants are **retryable** — the caller must not commit the session's
+/// cursor for either, so the window is re-attempted on the next run. They are
+/// distinguished only for logging/telemetry clarity. A genuinely-empty result is
+/// *not* an error (it is `Ok(vec![])`); this type exists so a truncated or
+/// otherwise unparseable response can no longer masquerade as "empty" and be
+/// silently committed (the data-loss bug this fixes).
+#[derive(Debug, thiserror::Error)]
+enum DigestError {
+    /// The provider call itself failed (budget/auth/transport). The response was
+    /// never received.
+    #[error("digest provider call failed: {0:#}")]
+    Provider(#[source] anyhow::Error),
+    /// A response was received but could not be parsed — typically a JSON array
+    /// truncated at the output-token cap (a well-formed prefix with no closing
+    /// `]`). Committing would drop the observations the model *did* produce.
+    #[error("digest response unparseable (likely truncated at the output cap): {0:#}")]
+    Unparseable(#[source] anyhow::Error),
+}
+
+/// One window → observations.
+///
+/// Returns `Err` for **both** a `chat_for_json` failure and an
+/// unparseable/truncated response — both are non-committable so the window is
+/// retried next run (a truncated array must NOT be treated as "empty and done",
+/// or the observations already generated are lost). A cleanly-parsed response
+/// with zero usable observations returns `Ok(vec![])`, which the caller commits
+/// because re-running reproduces it.
 async fn digest_window(
     provider: &dyn ChatProvider,
     session: &RawSession,
@@ -132,18 +176,19 @@ async fn digest_window(
         kind: "persona::digest",
         max_tokens: Some(DIGEST_MAX_OUTPUT_TOKENS),
     };
-    let raw = provider.chat_for_json(&prompt).await?;
-    let parsed: RawDigest = match parse_digest(&raw) {
-        Ok(p) => p,
-        Err(e) => {
-            log::warn!(
-                "[persona] digest parse failed for {} ({}): {e:#}",
-                session.source.kind.as_str(),
-                session.source.session_id.as_deref().unwrap_or("?")
-            );
-            return Ok(Vec::new());
-        }
-    };
+    let raw = provider
+        .chat_for_json(&prompt)
+        .await
+        .map_err(DigestError::Provider)?;
+    let parsed: RawDigest = parse_digest(&raw).map_err(|e| {
+        log::warn!(
+            "[persona] digest parse failed for {} ({}); NOT committing cursor so \
+             the window is retried next run: {e:#}",
+            session.source.kind.as_str(),
+            session.source.session_id.as_deref().unwrap_or("?")
+        );
+        DigestError::Unparseable(e)
+    })?;
     Ok(parsed
         .observations
         .into_iter()

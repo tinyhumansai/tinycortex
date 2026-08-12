@@ -67,7 +67,7 @@ async fn tolerates_prose_wrapped_json() {
 }
 
 #[tokio::test]
-async fn soft_falls_back_on_error_and_bad_json() {
+async fn hard_and_unparseable_are_non_committable_errors() {
     let session = session_with(&[("x", EvidenceTier::T2)]);
 
     // A hard provider failure surfaces as Err (so the caller won't commit the
@@ -77,12 +77,40 @@ async fn soft_falls_back_on_error_and_bad_json() {
     };
     assert!(digest_session(&failing, &session).await.is_err());
 
-    // A received-but-unparseable response is a soft failure: Ok + empty digest
-    // (re-running reproduces it, so the cursor may commit).
+    // A received-but-unparseable response is ALSO an Err now (B3): it must NOT be
+    // treated as a committable empty digest, because "no JSON at all" is
+    // indistinguishable from a response that was cut off before any observation
+    // could be read. Committing it would mark the window done and drop it.
     let garbage = MockChat {
         body: Ok("not json at all".into()),
     };
-    assert!(digest_session(&garbage, &session).await.unwrap().is_empty());
+    assert!(digest_session(&garbage, &session).await.is_err());
+}
+
+/// A response truncated mid-array (a well-formed prefix with the closing `]`
+/// missing — exactly what a hit output-token cap produces) must surface as an
+/// Err, never as a committable empty digest. This is the data-loss case B3
+/// fixes: the model *did* produce observations, so silently dropping the window
+/// and committing its cursor loses them forever.
+#[tokio::test]
+async fn truncated_json_array_is_a_non_committable_error() {
+    // A well-formed prefix: two complete observation objects, but the array's
+    // closing `]` and the outer `}` never arrive (the model hit its output cap).
+    // Both parse attempts in `parse_digest` fail — the raw string, and the
+    // first-`{`..last-`}` slice, which still lacks the `]`/`}` — so this reports
+    // "EOF while parsing a list" rather than degrading to an empty digest.
+    let truncated = r#"{"observations":[
+        {"facet":"workflow","observation":"Commits small and often","quote":"commit small","tier":"t2"},
+        {"facet":"coding_style","observation":"Insists on regression tests","quote":"add a test","tier":"t1"}"#;
+    let provider = MockChat {
+        body: Ok(truncated.into()),
+    };
+    let session = session_with(&[("x", EvidenceTier::T2)]);
+    let result = digest_session(&provider, &session).await;
+    assert!(
+        result.is_err(),
+        "a truncated observation array must be a retryable Err, got: {result:?}"
+    );
 }
 
 #[tokio::test]

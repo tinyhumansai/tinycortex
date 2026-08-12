@@ -39,6 +39,24 @@ impl ChatProvider for FailChat {
     }
 }
 
+/// A provider that returns a **truncated** observation array — a well-formed
+/// prefix with the closing `]`/`}` missing, exactly what a hit output-token cap
+/// produces. The response parses to neither valid JSON nor a recoverable
+/// `{...}` slice, so the digest is a non-committable failure (B3).
+struct TruncatedChat;
+#[async_trait]
+impl ChatProvider for TruncatedChat {
+    fn name(&self) -> &str {
+        "truncated"
+    }
+    async fn chat_for_json(&self, _p: &ChatPrompt) -> anyhow::Result<String> {
+        Ok(r#"{"observations":[
+            {"facet":"workflow","observation":"Commits small and often","quote":"commit","tier":"t2"},
+            {"facet":"communication","observation":"Terse and direct","quote":"do X","tier":"t2"}"#
+        .into())
+    }
+}
+
 fn user_turn(session: &str, ts: &str, text: &str) -> String {
     format!(
         r#"{{"type":"user","isSidechain":false,"cwd":"/work/demo","sessionId":"{session}","timestamp":"{ts}","message":{{"role":"user","content":"{text}"}}}}"#
@@ -208,6 +226,67 @@ async fn hard_provider_failure_does_not_commit_cursor() {
     .await
     .unwrap();
     assert_eq!(second.sessions_processed, 2, "failed sessions were retried");
+    assert!(second.observations >= 2);
+}
+
+#[tokio::test]
+async fn truncated_digest_does_not_commit_cursor() {
+    // A window that truncates at the output-token cap must NOT checkpoint its
+    // transcript: the observations the model already produced would be lost if we
+    // marked the file done. Assert the file cursor is absent from the store after
+    // the run, and that a later working run re-processes the file.
+    let (ws, src, cfg, persona) = setup();
+    let summariser = ConcatSummariser::new();
+    let store = FileStateStore::open_in_workspace(ws.path()).unwrap();
+
+    let report = Pipeline {
+        config: &cfg,
+        persona: &persona,
+        provider: &TruncatedChat,
+        summariser: &summariser,
+        store: &store,
+    }
+    .run(RunMode::Backfill)
+    .await
+    .unwrap();
+    assert_eq!(
+        report.sessions_processed, 0,
+        "truncated digests commit nothing"
+    );
+    assert_eq!(report.sessions_failed, 2, "both transcripts truncated");
+    assert_eq!(report.observations, 0);
+
+    // The transcript cursors must be absent — nothing was committed for them.
+    use crate::memory::persona::state::{file_key, PersonaStateStore, NAMESPACE};
+    let cc_root = src.path().join("claude/projects/-work-demo");
+    for name in ["a.jsonl", "b.jsonl"] {
+        let key = file_key("claude_code", &cc_root.join(name));
+        let stored = PersonaStateStore::get(&store, NAMESPACE, &key)
+            .await
+            .unwrap();
+        assert!(
+            stored.is_none(),
+            "cursor for {name} must NOT be committed after a truncated digest, got: {stored:?}"
+        );
+    }
+
+    // A later working run re-digests both un-committed transcripts (evidence was
+    // retained, not silently dropped).
+    let good = MockChat;
+    let second = Pipeline {
+        config: &cfg,
+        persona: &persona,
+        provider: &good,
+        summariser: &summariser,
+        store: &store,
+    }
+    .run(RunMode::Incremental)
+    .await
+    .unwrap();
+    assert_eq!(
+        second.sessions_processed, 2,
+        "truncated sessions were retried on the next run"
+    );
     assert!(second.observations >= 2);
 }
 

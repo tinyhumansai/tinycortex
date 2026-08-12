@@ -322,8 +322,10 @@ impl Pipeline<'_> {
             let digest = match result {
                 Ok(d) => d,
                 Err(e) => {
-                    // Hard provider failure: do NOT commit the cursor, so this
-                    // session is re-attempted on the next run.
+                    // Non-committable failure — either a hard provider error or a
+                    // truncated/unparseable window (see `distill::DigestError`).
+                    // Do NOT commit the cursor, so this session is re-attempted on
+                    // the next run and its observations are not silently dropped.
                     log::warn!("[persona] digest failed, cursor not committed: {e:#}");
                     report.sessions_failed += 1;
                     continue;
@@ -335,8 +337,10 @@ impl Pipeline<'_> {
                 report.observations += digest.observations.len();
                 fold_digest(self.config, &digest, asks, self.summariser, state).await?;
             }
-            // Commit the cursor/watermark now that the session is folded (a valid
-            // empty digest still commits — retrying would reproduce it).
+            // Commit the cursor/watermark now that the session is folded. Only a
+            // cleanly-digested session reaches here (a truncated/failed one took
+            // the `continue` above), so committing a *genuinely* empty digest is
+            // safe — re-running would reproduce it, not recover lost work.
             if let Some((key, value)) = &p.commit {
                 self.store.set(state::NAMESPACE, key, value).await?;
             }
