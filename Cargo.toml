@@ -79,6 +79,22 @@ wiki-git = ["dep:git2", "dep:hex"]
 # about (its `obsidian.json` registry).
 obsidian = ["dep:dirs"]
 
+# Contact resolution and scoring (`memory::people`): a SQLite store of people,
+# handle aliases and interactions, a deterministic handle → `PersonId` resolver,
+# and a recency × frequency × reciprocity × depth scorer.
+#
+# Implies `tokio` because the store shares its connection as an
+# `Arc<tokio::sync::Mutex<Connection>>` across tasks. It adds no other
+# dependency — `rusqlite`, `chrono`, `uuid` and `serde` are already core.
+people = ["tokio"]
+
+# The macOS system address book (`memory::people::address_book`) as a seed
+# source for the people store. Gated on the target *and* this feature: the four
+# objc2 crates it needs are macOS-only and are not worth compiling for a host
+# that never seeds from Contacts. Off (or non-macOS) leaves a stub that returns
+# an empty contact list, so a refresh seeds nothing rather than failing.
+contacts = ["people", "dep:objc2", "dep:objc2-foundation", "dep:objc2-contacts", "dep:block2"]
+
 [dependencies]
 anyhow = "1"
 log = "0.4"
