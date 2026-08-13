@@ -58,18 +58,18 @@ impl ContactsSource for SystemContactsSource {
 pub fn read_with(source: &dyn ContactsSource) -> Result<Vec<AddressBookContact>, AddressBookError> {
     match source.fetch_contacts() {
         Ok(v) => {
-            tracing::debug!("[people::address_book] fetched {} contacts", v.len());
+            log::debug!("[people::address_book] fetched {} contacts", v.len());
             Ok(v)
         }
         Err(AddressBookError::PermissionDenied) => {
-            tracing::warn!(
+            log::warn!(
                 "[people::address_book] contacts access denied — \
                  grant access in System Settings > Privacy > Contacts"
             );
             Err(AddressBookError::PermissionDenied)
         }
         Err(AddressBookError::Other(ref e)) => {
-            tracing::warn!("[people::address_book] fetch error: {e}");
+            log::warn!("[people::address_book] fetch error: {e}");
             Err(AddressBookError::Other(e.clone()))
         }
     }
@@ -134,14 +134,14 @@ mod imp {
             let status = CNContactStore::authorizationStatusForEntityType(CNEntityType::Contacts);
             match status {
                 CNAuthorizationStatus::Authorized | CNAuthorizationStatus::Limited => {
-                    tracing::debug!("[people::address_book] contacts access already authorized");
+                    log::debug!("[people::address_book] contacts access already authorized");
                     return Ok(());
                 }
                 CNAuthorizationStatus::Denied | CNAuthorizationStatus::Restricted => {
                     return Err(AddressBookError::PermissionDenied);
                 }
                 _ => {
-                    tracing::debug!(
+                    log::debug!(
                         "[people::address_book] requesting contacts access (status={status:?})"
                     );
                 }
@@ -172,7 +172,7 @@ mod imp {
     }
 
     pub fn fetch_via_cn_contact_store() -> Result<Vec<AddressBookContact>, AddressBookError> {
-        tracing::debug!("[people::address_book] fetch_via_cn_contact_store entry");
+        log::debug!("[people::address_book] fetch_via_cn_contact_store entry");
         unsafe {
             let store = CNContactStore::new();
             request_access(&store)?;
@@ -263,7 +263,7 @@ mod imp {
                 return Err(AddressBookError::Other(msg));
             }
 
-            tracing::debug!(
+            log::debug!(
                 "[people::address_book] enumerated {} contacts",
                 contacts.len()
             );

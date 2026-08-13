@@ -145,7 +145,7 @@ impl<'a> HandleResolver<'a> {
             // mint or look up the primary handle
             match self.resolve_or_create(&primary).await {
                 Err(e) => {
-                    tracing::warn!(
+                    log::warn!(
                         "[people::resolver] seed_from_address_book: failed to upsert primary handle {:?}: {e}",
                         primary.as_key()
                     );
@@ -156,7 +156,7 @@ impl<'a> HandleResolver<'a> {
                     // link all additional handles as aliases
                     for alias in handles.into_iter().skip(1) {
                         if let Err(e) = self.store.add_alias(pid, alias.canonicalize()).await {
-                            tracing::warn!(
+                            log::warn!(
                                 "[people::resolver] seed_from_address_book: add_alias failed: {e}"
                             );
                         }
@@ -166,7 +166,7 @@ impl<'a> HandleResolver<'a> {
             }
         }
 
-        tracing::debug!(
+        log::debug!(
             "[people::resolver] seed_from_address_book done: seeded={seeded} skipped={skipped}"
         );
         Ok((seeded, skipped))
