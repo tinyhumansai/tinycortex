@@ -160,6 +160,28 @@ tokio = { version = "1", features = [
     "net",
 ], optional = true }
 
+# macOS system address book, read by `memory::people::address_book` behind the
+# `contacts` feature. Declared under a `cfg(target_os = "macos")` target table
+# so these never enter a Linux or Windows dependency graph at all — the feature
+# is a no-op there and the module falls back to its empty-contacts stub.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", features = [
+    "NSArray",
+    "NSError",
+    "NSObject",
+    "NSString",
+    "NSPredicate",
+], optional = true }
+objc2-contacts = { version = "0.3.2", features = [
+    "CNContact",
+    "CNContactFetchRequest",
+    "CNContactStore",
+    "CNLabeledValue",
+    "CNPhoneNumber",
+], optional = true }
+block2 = { version = "0.6", optional = true }
+
 [dev-dependencies]
 dotenvy = "0.15"
 tempfile = "3"
