@@ -519,6 +519,87 @@ async fn notion_fetches_markdown_and_counts_both_requests() {
 }
 
 #[tokio::test]
+async fn notion_renders_database_row_properties_into_document() {
+    // #5500: NOTION_GET_PAGE_MARKDOWN returns page *block* content only, so a
+    // database row's structured property values (status / select / multi_select
+    // / date) never appear in the markdown. Before the fix the synced document
+    // was just the markdown body, so the agent could not read the dropdown
+    // selections and invented them. The row's `properties` must now be rendered
+    // into the document text alongside the body.
+    let server = MockServer::start().await;
+    Mock::given(path("/tools/execute/NOTION_FETCH_DATA"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "successful": true,
+            "data": {"results": [{
+                "id": "page-1",
+                "last_edited_time": "2026-03-01T00:00:00Z",
+                "properties": {
+                    "Name": {"type": "title", "title": [{"plain_text": "Roadmap"}]},
+                    "Status": {"type": "status", "status": {"name": "In progress"}},
+                    "Priority": {"type": "select", "select": {"name": "High"}},
+                    "Tags": {"type": "multi_select", "multi_select": [
+                        {"name": "infra"}, {"name": "urgent"}
+                    ]},
+                    "Due": {"type": "date", "date": {"start": "2026-06-01"}},
+                    // An empty select must be skipped, not rendered blank.
+                    "Owner": {"type": "select", "select": null}
+                }
+            }]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/tools/execute/NOTION_GET_PAGE_MARKDOWN"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"successful": true, "data": {"markdown": "# Roadmap\n\nBody"}}),
+        ))
+        .mount(&server)
+        .await;
+    let (captures, context) = test_context();
+    let pipeline = NotionSyncPipeline::new(
+        ComposioClient::new(direct_config(server.uri(), "key")),
+        "notion-props-conn",
+    );
+    pipeline.tick(&test_config(), &context).await.unwrap();
+
+    let documents = captures.documents.lock().unwrap();
+    let content = &documents[0].content;
+    // Title still comes from the `title` property.
+    assert_eq!(documents[0].title, "Roadmap");
+    // Every structured selection reaches the document text …
+    assert!(
+        content.contains("Status: In progress"),
+        "status missing: {content}"
+    );
+    assert!(
+        content.contains("Priority: High"),
+        "select missing: {content}"
+    );
+    assert!(
+        content.contains("Tags: infra, urgent"),
+        "multi_select missing: {content}"
+    );
+    assert!(
+        content.contains("Due: 2026-06-01"),
+        "date missing: {content}"
+    );
+    // … the markdown body is preserved …
+    assert!(
+        content.contains("# Roadmap\n\nBody"),
+        "body missing: {content}"
+    );
+    // … the title property is not duplicated as a property line …
+    assert!(
+        !content.contains("Name: Roadmap"),
+        "title duplicated: {content}"
+    );
+    // … and an empty property is skipped rather than rendered blank.
+    assert!(
+        !content.contains("Owner:"),
+        "empty select rendered: {content}"
+    );
+}
+
+#[tokio::test]
 async fn google_docs_fetches_plaintext_and_counts_both_requests() {
     let server = MockServer::start().await;
     Mock::given(path("/tools/execute/GOOGLEDOCS_SEARCH_DOCUMENTS"))
