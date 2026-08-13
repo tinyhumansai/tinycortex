@@ -107,6 +107,19 @@ pub mod providers;
 /// the git-history reader additionally requires `git-diff`.
 #[cfg(feature = "persona")]
 pub mod persona;
+
+/// Contact resolution and scoring: a SQLite store of people, handle aliases and
+/// interactions, a deterministic (handle | email | display name) → `PersonId`
+/// resolver, and a recency × frequency × reciprocity × depth scorer.
+///
+/// Gated behind the default-off `people` feature, which implies `tokio` — the
+/// store shares its connection across tasks. The macOS address-book seed
+/// source additionally requires `contacts`.
+///
+/// This is storage, so it belongs to the engine rather than to the memory
+/// contract: an engine bound in TinyCortex's place brings its own.
+#[cfg(feature = "people")]
+pub mod people;
 // ── Re-exports ──────────────────────────────────────────────────────────────
 pub use config::{MemoryConfig, WeightProfile};
 pub use error::{MemoryEngineResult, MemoryError as MemoryEngineError};
