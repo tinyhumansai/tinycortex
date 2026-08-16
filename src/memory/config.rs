@@ -245,6 +245,11 @@ fn validate_budget(name: &str, budget: &SyncBudgetConfig) -> anyhow::Result<()> 
 pub struct EmbeddingConfig {
     /// Vector dimension. OpenHuman fixes this at 768.
     pub dim: usize,
+    /// Embedding backend name (`cloud`, `ollama`, …). Part of the signature
+    /// every per-model sidecar row is keyed by, so two backends serving the
+    /// same model id never share a vector space.
+    #[serde(default = "default_embedding_provider")]
+    pub provider: String,
     /// Backend model identifier (default Ollama `nomic-embed-text`).
     pub model: String,
     /// When `true`, ingest fails if embeddings are unavailable instead of
@@ -252,10 +257,16 @@ pub struct EmbeddingConfig {
     pub strict: bool,
 }
 
+/// Matches the default `model` below: `nomic-embed-text` is served locally.
+fn default_embedding_provider() -> String {
+    "ollama".to_string()
+}
+
 impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
             dim: DEFAULT_EMBEDDING_DIM,
+            provider: default_embedding_provider(),
             model: "nomic-embed-text".to_string(),
             strict: false,
         }

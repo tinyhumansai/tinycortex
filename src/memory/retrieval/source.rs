@@ -236,6 +236,13 @@ fn scope_matches_kind(scope: &str, kind_prefix: &str) -> bool {
     if lower.starts_with(&format!("{kind_prefix}:")) {
         return true;
     }
+    // OpenHuman document sources encode per-file tree scopes as
+    // `mem_src:<source_id>:<path>`, so kind filtering must classify the whole
+    // tree family as documents while exact source-id callers still use the
+    // source_id path above.
+    if kind_prefix == SourceKind::Document.as_str() && lower.starts_with("mem_src:") {
+        return true;
+    }
     PLATFORM_KINDS
         .iter()
         .any(|(platform, kind)| *kind == kind_prefix && lower.starts_with(&format!("{platform}:")))

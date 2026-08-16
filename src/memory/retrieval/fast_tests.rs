@@ -17,6 +17,29 @@ fn options_and_ids_are_bounded_deterministically() {
     );
 }
 
+#[test]
+fn mem_src_scope_filter_accepts_bare_id_collection_prefix_and_exact_scope() {
+    let tree_scope = "Mem_Src:src-folder-9:Slides_Notes/example.md";
+
+    assert_eq!(extract_mem_src_id(tree_scope), Some("src-folder-9"));
+    assert!(source_scope_allows(
+        &HashSet::from(["src-folder-9".to_string()]),
+        tree_scope
+    ));
+    assert!(source_scope_allows(
+        &HashSet::from(["mem_src:src-folder-9".to_string()]),
+        tree_scope
+    ));
+    assert!(source_scope_allows(
+        &HashSet::from([tree_scope.to_string()]),
+        tree_scope
+    ));
+    assert!(!source_scope_allows(
+        &HashSet::from(["src-other".to_string()]),
+        tree_scope
+    ));
+}
+
 #[tokio::test]
 async fn blank_query_is_empty_without_opening_storage() {
     let (_temp, config) = test_config();
@@ -231,4 +254,51 @@ async fn local_branch_intersects_entities_and_applies_scope_before_limit() {
     assert_eq!(response.total, 1);
     assert_eq!(response.hits[0].node_id, "allowed");
     assert_eq!(response.hits[0].score, 2.0);
+}
+
+#[tokio::test]
+async fn dense_fallback_filters_by_mem_src_collection_id() {
+    let (_temp, config) = test_config();
+    insert_tree_row(
+        &config,
+        &source_tree(
+            "note-tree",
+            "mem_src:src_vault_hob_local:path/to/note.md",
+            Some("note"),
+            1,
+        ),
+    );
+    insert_summary(
+        &config,
+        &summary_node("note", "note-tree", 1, None, &[], "note", fixed_ts()),
+    );
+
+    let allowed = HashSet::from(["src_vault_hob_local".to_string()]);
+    let response = fast_retrieve(
+        &config,
+        "note",
+        &[],
+        &InertEmbedder,
+        Some(&allowed),
+        FastRetrieveOptions::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.total, 1);
+    assert_eq!(response.hits[0].node_id, "note");
+
+    // A scope naming a different collection filters the hit out.
+    let denied = HashSet::from(["other_collection".to_string()]);
+    let response = fast_retrieve(
+        &config,
+        "note",
+        &[],
+        &InertEmbedder,
+        Some(&denied),
+        FastRetrieveOptions::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.total, 0);
+    assert!(response.hits.is_empty());
 }

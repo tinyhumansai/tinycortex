@@ -263,7 +263,14 @@ impl MemorySourcePatch {
         if self.selector.is_some() && kind != SourceKind::WebPage {
             return reject("selector");
         }
-        if matches!(self.max_items, Some(Some(_))) && kind != SourceKind::RssFeed {
+        // `max_items` is the per-run ingest cap. It applies to RSS feeds and to
+        // Composio connections — the host UI (`SourceSettingsPanel`) exposes it
+        // for both, and a Composio source is created with a toolkit default, so
+        // rejecting it on edit desynced the UI from the store. Other kinds have
+        // no per-run item cap.
+        if matches!(self.max_items, Some(Some(_)))
+            && !matches!(kind, SourceKind::RssFeed | SourceKind::Composio)
+        {
             return reject("max_items");
         }
         if self.url.is_some()

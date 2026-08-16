@@ -4,6 +4,7 @@ pub mod client;
 pub mod connect;
 pub mod gmail;
 pub mod orchestrator;
+pub(crate) mod page_size;
 pub mod providers;
 
 pub use client::{ActionExecutor, ComposioClient, ExecuteError, ExecuteResponse};
