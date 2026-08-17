@@ -1,5 +1,13 @@
 //! Stable public contracts for the TinyCortex memory system.
 //!
+//! # This crate is now a re-export
+//!
+//! Every item here comes from [`tinymemory_api`], which was extracted from this
+//! crate and is its single source of truth (tinymemory#18 §A1). The paths are
+//! unchanged and the types are the same types, so an existing dependant needs
+//! no edit; what goes away is the second, nominally-distinct copy that a
+//! conversion layer had to keep in step by hand.
+//!
 //! This crate holds the value types, error enum, capability vocabulary, and
 //! storage trait that both the `tinycortex` engine and its embedding hosts
 //! compile against. It is deliberately dependency-light (serde / serde_json /
@@ -52,18 +60,27 @@
 //! - [`tool_memory`]: tool-scoped rule contracts ([`tool_memory::ToolMemoryRule`], …).
 //! - [`goals`]: the long-term goals document ([`goals::GoalsDoc`], [`goals::GoalItem`]).
 
-pub mod capabilities;
-pub mod chunks;
-pub mod error;
-pub mod goals;
-pub mod health;
-pub mod null;
-pub mod provider;
-pub mod recall;
-pub mod tool_memory;
-pub mod traits;
-pub mod tree;
-pub mod types;
-pub mod version;
+// Every module below is `tinymemory-api`'s, re-exported. This crate defined its
+// own copies until tinymemory#18 §A1; they were the same types by construction —
+// `tinymemory-api` was extracted from this crate and held byte-identical — but
+// being *nominally* distinct meant `adapters/tinycortex/src/convert.rs` had to
+// translate between them on every call, and a field added to one had to be
+// added to the other and to the conversion, in three places, or a value was
+// silently dropped.
+//
+// Re-exporting keeps every existing path working: `tinycortex_api::types::
+// MemoryEntry` still resolves, and now resolves to the same type the contract
+// names. Nothing downstream has to be rewritten to gain that.
+//
+// Two things the re-export changes on purpose. The capability vocabulary grows
+// from thirteen families to eighteen — the engine matches on none of them, so
+// nothing here is affected — and `CONTRACT_VERSION` becomes the contract's own
+// `(2, 2)` rather than this crate's stale `(1, 0)`. That version was already
+// wrong: hosts bind against the contract, and this crate has not been the thing
+// they compile against for some time. The engine never reads it.
+pub use tinymemory_api::{
+    capabilities, chunks, error, goals, health, null, provider, recall, tool_memory, traits, tree,
+    types, version,
+};
 
-pub use version::{is_compatible, CONTRACT_VERSION};
+pub use tinymemory_api::{is_compatible, CONTRACT_VERSION};

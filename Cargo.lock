@@ -1760,6 +1760,24 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.19",
+ "tinymemory-api",
+ "uuid",
+]
+
+[[package]]
+name = "tinymemory-api"
+version = "0.1.1"
+source = "git+https://github.com/tinyhumansai/tinymemory#4549cda222de3891b95e2fa58e2565bb2c194328"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "log",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.19",
  "uuid",
 ]
 

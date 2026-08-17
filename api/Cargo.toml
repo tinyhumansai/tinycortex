@@ -1,5 +1,7 @@
 [package]
 name = "tinycortex-api"
+# Not published, for the same reason as the engine above.
+publish = false
 version = "0.1.1"
 edition = "2021"
 license = "MIT"
@@ -33,6 +35,15 @@ description = "Stable public contracts for the TinyCortex memory system"
 # scope and prints the whole-workspace inverse tree, so it exits 0 and looks
 # clean even when this crate is the one pulling the dependency in.
 [dependencies]
+# The contract itself. This crate no longer defines the memory value types; it
+# re-exports them, so `tinycortex_api::types::MemoryEntry` and
+# `tinymemory_api::types::MemoryEntry` are one type rather than two that a
+# conversion layer has to keep in step (tinymemory#18 §A1).
+#
+# By git rather than by version because neither crate is published. A host that
+# vendors both patches this entry to its own checkout — see the `[patch]` table
+# in the workspace root — so a build never pulls two copies.
+tinymemory-api = { git = "https://github.com/tinyhumansai/tinymemory" }
 anyhow = "1"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }

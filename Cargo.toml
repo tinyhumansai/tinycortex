@@ -14,6 +14,14 @@ exclude = ["vendor"]
 
 [package]
 name = "tinycortex"
+# Not published. The engine's contract crate now depends on `tinymemory-api` by
+# git, and cargo refuses a git dependency in a published crate. Publishing was
+# already broken rather than merely unused: since `api/` was split out,
+# `cargo package` has failed with `no matching package named 'tinycortex-api'
+# found`, because that crate was never published either. This records the state
+# the repository has actually been in, and buys the git dependency that lets the
+# duplicate contract go away (tinymemory#18 §A1).
+publish = false
 version = "0.1.1"
 edition = "2021"
 license = "MIT"
