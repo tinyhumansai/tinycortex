@@ -343,7 +343,8 @@ async fn systemic_truncation_withholds_commits_and_retries() {
     // — the fully-lost cursors must be WITHHELD, not committed. Committing them
     // would silently skip the whole backlog and require manual state deletion to
     // recover once the cause is fixed. The run is flagged and a later run retries.
-    let (ws, src, cfg, persona) = setup();
+    let (ws, src, cfg, mut persona) = setup();
+    persona.run_budget.max_llm_calls = 64; // decouple from the config default
     let summariser = ConcatSummariser::new();
     let store = FileStateStore::open_in_workspace(ws.path()).unwrap();
 
@@ -439,6 +440,7 @@ async fn fully_lost_session_commits_when_the_run_yields_observations() {
     persona.project_roots = vec![];
     persona.global_instruction_files = vec![];
     persona.digest_concurrency = 1; // deterministic oldest-first
+    persona.run_budget.max_llm_calls = 64; // decouple from the config default
 
     let summariser = ConcatSummariser::new();
     let store = FileStateStore::open_in_workspace(ws.path()).unwrap();

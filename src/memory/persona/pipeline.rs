@@ -126,6 +126,12 @@ struct DigestGuards {
     deferred: Vec<(String, serde_json::Value)>,
 }
 
+/// Git-history ingestion (`ingest_git`), feature-gated and split into a sibling
+/// module to keep this file within the repo's size norm.
+#[cfg(feature = "git-diff")]
+#[path = "pipeline_git.rs"]
+mod pipeline_git;
+
 /// The pipeline binds the workspace, config, provider, summariser, and state
 /// store; `run` executes one pass.
 pub struct Pipeline<'a> {
@@ -197,7 +203,16 @@ impl Pipeline<'_> {
         if !guards.deferred.is_empty() {
             if report.observations > 0 {
                 for (key, value) in &guards.deferred {
-                    self.store.set(state::NAMESPACE, key, value).await?;
+                    // A single failed cursor write must not discard the whole run's
+                    // reduce output (the pack, written below): a cursor is a
+                    // fast-skip, not a correctness gate, so the session simply
+                    // re-digests next run. Log and carry on rather than `?`-abort.
+                    if let Err(e) = self.store.set(state::NAMESPACE, key, value).await {
+                        log::warn!(
+                            "[persona] deferred cursor commit failed for {key}; \
+                             it will be re-digested next run: {e:#}"
+                        );
+                    }
                 }
             } else {
                 report.systemic_digest_failure = true;
@@ -213,9 +228,11 @@ impl Pipeline<'_> {
             }
         }
 
-        // Either ceiling stopping the run counts as a budget hit — don't clobber a
-        // call-budget checkpoint recorded during digest with the session count.
-        report.budget_hit |= budget.exhausted();
+        // `budget_hit` is recorded precisely where a ceiling actually stops work:
+        // the selection loop when it drops a pending session, and the call-budget
+        // checkpoint on `BudgetExhausted`. It is deliberately NOT re-derived from
+        // `budget.exhausted()` here — that is true whenever the run merely filled
+        // its session allowance exactly, which drops nothing and is not a hit.
 
         // 4. Seal facet trees + compile the pack.
         let bodies = seal_and_collect(self.config, &asks, self.summariser).await?;
@@ -445,69 +462,6 @@ impl Pipeline<'_> {
         }
         Ok(())
     }
-
-    #[cfg(feature = "git-diff")]
-    async fn ingest_git(
-        &self,
-        mode: RunMode,
-        asks: &FacetAsks,
-        state: &mut ReduceState,
-        budget: &mut Budget,
-        guards: &mut DigestGuards,
-        report: &mut RunReport,
-    ) -> Result<()> {
-        use super::readers::git_history::{self, GitReadConfig};
-
-        let git_cfg = GitReadConfig {
-            author_emails: self.persona.author_emails.clone(),
-            batch_size: self.persona.git.batch_size,
-            max_commits: self.persona.git.max_commits,
-            diff_sample_cap: self.persona.git.diff_sample_cap,
-            diff_size_cap_bytes: self.persona.git.diff_size_cap_bytes,
-            small_commit_max_files: self.persona.git.small_commit_max_files,
-        };
-        let author_hash = author_set_hash(&self.persona.author_emails);
-
-        // Read all qualifying repos into a pending list (serial, cheap), then
-        // digest concurrently + fold serially. A repo's HEAD watermark is
-        // attached to the LAST of its sessions, so it is only committed once the
-        // whole repo has been folded (a budget-truncated repo re-scans next run).
-        let mut pending: Vec<Pending> = Vec::new();
-        for repo in git_history::discover(&self.persona.project_roots) {
-            report.files_seen += 1;
-            let head = match git_head_sha(&repo) {
-                Some(h) => format!("{h}:{author_hash}"),
-                None => continue,
-            };
-            let key = state::git_key(&repo);
-            if mode == RunMode::Incremental
-                && state::watermark_unchanged(self.store, &key, &head).await?
-            {
-                report.sessions_skipped += 1;
-                continue;
-            }
-            let sessions = match git_history::read_repo(&repo, &git_cfg) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            for session in &sessions {
-                report.evidence_units += session.evidence.len();
-            }
-            if sessions.is_empty() {
-                // No author commits — watermark immediately (nothing to digest).
-                state::record_watermark(self.store, &key, &head).await?;
-                continue;
-            }
-            let head_value = serde_json::Value::String(head);
-            let last = sessions.len() - 1;
-            for (i, session) in sessions.into_iter().enumerate() {
-                let commit = (i == last).then(|| (key.clone(), head_value.clone()));
-                pending.push(Pending { session, commit });
-            }
-        }
-        self.digest_and_fold(pending, asks, state, budget, guards, report)
-            .await
-    }
 }
 
 /// A read-but-not-yet-digested session plus an optional state commit (cursor or
@@ -530,29 +484,6 @@ fn read_transcript(kind: &str, path: &Path) -> Result<RawSession> {
 /// File mtime in millis for oldest-first ordering (0 when unknown).
 fn file_mtime_ms(path: &Path) -> i64 {
     state::FileCursor::of(path).map(|c| c.mtime_ms).unwrap_or(0)
-}
-
-/// Stable short hash of the author-email set, so changing it forces a re-scan.
-#[cfg(feature = "git-diff")]
-fn author_set_hash(emails: &[String]) -> String {
-    use sha2::{Digest, Sha256};
-    let mut sorted: Vec<String> = emails.iter().map(|e| e.to_lowercase()).collect();
-    sorted.sort();
-    let mut h = Sha256::new();
-    h.update(sorted.join(",").as_bytes());
-    h.finalize()
-        .iter()
-        .take(4)
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
-
-/// Current HEAD sha of a repo, or `None` for an empty/broken repo.
-#[cfg(feature = "git-diff")]
-fn git_head_sha(repo: &Path) -> Option<String> {
-    let repo = git2::Repository::open(repo).ok()?;
-    let head = repo.head().ok()?;
-    head.target().map(|oid| oid.to_string())
 }
 
 #[cfg(test)]
