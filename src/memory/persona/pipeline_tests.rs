@@ -504,7 +504,8 @@ async fn clean_empty_digest_commits_cursor() {
     // digest is genuinely done, so its cursor MUST commit and a later run skips it.
     // (Guards against over-correcting the truncation fix into a permanent retry of
     // low-signal sessions.)
-    let (ws, src, cfg, persona) = setup();
+    let (ws, src, cfg, mut persona) = setup();
+    persona.run_budget.max_llm_calls = 64; // decouple from the config default
     let summariser = ConcatSummariser::new();
     let store = FileStateStore::open_in_workspace(ws.path()).unwrap();
 

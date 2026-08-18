@@ -62,10 +62,11 @@ pub struct RunReport {
     pub evidence_units: usize,
     /// Digest calls that produced at least one observation.
     pub digests: usize,
-    /// Sessions whose digest hit a hard **provider** failure — transport, budget,
-    /// or auth (cursor NOT committed; the whole session is retried next run).
-    /// Truncated/unparseable windows are recovered or counted in [`Self::windows_lost`],
-    /// not here.
+    /// Sessions whose digest hit a hard **provider** failure — transport or auth
+    /// (cursor NOT committed; the whole session is retried next run). A spent call
+    /// budget is a clean checkpoint reported in [`Self::budget_hit`], not here, and
+    /// truncated/unparseable windows are recovered or counted in
+    /// [`Self::windows_lost`], not here.
     pub sessions_failed: usize,
     /// Recovery leaf sub-windows dropped because their digest stayed unparseable
     /// even after truncation-recovery re-splitting (one truncated 12k window can
@@ -451,13 +452,17 @@ impl Pipeline<'_> {
                 // only if the run produced observations somewhere, otherwise it
                 // withholds and flags rather than silently skipping the backlog.
                 guards.deferred.push(commit.clone());
-            } else {
+            } else if let Err(e) = self.store.set(state::NAMESPACE, &commit.0, &commit.1).await {
                 // Committed now that the session is folded: a recovered or
                 // genuinely-empty (zero-loss) session reproduces on re-run, so
-                // committing loses nothing.
-                self.store
-                    .set(state::NAMESPACE, &commit.0, &commit.1)
-                    .await?;
+                // committing loses nothing. As on the deferred path, a failed
+                // write is logged and skipped rather than `?`-aborting the run and
+                // discarding the pack — the cursor is a fast-skip, so the session
+                // simply re-digests next run.
+                log::warn!(
+                    "[persona] cursor commit failed for {}; it will be re-digested next run: {e:#}",
+                    commit.0
+                );
             }
         }
         Ok(())

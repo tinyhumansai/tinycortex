@@ -101,6 +101,14 @@ fn big_session(total_chars: usize) -> RawSession {
     session_with(&[(&filler[..total_chars], EvidenceTier::T2)])
 }
 
+/// Like [`big_session`] but `char_count` *multibyte* characters (byte length ≫
+/// char count), so the recovery splitter is exercised on char — not byte —
+/// boundaries.
+fn big_multibyte_session(char_count: usize) -> RawSession {
+    let filler: String = "日本語コード".chars().cycle().take(char_count).collect();
+    session_with(&[(filler.as_str(), EvidenceTier::T2)])
+}
+
 #[tokio::test]
 async fn parses_observations_from_json() {
     let body = r#"{"observations":[
@@ -240,6 +248,27 @@ async fn large_permanently_unparseable_window_terminates_within_bounded_calls() 
     assert_eq!(
         calls, expected_calls,
         "recovery must spend exactly the bounded tree ({expected_calls}), spent {calls}"
+    );
+}
+
+/// Recovery re-splits on *character* boundaries, so a multibyte window that never
+/// parses walks the same descent without a byte-slice panic and drops the same
+/// leaf count as its ASCII twin.
+#[tokio::test]
+async fn recovery_splits_multibyte_windows_without_panicking() {
+    let truncated = r#"{"observations":[
+        {"facet":"workflow","observation":"Commits small and often","quote":"commit small","tier":"t2"}"#;
+    let provider = MockChat {
+        body: Ok(truncated.into()),
+    };
+    let session = big_multibyte_session(MIN_WINDOW_CHARS << MAX_RESPLIT_DEPTH);
+    let budget = CallBudget::new(1_000);
+    let outcome = digest_session(&provider, &session, &budget).await.unwrap();
+    assert!(outcome.digest.observations.is_empty());
+    assert_eq!(
+        outcome.windows_lost,
+        1 << MAX_RESPLIT_DEPTH,
+        "multibyte leaves drop-and-count exactly like ASCII, with no panic"
     );
 }
 

@@ -186,8 +186,11 @@ fn windows(session: &RawSession) -> Vec<String> {
 pub struct SessionOutcome {
     /// The observations distilled from every digested (or recovered) window.
     pub digest: SessionDigest,
-    /// Windows dropped after recovery could not parse them (data intentionally
-    /// skipped to keep the queue moving).
+    /// Recovery leaf pieces dropped after re-splitting still could not parse them
+    /// (data intentionally skipped to keep the queue moving). Counts *pieces*, not
+    /// input windows: one fully-unparseable window contributes one per irreducible
+    /// leaf, so a window bottoming out at the private `MAX_RESPLIT_DEPTH` adds
+    /// `2^MAX_RESPLIT_DEPTH`.
     pub windows_lost: usize,
 }
 
