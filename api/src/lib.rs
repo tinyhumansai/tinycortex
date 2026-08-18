@@ -8,12 +8,12 @@
 //! no edit; what goes away is the second, nominally-distinct copy that a
 //! conversion layer had to keep in step by hand.
 //!
-//! This crate holds the value types, error enum, capability vocabulary, and
+//! This crate *names* the value types, error enum, capability vocabulary, and
 //! storage trait that both the `tinycortex` engine and its embedding hosts
-//! compile against. It is deliberately dependency-light (serde / serde_json /
-//! chrono / sha2 / anyhow / thiserror / async-trait / uuid only) so depending on
-//! the contract never drags in SQLite, git2, reqwest, regex, or an async
-//! runtime.
+//! compile against — it no longer defines them. Its one dependency is
+//! `tinymemory-api`, which holds the same "no SQLite, no git2, no reqwest, no
+//! regex, no async runtime" rule and enforces it in its own CI, so depending on
+//! this crate still drags none of them in.
 //!
 //! ## Self-contained by design
 //!
@@ -43,10 +43,11 @@
 //! - [`recall`]: the borrowed [`recall::RecallOpts`] and owned, serde-derived
 //!   [`recall::OwnedRecallOpts`] recall filters (both re-exported from
 //!   [`types`]).
-//! - [`capabilities`]: the thirteen [`capabilities::Capability`] families and
-//!   the [`capabilities::Capabilities`] set negotiated at bind time.
+//! - [`capabilities`]: the eighteen [`capabilities::Capability`] families and
+//!   the [`capabilities::Capabilities`] set negotiated at bind time. Thirteen
+//!   before the re-export; the extra five come with the contract.
 //! - [`provider`]: the driver contract — [`provider::MemoryProvider`] plus the
-//!   thirteen capability family traits and the value types they need.
+//!   capability family traits and the value types they need.
 //! - [`null`]: [`null::NullMemoryProvider`], the reference driver a
 //!   compiled-out or unconfigured memory subsystem binds to.
 //! - [`health`]: [`health::MemoryHealth`], the liveness state a driver reports.
