@@ -226,9 +226,9 @@ fn notion_title(page: &Value) -> Option<String> {
 ///   empty / null values are skipped, so nothing renders as a blank `Name:`;
 /// - each name and value is whitespace-collapsed to a single line, so a value
 ///   can't forge extra property lines (see [`collapse_ws`]);
-/// - kinds without an explicit arm (formula/rollup/unique_id/timestamps/…) are
-///   handled best-effort by [`render_unknown`], which logs anything it still
-///   can't read rather than dropping it silently;
+/// - every kind is rendered through the single [`render_property_value`] table
+///   (formula/rollup/unique_id/timestamps/relation/files/…), which logs anything
+///   it still can't read rather than dropping it silently;
 /// - lines are sorted, so the block is deterministic across runs (serde_json
 ///   only preserves object insertion order under the unused `preserve_order`
 ///   feature).
@@ -243,59 +243,25 @@ fn render_properties(page: &Value) -> String {
         .or_else(|| page.pointer("/data/properties"))
         .and_then(Value::as_object)
     else {
+        // No `properties` object at all — a non-database page, or an envelope
+        // shaped differently than expected. Log once (the "inert against real
+        // Composio" case) rather than returning silently.
+        tracing::debug!("[memory_sync:notion] row has no properties object; rendered nothing");
         return String::new();
     };
     let mut lines: Vec<String> = properties
         .iter()
         .filter_map(|(name, property)| {
             let kind = property.get("type").and_then(Value::as_str)?;
-            let value = match kind {
-                // Already surfaced as the document title.
-                "title" => return None,
-                "rich_text" => plain_text(property.get("rich_text")),
-                "select" | "status" => property
-                    .get(kind)
-                    .and_then(|inner| inner.get("name"))
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                "multi_select" => named_list(property.get("multi_select")),
-                "people" => named_list(property.get("people")),
-                "relation" => property
-                    .get("relation")
-                    .and_then(Value::as_array)
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(|item| item.get("id").and_then(Value::as_str))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    })
-                    .unwrap_or_default(),
-                "date" => format_date(property.get("date")),
-                "checkbox" => match property.get("checkbox").and_then(Value::as_bool) {
-                    Some(true) => "Yes".to_string(),
-                    Some(false) => "No".to_string(),
-                    None => String::new(),
-                },
-                "number" => property
-                    .get("number")
-                    .filter(|value| value.is_number())
-                    .map(Value::to_string)
-                    .unwrap_or_default(),
-                "url" | "email" | "phone_number" => property
-                    .get(kind)
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                _ => render_unknown(kind, property),
-            };
+            if kind == "title" {
+                return None; // already surfaced as the document title
+            }
             // Collapse whitespace (including newlines) in both the property name
             // and value so neither can forge extra `Name: value` lines in the
             // block — a rich_text value like "real\nStatus: FAKE" would otherwise
-            // inject a second, higher-sorting property line into the agent's
-            // context. Also keeps the one-line `Name: value` contract.
-            let value = collapse_ws(&value);
+            // inject a second, higher-sorting property line. Keeps the one-line
+            // `Name: value` contract.
+            let value = collapse_ws(&render_property_value(kind, property));
             (!value.is_empty()).then(|| format!("{}: {value}", collapse_ws(name)))
         })
         .collect();
@@ -338,27 +304,65 @@ fn named_list(value: Option<&Value>) -> String {
         .unwrap_or_default()
 }
 
-/// Best-effort render of a Notion property kind not handled explicitly above.
-///
-/// Tracker pages routinely carry `formula`, `rollup`, `unique_id`, and the
-/// audit timestamps/users; dropping them silently leaves exactly the fields a
-/// #5500 page relies on missing, so the agent re-invents them. This reads the
-/// concrete shapes and falls back to any bare scalar; a kind it still can't read
-/// degrades to "skipped **and** logged" (`tracing::debug`) rather than vanishing,
-/// so a newly-introduced Notion property type is visible in telemetry.
-fn render_unknown(kind: &str, property: &Value) -> String {
-    let inner = property.get(kind);
-    let rendered = match kind {
-        "created_time" | "last_edited_time" => inner
+/// The single dispatch for one Notion typed value `{ "type": kind, [kind]: … }`
+/// — used for both a top-level database property and each element of a rollup
+/// `array`. Every kind lives here, so no caller renders a *narrower* subset that
+/// silently drops a shape (the bug class that recurs when a specialization
+/// diverges from the general path). Tracker pages lean on `formula`, `rollup`,
+/// `unique_id`, `relation`, and the audit timestamps/users; each is rendered
+/// concretely. An unrecognised kind falls back to any bare scalar and, if that is
+/// empty, is logged (`tracing::debug`) rather than vanishing — a new Notion
+/// property type stays visible in telemetry.
+fn render_property_value(kind: &str, property: &Value) -> String {
+    match kind {
+        "title" | "rich_text" => plain_text(property.get(kind)),
+        "select" | "status" => property
+            .get(kind)
+            .and_then(|inner| inner.get("name"))
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
-        "created_by" | "last_edited_by" => inner
+        "multi_select" | "people" => named_list(property.get(kind)),
+        "relation" => property
+            .get("relation")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.get("id").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default(),
+        "date" => format_date(property.get("date")),
+        "checkbox" => match property.get("checkbox").and_then(Value::as_bool) {
+            Some(true) => "Yes".to_string(),
+            Some(false) => "No".to_string(),
+            None => String::new(),
+        },
+        "number" => property
+            .get("number")
+            .filter(|value| value.is_number())
+            .map(Value::to_string)
+            .unwrap_or_default(),
+        "url" | "email" | "phone_number" => property
+            .get(kind)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        "created_time" | "last_edited_time" => property
+            .get(kind)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        "created_by" | "last_edited_by" => property
+            .get(kind)
             .and_then(|user| user.get("name"))
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
-        "unique_id" => inner
+        "unique_id" => property
+            .get("unique_id")
             .and_then(Value::as_object)
             .map(|uid| {
                 let number = uid.get("number").filter(|n| n.is_number());
@@ -369,31 +373,35 @@ fn render_unknown(kind: &str, property: &Value) -> String {
                 }
             })
             .unwrap_or_default(),
-        // `formula`/`rollup` wrap their result in `{ "type": T, T: value }` —
-        // render_typed_value handles the date and array shapes a bare scalar
-        // can't, so a rollup date or array isn't dropped.
-        "formula" | "rollup" => inner.map(render_typed_value).unwrap_or_default(),
-        // `files` entries expose a `name`; reuse the same object-name join.
-        "files" => named_list(inner),
-        _ => scalar_value(inner),
-    };
-    if rendered.trim().is_empty() {
-        tracing::debug!(kind, "[memory_sync:notion] unrendered property");
+        // `formula`/`rollup` wrap their result in another typed value.
+        "formula" | "rollup" => property
+            .get(kind)
+            .map(render_typed_value)
+            .unwrap_or_default(),
+        // `files` entries expose a `name`; reuse the object-name join.
+        "files" => named_list(property.get(kind)),
+        _ => {
+            let rendered = scalar_value(property.get(kind));
+            if rendered.trim().is_empty() {
+                tracing::debug!(kind, "[memory_sync:notion] unrendered property");
+            }
+            rendered
+        }
     }
-    rendered
 }
 
-/// Render a Notion "typed value" wrapper `{ "type": T, T: <inner> }` — the shape
-/// used by `formula`, `rollup`, and each element of a `rollup` array. Handles the
-/// `date` and (nested) `array` results that a bare scalar can't, and dispatches
-/// the common leaf kinds; anything else falls through to [`scalar_value`].
+/// Render a Notion "typed value" wrapper `{ "type": T, T: <inner> }` — used by
+/// `formula`, `rollup`, and each element of a rollup `array`. `array` recurses;
+/// a bare scalar with no `type` renders directly; every other kind delegates to
+/// [`render_property_value`], so an array element of any kind renders exactly as
+/// the same kind would at property level (no narrower dispatch, so no dropped
+/// rollup-of-formula / rollup-of-relation).
 fn render_typed_value(wrapper: &Value) -> String {
     let Some(kind) = wrapper.get("type").and_then(Value::as_str) else {
         return scalar_value(Some(wrapper));
     };
-    match kind {
-        "date" => format_date(wrapper.get("date")),
-        "array" => wrapper
+    if kind == "array" {
+        return wrapper
             .get("array")
             .and_then(Value::as_array)
             .map(|items| {
@@ -404,17 +412,9 @@ fn render_typed_value(wrapper: &Value) -> String {
                     .collect::<Vec<_>>()
                     .join(", ")
             })
-            .unwrap_or_default(),
-        "title" | "rich_text" => plain_text(wrapper.get(kind)),
-        "select" | "status" => wrapper
-            .get(kind)
-            .and_then(|inner| inner.get("name"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        "multi_select" | "people" => named_list(wrapper.get(kind)),
-        _ => scalar_value(wrapper.get(kind)),
+            .unwrap_or_default();
     }
+    render_property_value(kind, wrapper)
 }
 
 /// Format a Notion `date` object (`{ start, end? }`) as `start` or `start → end`.
@@ -437,8 +437,8 @@ fn format_date(value: Option<&Value>) -> String {
 
 /// Render a bare Notion scalar (`string` / `number` / `bool`) or a `{ name: … }`
 /// object into text; empty for a structured shape we don't recognise. The last
-/// resort for [`render_unknown`] and [`render_typed_value`], covering any
-/// scalar-typed property.
+/// resort for [`render_property_value`] and [`render_typed_value`], covering any
+/// scalar-typed property and the flattened formula/rollup envelope.
 fn scalar_value(value: Option<&Value>) -> String {
     match value {
         Some(Value::String(s)) => s.clone(),

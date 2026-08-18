@@ -700,6 +700,60 @@ async fn notion_renders_structured_formula_and_rollup_values() {
 }
 
 #[tokio::test]
+async fn notion_renders_rollup_array_elements_of_every_kind_and_flat_envelope() {
+    // #5500 completeness, round 3: a rollup `array` element that is itself a
+    // formula or relation must render — the previous specialization fell through
+    // to a bare scalar and dropped these mainstream tracker shapes. Also pins the
+    // flattened `{"formula":3}` / `{"rollup":12}` envelope so it can't regress.
+    let server = MockServer::start().await;
+    Mock::given(path("/tools/execute/NOTION_FETCH_DATA"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "successful": true,
+            "data": {"results": [{
+                "id": "page-4",
+                "last_edited_time": "2026-03-04T00:00:00Z",
+                "properties": {
+                    "Name": {"type": "title", "title": [{"plain_text": "Deep"}]},
+                    // A rollup array whose elements are a formula and a relation —
+                    // both dropped before the unified dispatch.
+                    "Nested": {"type": "rollup", "rollup": {"type": "array", "array": [
+                        {"type": "formula", "formula": {"type": "number", "number": 3}},
+                        {"type": "relation", "relation": [{"id": "rel-1"}]}
+                    ]}},
+                    // Flattened envelopes: the value sits directly under the kind.
+                    "FlatF": {"type": "formula", "formula": 3},
+                    "FlatR": {"type": "rollup", "rollup": 12}
+                }
+            }]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/tools/execute/NOTION_GET_PAGE_MARKDOWN"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"successful": true, "data": {"markdown": "# Deep\n\nBody"}}),
+        ))
+        .mount(&server)
+        .await;
+    let (captures, context) = test_context();
+    let pipeline = NotionSyncPipeline::new(
+        ComposioClient::new(direct_config(server.uri(), "key")),
+        "notion-nested-conn",
+    );
+    pipeline.tick(&test_config(), &context).await.unwrap();
+
+    let documents = captures.documents.lock().unwrap();
+    assert_eq!(
+        documents[0].content,
+        "Properties:\n\
+         FlatF: 3\n\
+         FlatR: 12\n\
+         Nested: 3, rel-1\n\n\
+         # Deep\n\n\
+         Body"
+    );
+}
+
+#[tokio::test]
 async fn google_docs_fetches_plaintext_and_counts_both_requests() {
     let server = MockServer::start().await;
     Mock::given(path("/tools/execute/GOOGLEDOCS_SEARCH_DOCUMENTS"))
