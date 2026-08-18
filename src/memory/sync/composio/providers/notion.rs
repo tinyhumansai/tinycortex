@@ -219,9 +219,24 @@ fn notion_title(page: &Value) -> Option<String> {
 /// **not** in that markdown. Without this, a tracker page reaches the agent with
 /// no dropdown text and the model invents the selections (#5500). Values are
 /// read from the already-fetched row (`item.raw`, the same object
-/// [`notion_title`] reads), so no extra Composio call is needed. The `title`
-/// property is skipped here (it is already the document title); empty / null
-/// values are skipped. Returns an empty string when nothing renders.
+/// [`notion_title`] reads), so no extra Composio call is needed.
+///
+/// Contract for the emitted block:
+/// - the `title` property is skipped (it is already the document title), and
+///   empty / null values are skipped, so nothing renders as a blank `Name:`;
+/// - each name and value is whitespace-collapsed to a single line, so a value
+///   can't forge extra property lines (see [`collapse_ws`]);
+/// - kinds without an explicit arm (formula/rollup/unique_id/timestamps/…) are
+///   handled best-effort by [`render_unknown`], which logs anything it still
+///   can't read rather than dropping it silently;
+/// - lines are sorted, so the block is deterministic across runs (serde_json
+///   only preserves object insertion order under the unused `preserve_order`
+///   feature).
+///
+/// Returns an empty string when nothing renders (the caller then emits the
+/// markdown body alone). Note this is prepended to real page markdown only; when
+/// markdown is absent the caller falls back to the raw row JSON instead, which
+/// already contains the properties, so the block is not duplicated there.
 fn render_properties(page: &Value) -> String {
     let Some(properties) = page
         .get("properties")
@@ -257,20 +272,7 @@ fn render_properties(page: &Value) -> String {
                             .join(", ")
                     })
                     .unwrap_or_default(),
-                "date" => property
-                    .get("date")
-                    .and_then(Value::as_object)
-                    .map(|date| {
-                        let start = date
-                            .get("start")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default();
-                        match date.get("end").and_then(Value::as_str) {
-                            Some(end) if !end.is_empty() => format!("{start} → {end}"),
-                            _ => start.to_string(),
-                        }
-                    })
-                    .unwrap_or_default(),
+                "date" => format_date(property.get("date")),
                 "checkbox" => match property.get("checkbox").and_then(Value::as_bool) {
                     Some(true) => "Yes".to_string(),
                     Some(false) => "No".to_string(),
@@ -367,12 +369,10 @@ fn render_unknown(kind: &str, property: &Value) -> String {
                 }
             })
             .unwrap_or_default(),
-        // `formula`/`rollup` wrap their result in `{ "type": T, T: value }`.
-        "formula" | "rollup" => inner
-            .and_then(Value::as_object)
-            .and_then(|obj| obj.get("type").and_then(Value::as_str).map(|t| (obj, t)))
-            .map(|(obj, t)| scalar_value(obj.get(t)))
-            .unwrap_or_default(),
+        // `formula`/`rollup` wrap their result in `{ "type": T, T: value }` —
+        // render_typed_value handles the date and array shapes a bare scalar
+        // can't, so a rollup date or array isn't dropped.
+        "formula" | "rollup" => inner.map(render_typed_value).unwrap_or_default(),
         // `files` entries expose a `name`; reuse the same object-name join.
         "files" => named_list(inner),
         _ => scalar_value(inner),
@@ -383,10 +383,62 @@ fn render_unknown(kind: &str, property: &Value) -> String {
     rendered
 }
 
+/// Render a Notion "typed value" wrapper `{ "type": T, T: <inner> }` — the shape
+/// used by `formula`, `rollup`, and each element of a `rollup` array. Handles the
+/// `date` and (nested) `array` results that a bare scalar can't, and dispatches
+/// the common leaf kinds; anything else falls through to [`scalar_value`].
+fn render_typed_value(wrapper: &Value) -> String {
+    let Some(kind) = wrapper.get("type").and_then(Value::as_str) else {
+        return scalar_value(Some(wrapper));
+    };
+    match kind {
+        "date" => format_date(wrapper.get("date")),
+        "array" => wrapper
+            .get("array")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(render_typed_value)
+                    .filter(|rendered| !rendered.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default(),
+        "title" | "rich_text" => plain_text(wrapper.get(kind)),
+        "select" | "status" => wrapper
+            .get(kind)
+            .and_then(|inner| inner.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        "multi_select" | "people" => named_list(wrapper.get(kind)),
+        _ => scalar_value(wrapper.get(kind)),
+    }
+}
+
+/// Format a Notion `date` object (`{ start, end? }`) as `start` or `start → end`.
+/// Shared by the `date` property arm and formula/rollup date results.
+fn format_date(value: Option<&Value>) -> String {
+    value
+        .and_then(Value::as_object)
+        .map(|date| {
+            let start = date
+                .get("start")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            match date.get("end").and_then(Value::as_str) {
+                Some(end) if !end.is_empty() => format!("{start} → {end}"),
+                _ => start.to_string(),
+            }
+        })
+        .unwrap_or_default()
+}
+
 /// Render a bare Notion scalar (`string` / `number` / `bool`) or a `{ name: … }`
 /// object into text; empty for a structured shape we don't recognise. The last
-/// resort for [`render_unknown`], covering `formula`/`rollup` inner values and
-/// any future scalar-typed property.
+/// resort for [`render_unknown`] and [`render_typed_value`], covering any
+/// scalar-typed property.
 fn scalar_value(value: Option<&Value>) -> String {
     match value {
         Some(Value::String(s)) => s.clone(),

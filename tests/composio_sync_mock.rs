@@ -644,6 +644,62 @@ async fn notion_renders_fallback_kinds_and_neutralises_injection() {
 }
 
 #[tokio::test]
+async fn notion_renders_structured_formula_and_rollup_values() {
+    // #5500 completeness: formula/rollup results whose inner type is `date` or
+    // `array` must render, not fall through to an empty scalar — these are common
+    // on tracker pages (a rolled-up due date, a rollup of related titles).
+    let server = MockServer::start().await;
+    Mock::given(path("/tools/execute/NOTION_FETCH_DATA"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "successful": true,
+            "data": {"results": [{
+                "id": "page-3",
+                "last_edited_time": "2026-03-03T00:00:00Z",
+                "properties": {
+                    "Name": {"type": "title", "title": [{"plain_text": "Metrics"}]},
+                    "Due": {"type": "formula", "formula": {
+                        "type": "date", "date": {"start": "2026-08-01", "end": "2026-08-03"}
+                    }},
+                    "Next": {"type": "rollup", "rollup": {
+                        "type": "date", "date": {"start": "2026-09-01"}
+                    }},
+                    "Items": {"type": "rollup", "rollup": {"type": "array", "array": [
+                        {"type": "title", "title": [{"plain_text": "A"}]},
+                        {"type": "number", "number": 2}
+                    ]}},
+                    "Score": {"type": "formula", "formula": {"type": "number", "number": 42}}
+                }
+            }]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/tools/execute/NOTION_GET_PAGE_MARKDOWN"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"successful": true, "data": {"markdown": "# Metrics\n\nBody"}}),
+        ))
+        .mount(&server)
+        .await;
+    let (captures, context) = test_context();
+    let pipeline = NotionSyncPipeline::new(
+        ComposioClient::new(direct_config(server.uri(), "key")),
+        "notion-rollup-conn",
+    );
+    pipeline.tick(&test_config(), &context).await.unwrap();
+
+    let documents = captures.documents.lock().unwrap();
+    assert_eq!(
+        documents[0].content,
+        "Properties:\n\
+         Due: 2026-08-01 → 2026-08-03\n\
+         Items: A, 2\n\
+         Next: 2026-09-01\n\
+         Score: 42\n\n\
+         # Metrics\n\n\
+         Body"
+    );
+}
+
+#[tokio::test]
 async fn google_docs_fetches_plaintext_and_counts_both_requests() {
     let server = MockServer::start().await;
     Mock::given(path("/tools/execute/GOOGLEDOCS_SEARCH_DOCUMENTS"))
