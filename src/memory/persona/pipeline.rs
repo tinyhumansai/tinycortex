@@ -16,7 +16,7 @@ use serde::Serialize;
 
 use super::compile::{write_pack, PackInputs};
 use super::config::PersonaConfig;
-use super::distill::{digest_session, SessionOutcome};
+use super::distill::{digest_session, is_budget_exhausted, CallBudget, SessionOutcome};
 use super::readers::{claude_code, codex, instruction, RawSession};
 use super::reduce::{fold_digest, fold_directives, seal_and_collect, FacetAsks, ReduceState};
 use super::state::PersonaStateStore;
@@ -82,30 +82,28 @@ pub struct RunReport {
     pub pack_path: Option<String>,
 }
 
-/// A run's budget accounting.
+/// A run's session-count budget. The provider-call ceiling (`max_llm_calls`) is
+/// enforced separately and precisely by [`CallBudget`] — per actual call, so
+/// multi-window sessions and truncation-recovery re-tries all count — rather than
+/// estimated here at one call per session.
 struct Budget {
     max_sessions: usize,
-    max_calls: usize,
     sessions: usize,
-    calls: usize,
 }
 
 impl Budget {
     fn from(cfg: &PersonaConfig) -> Self {
         Self {
             max_sessions: cfg.run_budget.max_sessions,
-            max_calls: cfg.run_budget.max_llm_calls as usize,
             sessions: 0,
-            calls: 0,
         }
     }
-    /// True if another digest would exceed the budget (stop cleanly).
+    /// True once the run has digested its full session allowance (stop cleanly).
     fn exhausted(&self) -> bool {
-        self.sessions >= self.max_sessions || self.calls >= self.max_calls
+        self.sessions >= self.max_sessions
     }
     fn charge(&mut self) {
         self.sessions += 1;
-        self.calls += 1;
     }
 }
 
@@ -130,6 +128,9 @@ impl Pipeline<'_> {
         let asks = self.persona.asks();
         let mut state = ReduceState::default();
         let mut budget = Budget::from(self.persona);
+        // One provider-call budget shared across every digest source this run, so
+        // transcripts and git history draw from the same `max_llm_calls` ceiling.
+        let call_budget = CallBudget::new(self.persona.run_budget.max_llm_calls as usize);
         let mut report = RunReport {
             mode: mode.as_str().to_string(),
             ..Default::default()
@@ -142,15 +143,31 @@ impl Pipeline<'_> {
         self.ingest_instructions(&mut state, &mut report).await?;
 
         // 2. Transcripts (Claude Code + Codex) — the digest map step.
-        self.ingest_transcripts(mode, &asks, &mut state, &mut budget, &mut report)
-            .await?;
+        self.ingest_transcripts(
+            mode,
+            &asks,
+            &mut state,
+            &mut budget,
+            &call_budget,
+            &mut report,
+        )
+        .await?;
 
         // 3. Git history (feature-gated).
         #[cfg(feature = "git-diff")]
-        self.ingest_git(mode, &asks, &mut state, &mut budget, &mut report)
-            .await?;
+        self.ingest_git(
+            mode,
+            &asks,
+            &mut state,
+            &mut budget,
+            &call_budget,
+            &mut report,
+        )
+        .await?;
 
-        report.budget_hit = budget.exhausted();
+        // Either ceiling stopping the run counts as a budget hit — don't clobber a
+        // call-budget checkpoint recorded during digest with the session count.
+        report.budget_hit |= budget.exhausted();
 
         // 4. Seal facet trees + compile the pack.
         let bodies = seal_and_collect(self.config, &asks, self.summariser).await?;
@@ -246,6 +263,7 @@ impl Pipeline<'_> {
         asks: &FacetAsks,
         state: &mut ReduceState,
         budget: &mut Budget,
+        call_budget: &CallBudget,
         report: &mut RunReport,
     ) -> Result<()> {
         let mut files: Vec<(PathBuf, &'static str)> = Vec::new();
@@ -288,7 +306,7 @@ impl Pipeline<'_> {
                 .map(|v| (key, v));
             pending.push(Pending { session, commit });
         }
-        self.digest_and_fold(pending, asks, state, budget, report)
+        self.digest_and_fold(pending, asks, state, budget, call_budget, report)
             .await
     }
 
@@ -304,9 +322,11 @@ impl Pipeline<'_> {
         asks: &FacetAsks,
         state: &mut ReduceState,
         budget: &mut Budget,
+        call_budget: &CallBudget,
         report: &mut RunReport,
     ) -> Result<()> {
-        // Select within budget up front.
+        // Select within the session-count budget up front; the provider-call
+        // budget is enforced per call inside `digest_session`.
         let mut selected: Vec<Pending> = Vec::new();
         for p in pending {
             if budget.exhausted() {
@@ -321,7 +341,7 @@ impl Pipeline<'_> {
         }
         let concurrency = self.persona.digest_concurrency.max(1);
         let results: Vec<Result<SessionOutcome>> = stream::iter(selected.iter())
-            .map(|p| digest_session(self.provider, &p.session))
+            .map(|p| digest_session(self.provider, &p.session, call_budget))
             .buffered(concurrency)
             .collect()
             .await;
@@ -329,13 +349,21 @@ impl Pipeline<'_> {
             let outcome = match result {
                 Ok(o) => o,
                 Err(e) => {
-                    // Non-committable *provider* failure (transport/budget/auth).
-                    // Do NOT commit the cursor, so this session is re-attempted on
-                    // the next run and its observations are not silently dropped.
-                    // Truncated/unparseable windows never reach here — they are
-                    // recovered or dropped-and-counted inside `digest_session`.
-                    log::warn!("[persona] digest provider failure, cursor not committed: {e:#}");
-                    report.sessions_failed += 1;
+                    // Non-committable, cursor NOT committed so the session is
+                    // re-attempted next run. Two shapes reach here, neither a
+                    // silent drop: the run's call budget was spent mid-session (a
+                    // clean checkpoint), or a hard provider failure
+                    // (transport/auth). Truncated/unparseable windows never reach
+                    // here — they are recovered or dropped-and-counted inside
+                    // `digest_session`.
+                    if is_budget_exhausted(&e) {
+                        report.budget_hit = true;
+                    } else {
+                        log::warn!(
+                            "[persona] digest provider failure, cursor not committed: {e:#}"
+                        );
+                        report.sessions_failed += 1;
+                    }
                     continue;
                 }
             };
@@ -367,6 +395,7 @@ impl Pipeline<'_> {
         asks: &FacetAsks,
         state: &mut ReduceState,
         budget: &mut Budget,
+        call_budget: &CallBudget,
         report: &mut RunReport,
     ) -> Result<()> {
         use super::readers::git_history::{self, GitReadConfig};
@@ -418,7 +447,7 @@ impl Pipeline<'_> {
                 pending.push(Pending { session, commit });
             }
         }
-        self.digest_and_fold(pending, asks, state, budget, report)
+        self.digest_and_fold(pending, asks, state, budget, call_budget, report)
             .await
     }
 }

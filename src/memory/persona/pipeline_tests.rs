@@ -181,6 +181,74 @@ async fn budget_cutoff_checkpoints() {
 }
 
 #[tokio::test]
+async fn call_budget_exhaustion_checkpoints_and_resumes() {
+    // `max_llm_calls` is a hard ceiling on provider calls: with a budget of one
+    // call and two sessions (one window each, digested oldest-first), only the
+    // first commits; the second hits the spent budget, does NOT commit, and is
+    // re-digested on a later run once the budget refreshes.
+    let (ws, src, cfg, mut persona) = setup();
+    persona.run_budget.max_llm_calls = 1;
+    persona.digest_concurrency = 1; // deterministic oldest-first ordering
+    let summariser = ConcatSummariser::new();
+    let store = FileStateStore::open_in_workspace(ws.path()).unwrap();
+
+    let report = Pipeline {
+        config: &cfg,
+        persona: &persona,
+        provider: &MockChat,
+        summariser: &summariser,
+        store: &store,
+    }
+    .run(RunMode::Backfill)
+    .await
+    .unwrap();
+    assert_eq!(
+        report.sessions_processed, 1,
+        "only one call's worth digested"
+    );
+    assert_eq!(
+        report.sessions_failed, 0,
+        "budget exhaustion is not a failure"
+    );
+    assert!(report.budget_hit, "the call budget stopped the run");
+
+    // Exactly one transcript cursor is committed; the budget-checkpointed one is not.
+    use crate::memory::persona::state::{file_key, PersonaStateStore, NAMESPACE};
+    let cc_root = src.path().join("claude/projects/-work-demo");
+    let mut committed = 0;
+    for name in ["a.jsonl", "b.jsonl"] {
+        let key = file_key("claude_code", &cc_root.join(name));
+        if PersonaStateStore::get(&store, NAMESPACE, &key)
+            .await
+            .unwrap()
+            .is_some()
+        {
+            committed += 1;
+        }
+    }
+    assert_eq!(
+        committed, 1,
+        "budget checkpoint commits exactly one session"
+    );
+
+    // A fresh run (new budget) digests the un-committed session.
+    let second = Pipeline {
+        config: &cfg,
+        persona: &persona,
+        provider: &MockChat,
+        summariser: &summariser,
+        store: &store,
+    }
+    .run(RunMode::Incremental)
+    .await
+    .unwrap();
+    assert_eq!(
+        second.sessions_processed, 1,
+        "the budget-checkpointed session resumes"
+    );
+}
+
+#[tokio::test]
 async fn compile_only_reassembles_without_llm() {
     let (ws, _src, cfg, persona) = setup();
     let provider = MockChat;

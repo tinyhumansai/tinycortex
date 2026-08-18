@@ -111,7 +111,9 @@ async fn parses_observations_from_json() {
         body: Ok(body.into()),
     };
     let session = session_with(&[("commit small and often", EvidenceTier::T2)]);
-    let outcome = digest_session(&provider, &session).await.unwrap();
+    let outcome = digest_session(&provider, &session, &CallBudget::unlimited())
+        .await
+        .unwrap();
     assert_eq!(outcome.windows_lost, 0);
     let obs = outcome.digest.observations;
     assert_eq!(obs.len(), 2);
@@ -127,7 +129,9 @@ async fn tolerates_prose_wrapped_json() {
         body: Ok(body.into()),
     };
     let session = session_with(&[("cargo test", EvidenceTier::T2)]);
-    let outcome = digest_session(&provider, &session).await.unwrap();
+    let outcome = digest_session(&provider, &session, &CallBudget::unlimited())
+        .await
+        .unwrap();
     assert_eq!(outcome.windows_lost, 0);
     assert_eq!(outcome.digest.observations.len(), 1);
     assert_eq!(outcome.digest.observations[0].facet, PersonaFacet::Stack);
@@ -141,7 +145,9 @@ async fn provider_failure_is_a_non_committable_error() {
     let failing = MockChat {
         body: Err("402 requires more credits".into()),
     };
-    assert!(digest_session(&failing, &session).await.is_err());
+    assert!(digest_session(&failing, &session, &CallBudget::unlimited())
+        .await
+        .is_err());
 }
 
 /// A truncated window that a smaller call *can* parse must be **recovered**, not
@@ -154,7 +160,9 @@ async fn truncated_window_is_recovered_by_resplitting() {
     // but each half (~4 000) is under it and parses cleanly.
     let session = big_session(8_000);
     let provider = SizeAwareChat { threshold: 5_000 };
-    let outcome = digest_session(&provider, &session).await.unwrap();
+    let outcome = digest_session(&provider, &session, &CallBudget::unlimited())
+        .await
+        .unwrap();
     assert_eq!(
         outcome.windows_lost, 0,
         "a re-splittable truncation must recover, not drop"
@@ -163,6 +171,26 @@ async fn truncated_window_is_recovered_by_resplitting() {
         !outcome.digest.observations.is_empty(),
         "recovered halves must yield observations"
     );
+}
+
+/// Truncation recovery must draw from the run's `max_llm_calls` budget: a window
+/// that would re-split into several calls cannot exceed it. With a budget of one
+/// call, the first (truncated) attempt spends it and the re-split can't proceed,
+/// so the session is a non-committable `BudgetExhausted` checkpoint (not a silent
+/// partial). Guards against a recovery tree blowing the configured cap.
+#[tokio::test]
+async fn recovery_respects_the_call_budget() {
+    let session = big_session(8_000);
+    let provider = SizeAwareChat { threshold: 5_000 };
+    let budget = CallBudget::new(1);
+    let err = digest_session(&provider, &session, &budget)
+        .await
+        .expect_err("a one-call budget can't complete a re-splitting recovery");
+    assert!(
+        is_budget_exhausted(&err),
+        "budget exhaustion must be classifiable as a checkpoint, got: {err:#}"
+    );
+    assert_eq!(budget.remaining(), 0, "the one call was spent");
 }
 
 /// A provider that truncates *every* call, even the smallest sub-window, must not
@@ -178,7 +206,9 @@ async fn permanently_unparseable_window_terminates_and_is_counted() {
         body: Ok(truncated.into()),
     };
     let session = session_with(&[("x", EvidenceTier::T2)]);
-    let outcome = digest_session(&provider, &session).await.unwrap();
+    let outcome = digest_session(&provider, &session, &CallBudget::unlimited())
+        .await
+        .unwrap();
     assert_eq!(
         outcome.windows_lost, 1,
         "an irreducible truncation is dropped-and-counted, not looped forever"
@@ -202,7 +232,9 @@ async fn one_bad_window_does_not_discard_the_clean_siblings() {
     let provider = MarkerChat {
         marker: "POISONWINDOW",
     };
-    let outcome = digest_session(&provider, &session).await.unwrap();
+    let outcome = digest_session(&provider, &session, &CallBudget::unlimited())
+        .await
+        .unwrap();
     assert_eq!(
         outcome.windows_lost, 1,
         "only the irreducible poison window is lost"
@@ -219,7 +251,9 @@ async fn empty_session_yields_empty_digest() {
         body: Ok("{\"observations\":[]}".into()),
     };
     let session = RawSession::new(EvidenceSource::new(PersonaSourceKind::Codex));
-    let outcome = digest_session(&provider, &session).await.unwrap();
+    let outcome = digest_session(&provider, &session, &CallBudget::unlimited())
+        .await
+        .unwrap();
     assert!(outcome.digest.is_empty());
     assert_eq!(outcome.windows_lost, 0);
 }
@@ -233,7 +267,9 @@ async fn clean_empty_observations_commit_without_loss() {
         body: Ok("{\"observations\":[]}".into()),
     };
     let session = session_with(&[("just chatting, no rules here", EvidenceTier::T3)]);
-    let outcome = digest_session(&provider, &session).await.unwrap();
+    let outcome = digest_session(&provider, &session, &CallBudget::unlimited())
+        .await
+        .unwrap();
     assert!(outcome.digest.is_empty());
     assert_eq!(
         outcome.windows_lost, 0,
@@ -253,7 +289,9 @@ async fn drops_unusable_observations() {
         body: Ok(body.into()),
     };
     let session = session_with(&[("db", EvidenceTier::T2)]);
-    let outcome = digest_session(&provider, &session).await.unwrap();
+    let outcome = digest_session(&provider, &session, &CallBudget::unlimited())
+        .await
+        .unwrap();
     assert_eq!(outcome.digest.observations.len(), 1);
     assert_eq!(
         outcome.digest.observations[0].observation,

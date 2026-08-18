@@ -19,6 +19,9 @@
 //! digested independently, so one bad window never discards the clean siblings
 //! that already digested — their observations are accumulated and kept.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
 use anyhow::Result;
 use serde::Deserialize;
 
@@ -55,6 +58,49 @@ const MIN_WINDOW_CHARS: usize = 1_500;
 /// the per-call output that overran the cap — deep enough to recover real
 /// truncations, bounded so a deterministically-bad window can't loop.
 const MAX_RESPLIT_DEPTH: usize = 3;
+
+/// A shared, concurrency-safe ceiling on provider calls for one run.
+///
+/// `digest_window` consumes one permit per `chat_for_json`, so **windowing and
+/// truncation-recovery re-tries alike** count against the configured
+/// `max_llm_calls`: a recovery tree (up to ~15 calls per truncated window across
+/// many windows) can no longer overrun the run's call budget. Cheap to clone and
+/// share across the concurrently-digested sessions — it wraps an
+/// `Arc<AtomicUsize>` of the remaining calls.
+#[derive(Clone)]
+pub struct CallBudget(Arc<AtomicUsize>);
+
+impl CallBudget {
+    /// A budget of `max_calls` provider calls for the run.
+    pub fn new(max_calls: usize) -> Self {
+        Self(Arc::new(AtomicUsize::new(max_calls)))
+    }
+
+    /// A budget that never runs out — for callers/tests that don't gate calls.
+    pub fn unlimited() -> Self {
+        Self::new(usize::MAX)
+    }
+
+    /// Reserve one call, returning `false` once the budget is spent. Lock-free
+    /// and correct under the concurrent `buffered` digest stream.
+    fn try_acquire(&self) -> bool {
+        self.0
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+    }
+
+    /// Calls still available in this run.
+    pub fn remaining(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// True when `err` (from [`digest_session`]) is the run's provider-call budget
+/// being hit mid-session — a clean checkpoint to resume next run, not a failure.
+pub fn is_budget_exhausted(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<DigestError>()
+        .is_some_and(|e| matches!(e, DigestError::BudgetExhausted))
+}
 
 /// The strict-JSON system prompt: schema + extraction contract.
 fn system_prompt() -> String {
@@ -155,9 +201,13 @@ pub struct SessionOutcome {
 ///   is still committed — the failure is deterministic, so retrying is pure waste.
 /// - **Genuinely empty digest** (`{"observations":[]}`) → `Ok` with an empty
 ///   digest and `windows_lost = 0`. Re-running reproduces it, so the cursor commits.
+/// - **Call budget exhausted** mid-session → returns `Err` (classify with
+///   [`is_budget_exhausted`]); the session is left non-committable and resumes
+///   next run. A clean checkpoint, not a failure.
 pub async fn digest_session(
     provider: &dyn ChatProvider,
     session: &RawSession,
+    budget: &CallBudget,
 ) -> Result<SessionOutcome> {
     if session.is_empty() {
         return Ok(SessionOutcome {
@@ -169,9 +219,10 @@ pub async fn digest_session(
     let mut windows_lost = 0usize;
     for window in windows(session) {
         // Each window recovers from truncation on its own and never aborts its
-        // siblings; only a hard provider failure bubbles up as `Err` (the whole
-        // session is then retried next run, nothing committed).
-        let (obs, lost) = digest_window_recovering(provider, session, &window)
+        // siblings; a hard provider failure or an exhausted call budget bubbles
+        // up as `Err` (the whole session is then retried next run, nothing
+        // committed).
+        let (obs, lost) = digest_window_recovering(provider, session, &window, budget)
             .await
             .map_err(anyhow::Error::new)?;
         observations.extend(obs);
@@ -198,6 +249,11 @@ enum DigestError {
     /// `]`). Recoverable by re-splitting the window into smaller pieces.
     #[error("digest response unparseable (likely truncated at the output cap): {0:#}")]
     Unparseable(#[source] anyhow::Error),
+    /// The run's provider-call budget (`max_llm_calls`) was spent before this
+    /// window could be digested. The session is left non-committable so it
+    /// resumes next run — a clean checkpoint, not a failure.
+    #[error("digest call budget exhausted")]
+    BudgetExhausted,
 }
 
 /// Digest one window, recovering from output-cap truncation by re-splitting.
@@ -218,6 +274,7 @@ async fn digest_window_recovering(
     provider: &dyn ChatProvider,
     session: &RawSession,
     window: &str,
+    budget: &CallBudget,
 ) -> Result<(Vec<DigestObservation>, usize), DigestError> {
     let mut observations = Vec::new();
     let mut lost = 0usize;
@@ -225,10 +282,12 @@ async fn digest_window_recovering(
     // ids are content-addressed, so folding is insensitive to window order.
     let mut stack: Vec<(String, usize)> = vec![(window.to_string(), MAX_RESPLIT_DEPTH)];
     while let Some((piece, splits_remaining)) = stack.pop() {
-        match digest_window(provider, session, &piece).await {
+        match digest_window(provider, session, &piece, budget).await {
             Ok(obs) => observations.extend(obs),
-            // Transient — abort recovery and let the whole session retry.
+            // Transient / budget checkpoint — abort recovery and let the whole
+            // session retry next run (nothing committed).
             Err(DigestError::Provider(e)) => return Err(DigestError::Provider(e)),
+            Err(DigestError::BudgetExhausted) => return Err(DigestError::BudgetExhausted),
             Err(DigestError::Unparseable(e)) => {
                 let target = piece.chars().count() / 2;
                 let parts = if splits_remaining > 0 && target >= MIN_WINDOW_CHARS {
@@ -268,7 +327,13 @@ async fn digest_window(
     provider: &dyn ChatProvider,
     session: &RawSession,
     window: &str,
+    budget: &CallBudget,
 ) -> Result<Vec<DigestObservation>, DigestError> {
+    // Reserve the call against the run budget *before* spending it, so windowing
+    // and every recovery re-try count toward `max_llm_calls`.
+    if !budget.try_acquire() {
+        return Err(DigestError::BudgetExhausted);
+    }
     let prompt = ChatPrompt {
         system: system_prompt(),
         user: user_prompt(session, window),
