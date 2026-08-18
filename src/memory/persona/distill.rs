@@ -48,11 +48,11 @@ const WINDOW_CHARS: usize = 12_000;
 /// [`WINDOW_CHARS`]: raising the input window raises the observations a window can
 /// yield, so the two move together.
 const DIGEST_MAX_OUTPUT_TOKENS: u32 = 16_384;
-/// Recovery stops splitting once the *half* it would produce falls below this, so
-/// the effective smallest window it will re-digest is ~2× this value (a ~3 000-char
-/// piece is the last one split). Below that a response that still won't parse is
-/// treated as genuinely broken (not merely output-capped) and dropped-with-a-count
-/// rather than split further — the floor that guarantees recovery terminates.
+/// The smallest piece recovery will re-digest. A piece is split only while its
+/// half stays ≥ this (i.e. while the piece is ≥ ~2× this), so pieces of roughly
+/// this size *are* re-digested but are not split again: one that still won't parse
+/// at this size is treated as genuinely broken (not merely output-capped) and
+/// dropped-with-a-count. This floor is what guarantees recovery terminates.
 const MIN_WINDOW_CHARS: usize = 1_500;
 /// Max times recovery halves a truncated window before giving up on a sub-window.
 /// `12_000 → 6_000 → 3_000 → 1_500` reaches [`MIN_WINDOW_CHARS`], an ~8× cut in
@@ -200,8 +200,12 @@ pub struct SessionOutcome {
 ///   so the whole session is re-attempted next run. This is transient.
 /// - **Truncated/unparseable window** → recovered in-process by re-splitting (see
 ///   the private `digest_window_recovering`); a piece that still won't parse at the
-///   minimum size is dropped and tallied in [`SessionOutcome::windows_lost`]. The cursor
-///   is still committed — the failure is deterministic, so retrying is pure waste.
+///   minimum size is dropped and tallied in [`SessionOutcome::windows_lost`]. Such a
+///   session's cursor is committed only when the run produced observations
+///   elsewhere (a localized permanent failure — near-deterministic, so retrying is
+///   waste); if the *whole run* yielded nothing despite dropped windows the pipeline
+///   withholds the cursor and flags `systemic_digest_failure` for retry (never a
+///   silent skip). See the pipeline's deferred-commit handling.
 /// - **Genuinely empty digest** (`{"observations":[]}`) → `Ok` with an empty
 ///   digest and `windows_lost = 0`. Re-running reproduces it, so the cursor commits.
 /// - **Call budget exhausted** mid-session → returns `Err` (classify with

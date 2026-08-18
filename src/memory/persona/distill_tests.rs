@@ -216,6 +216,32 @@ async fn permanently_unparseable_window_terminates_and_is_counted() {
     assert!(outcome.digest.observations.is_empty());
 }
 
+/// The bounded re-splitting *descent*: a large window that never parses must walk
+/// the full 12k → 6k → 3k → 1.5k chain, drop every leaf piece, and terminate
+/// within a bounded number of calls — never loop. (The test above covers the
+/// immediate below-floor drop; this exercises the `MAX_RESPLIT_DEPTH` path.)
+#[tokio::test]
+async fn large_permanently_unparseable_window_terminates_within_bounded_calls() {
+    let truncated = r#"{"observations":[
+        {"facet":"workflow","observation":"Commits small and often","quote":"commit small","tier":"t2"}"#;
+    let provider = MockChat {
+        body: Ok(truncated.into()),
+    };
+    let session = big_session(12_000);
+    let budget = CallBudget::new(1_000);
+    let outcome = digest_session(&provider, &session, &budget).await.unwrap();
+    assert!(outcome.digest.observations.is_empty());
+    assert!(
+        outcome.windows_lost >= 1,
+        "the descent's leaf pieces are dropped-and-counted"
+    );
+    let calls = 1_000 - budget.remaining();
+    assert!(
+        (1..=60).contains(&calls),
+        "recovery must terminate within a bounded call count, spent {calls}"
+    );
+}
+
 /// A multi-window session with one permanently-bad window keeps the observations
 /// from the clean window (no all-or-nothing abort) and counts only the bad one.
 #[tokio::test]
