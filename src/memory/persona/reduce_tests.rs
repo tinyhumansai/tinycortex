@@ -65,7 +65,10 @@ async fn full_map_reduce_compile_offline() {
 
     // Two sessions from two different scopes → cross-project strength.
     for scope in ["projA", "projB"] {
-        let digest = digest_session(&provider, &session(scope)).await.unwrap();
+        let digest = digest_session(&provider, &session(scope))
+            .await
+            .unwrap()
+            .digest;
         fold_digest(&config, &digest, &asks, &summariser, &mut state)
             .await
             .unwrap();

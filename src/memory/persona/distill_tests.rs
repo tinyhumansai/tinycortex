@@ -22,6 +22,61 @@ impl ChatProvider for MockChat {
     }
 }
 
+/// A chat provider that truncates the JSON array (drops the closing `]`/`}`) when
+/// the prompt's evidence window is large, and returns a clean single-observation
+/// object once the window is small enough — modelling a real output-token cap
+/// that only trips on dense windows and clears once recovery re-splits them.
+struct SizeAwareChat {
+    /// Prompt-length threshold (chars) above which the response truncates.
+    threshold: usize,
+}
+
+#[async_trait]
+impl ChatProvider for SizeAwareChat {
+    fn name(&self) -> &str {
+        "size-aware"
+    }
+    async fn chat_for_json(&self, prompt: &ChatPrompt) -> anyhow::Result<String> {
+        if prompt.user.chars().count() > self.threshold {
+            // Well-formed prefix, no closing `]`/`}` — a hit output cap.
+            Ok(r#"{"observations":[
+                {"facet":"workflow","observation":"Commits small and often","quote":"commit","tier":"t2"}"#
+                .into())
+        } else {
+            Ok(r#"{"observations":[
+                {"facet":"stack","observation":"Uses Rust everywhere","quote":"cargo","tier":"t2"}
+            ]}"#
+            .into())
+        }
+    }
+}
+
+/// A chat provider that truncates the response iff the prompt contains `marker`,
+/// and returns a clean single-observation object otherwise — modelling a window
+/// that stays unparseable no matter how small it is re-split (the poison window).
+struct MarkerChat {
+    marker: &'static str,
+}
+
+#[async_trait]
+impl ChatProvider for MarkerChat {
+    fn name(&self) -> &str {
+        "marker"
+    }
+    async fn chat_for_json(&self, prompt: &ChatPrompt) -> anyhow::Result<String> {
+        if prompt.user.contains(self.marker) {
+            Ok(r#"{"observations":[
+                {"facet":"workflow","observation":"Commits small and often","quote":"commit","tier":"t2"}"#
+                .into())
+        } else {
+            Ok(r#"{"observations":[
+                {"facet":"stack","observation":"Uses Rust everywhere","quote":"cargo","tier":"t2"}
+            ]}"#
+            .into())
+        }
+    }
+}
+
 fn session_with(excerpts: &[(&str, EvidenceTier)]) -> RawSession {
     let src = EvidenceSource::new(PersonaSourceKind::ClaudeCode).with_scope("demo");
     let mut s = RawSession::new(src.clone());
@@ -37,6 +92,15 @@ fn session_with(excerpts: &[(&str, EvidenceTier)]) -> RawSession {
     s
 }
 
+/// A session whose evidence spans `total_chars` (one line), forcing a single
+/// large window that a size-aware provider will truncate until it is re-split.
+fn big_session(total_chars: usize) -> RawSession {
+    // Repeated ASCII with no PII patterns, so `sanitize_text` leaves it intact
+    // and the window length is predictable.
+    let filler = "abcdefghij".repeat(total_chars / 10 + 1);
+    session_with(&[(&filler[..total_chars], EvidenceTier::T2)])
+}
+
 #[tokio::test]
 async fn parses_observations_from_json() {
     let body = r#"{"observations":[
@@ -47,11 +111,13 @@ async fn parses_observations_from_json() {
         body: Ok(body.into()),
     };
     let session = session_with(&[("commit small and often", EvidenceTier::T2)]);
-    let digest = digest_session(&provider, &session).await.unwrap();
-    assert_eq!(digest.observations.len(), 2);
-    assert_eq!(digest.observations[0].facet, PersonaFacet::Workflow);
-    assert_eq!(digest.observations[1].facet, PersonaFacet::CodingStyle);
-    assert_eq!(digest.observations[1].tier, EvidenceTier::T1);
+    let outcome = digest_session(&provider, &session).await.unwrap();
+    assert_eq!(outcome.windows_lost, 0);
+    let obs = outcome.digest.observations;
+    assert_eq!(obs.len(), 2);
+    assert_eq!(obs[0].facet, PersonaFacet::Workflow);
+    assert_eq!(obs[1].facet, PersonaFacet::CodingStyle);
+    assert_eq!(obs[1].tier, EvidenceTier::T1);
 }
 
 #[tokio::test]
@@ -61,44 +127,50 @@ async fn tolerates_prose_wrapped_json() {
         body: Ok(body.into()),
     };
     let session = session_with(&[("cargo test", EvidenceTier::T2)]);
-    let digest = digest_session(&provider, &session).await.unwrap();
-    assert_eq!(digest.observations.len(), 1);
-    assert_eq!(digest.observations[0].facet, PersonaFacet::Stack);
+    let outcome = digest_session(&provider, &session).await.unwrap();
+    assert_eq!(outcome.windows_lost, 0);
+    assert_eq!(outcome.digest.observations.len(), 1);
+    assert_eq!(outcome.digest.observations[0].facet, PersonaFacet::Stack);
 }
 
+/// A hard provider failure (transport/budget/auth) is transient: it surfaces as
+/// `Err` so the caller won't commit the cursor and retries the whole session.
 #[tokio::test]
-async fn hard_and_unparseable_are_non_committable_errors() {
+async fn provider_failure_is_a_non_committable_error() {
     let session = session_with(&[("x", EvidenceTier::T2)]);
-
-    // A hard provider failure surfaces as Err (so the caller won't commit the
-    // cursor and the session is retried next run).
     let failing = MockChat {
         body: Err("402 requires more credits".into()),
     };
     assert!(digest_session(&failing, &session).await.is_err());
-
-    // A received-but-unparseable response is ALSO an Err now (B3): it must NOT be
-    // treated as a committable empty digest, because "no JSON at all" is
-    // indistinguishable from a response that was cut off before any observation
-    // could be read. Committing it would mark the window done and drop it.
-    let garbage = MockChat {
-        body: Ok("not json at all".into()),
-    };
-    assert!(digest_session(&garbage, &session).await.is_err());
 }
 
-/// A response truncated mid-array (a well-formed prefix with the closing `]`
-/// missing — exactly what a hit output-token cap produces) must surface as an
-/// Err, never as a committable empty digest. This is the data-loss case B3
-/// fixes: the model *did* produce observations, so silently dropping the window
-/// and committing its cursor loses them forever.
+/// A truncated window that a smaller call *can* parse must be **recovered**, not
+/// lost: recovery re-splits the window, the halves fit under the cap, and every
+/// observation is kept with nothing counted as lost. This is the data-loss the
+/// PR exists to fix, proven end-to-end through the re-split path.
 #[tokio::test]
-async fn truncated_json_array_is_a_non_committable_error() {
-    // A well-formed prefix: two complete observation objects, but the array's
-    // closing `]` and the outer `}` never arrive (the model hit its output cap).
-    // Both parse attempts in `parse_digest` fail — the raw string, and the
-    // first-`{`..last-`}` slice, which still lacks the `]`/`}` — so this reports
-    // "EOF while parsing a list" rather than degrading to an empty digest.
+async fn truncated_window_is_recovered_by_resplitting() {
+    // One ~8 000-char window. The full window exceeds the threshold (truncates),
+    // but each half (~4 000) is under it and parses cleanly.
+    let session = big_session(8_000);
+    let provider = SizeAwareChat { threshold: 5_000 };
+    let outcome = digest_session(&provider, &session).await.unwrap();
+    assert_eq!(
+        outcome.windows_lost, 0,
+        "a re-splittable truncation must recover, not drop"
+    );
+    assert!(
+        !outcome.digest.observations.is_empty(),
+        "recovered halves must yield observations"
+    );
+}
+
+/// A provider that truncates *every* call, even the smallest sub-window, must not
+/// retry forever: recovery bottoms out at the minimum size, drops the window, and
+/// tallies it in `windows_lost` — returning `Ok` so the cursor can commit and the
+/// queue keeps moving (the permanent-starvation guard).
+#[tokio::test]
+async fn permanently_unparseable_window_terminates_and_is_counted() {
     let truncated = r#"{"observations":[
         {"facet":"workflow","observation":"Commits small and often","quote":"commit small","tier":"t2"},
         {"facet":"coding_style","observation":"Insists on regression tests","quote":"add a test","tier":"t1"}"#;
@@ -106,10 +178,38 @@ async fn truncated_json_array_is_a_non_committable_error() {
         body: Ok(truncated.into()),
     };
     let session = session_with(&[("x", EvidenceTier::T2)]);
-    let result = digest_session(&provider, &session).await;
+    let outcome = digest_session(&provider, &session).await.unwrap();
+    assert_eq!(
+        outcome.windows_lost, 1,
+        "an irreducible truncation is dropped-and-counted, not looped forever"
+    );
+    assert!(outcome.digest.observations.is_empty());
+}
+
+/// A multi-window session with one permanently-bad window keeps the observations
+/// from the clean window (no all-or-nothing abort) and counts only the bad one.
+#[tokio::test]
+async fn one_bad_window_does_not_discard_the_clean_siblings() {
+    // A near-full first line (~11 800 chars) flushes as its own clean window, then
+    // a short marker line (~300 chars, below the re-split floor) forms a second
+    // window that truncates and cannot be split further → dropped-and-counted.
+    let clean = "abcdefghij".repeat(1_200); // ~12 000 chars available
+    let poison = format!("POISONWINDOW {}", "z".repeat(280));
+    let session = session_with(&[
+        (&clean[..11_800], EvidenceTier::T2),
+        (poison.as_str(), EvidenceTier::T1),
+    ]);
+    let provider = MarkerChat {
+        marker: "POISONWINDOW",
+    };
+    let outcome = digest_session(&provider, &session).await.unwrap();
+    assert_eq!(
+        outcome.windows_lost, 1,
+        "only the irreducible poison window is lost"
+    );
     assert!(
-        result.is_err(),
-        "a truncated observation array must be a retryable Err, got: {result:?}"
+        !outcome.digest.observations.is_empty(),
+        "the clean sibling window's observations are retained"
     );
 }
 
@@ -119,10 +219,26 @@ async fn empty_session_yields_empty_digest() {
         body: Ok("{\"observations\":[]}".into()),
     };
     let session = RawSession::new(EvidenceSource::new(PersonaSourceKind::Codex));
-    assert!(digest_session(&provider, &session)
-        .await
-        .unwrap()
-        .is_empty());
+    let outcome = digest_session(&provider, &session).await.unwrap();
+    assert!(outcome.digest.is_empty());
+    assert_eq!(outcome.windows_lost, 0);
+}
+
+/// A cleanly-parsed empty digest for a *non-empty* session is committable: it is
+/// `Ok` with no observations and nothing lost (the guard against over-correcting
+/// the truncation fix into a permanent retry of genuinely-empty windows).
+#[tokio::test]
+async fn clean_empty_observations_commit_without_loss() {
+    let provider = MockChat {
+        body: Ok("{\"observations\":[]}".into()),
+    };
+    let session = session_with(&[("just chatting, no rules here", EvidenceTier::T3)]);
+    let outcome = digest_session(&provider, &session).await.unwrap();
+    assert!(outcome.digest.is_empty());
+    assert_eq!(
+        outcome.windows_lost, 0,
+        "a clean empty response is not a loss and must commit"
+    );
 }
 
 #[tokio::test]
@@ -137,7 +253,10 @@ async fn drops_unusable_observations() {
         body: Ok(body.into()),
     };
     let session = session_with(&[("db", EvidenceTier::T2)]);
-    let digest = digest_session(&provider, &session).await.unwrap();
-    assert_eq!(digest.observations.len(), 1);
-    assert_eq!(digest.observations[0].observation, "Prefers Postgres");
+    let outcome = digest_session(&provider, &session).await.unwrap();
+    assert_eq!(outcome.digest.observations.len(), 1);
+    assert_eq!(
+        outcome.digest.observations[0].observation,
+        "Prefers Postgres"
+    );
 }

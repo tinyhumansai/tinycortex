@@ -16,12 +16,12 @@ use serde::Serialize;
 
 use super::compile::{write_pack, PackInputs};
 use super::config::PersonaConfig;
-use super::distill::digest_session;
+use super::distill::{digest_session, SessionOutcome};
 use super::readers::{claude_code, codex, instruction, RawSession};
 use super::reduce::{fold_digest, fold_directives, seal_and_collect, FacetAsks, ReduceState};
 use super::state::PersonaStateStore;
 use super::state::{self, file_key, file_unchanged, record_file};
-use super::types::{PersonaFacet, SessionDigest};
+use super::types::PersonaFacet;
 use crate::memory::config::MemoryConfig;
 use crate::memory::score::extract::ChatProvider;
 use crate::memory::tree::Summariser;
@@ -62,9 +62,16 @@ pub struct RunReport {
     pub evidence_units: usize,
     /// Digest calls that produced at least one observation.
     pub digests: usize,
-    /// Sessions whose digest hit a hard provider failure (cursor NOT committed;
-    /// retried next run).
+    /// Sessions whose digest hit a hard **provider** failure — transport, budget,
+    /// or auth (cursor NOT committed; the whole session is retried next run).
+    /// Truncated/unparseable windows are recovered or counted in [`Self::windows_lost`],
+    /// not here.
     pub sessions_failed: usize,
+    /// Windows dropped because their digest stayed unparseable even after
+    /// truncation-recovery re-splitting. Their session's cursor IS committed (the
+    /// failure is deterministic at temperature 0.0), so this is data intentionally
+    /// skipped to keep the queue moving — surfaced so the drop is never silent.
+    pub windows_lost: usize,
     /// Observations distilled.
     pub observations: usize,
     /// Per-facet observation counts (facet wire-string → count).
@@ -313,34 +320,39 @@ impl Pipeline<'_> {
             return Ok(());
         }
         let concurrency = self.persona.digest_concurrency.max(1);
-        let results: Vec<Result<SessionDigest>> = stream::iter(selected.iter())
+        let results: Vec<Result<SessionOutcome>> = stream::iter(selected.iter())
             .map(|p| digest_session(self.provider, &p.session))
             .buffered(concurrency)
             .collect()
             .await;
         for (p, result) in selected.iter().zip(results) {
-            let digest = match result {
-                Ok(d) => d,
+            let outcome = match result {
+                Ok(o) => o,
                 Err(e) => {
-                    // Non-committable failure — either a hard provider error or a
-                    // truncated/unparseable window (see `distill::DigestError`).
+                    // Non-committable *provider* failure (transport/budget/auth).
                     // Do NOT commit the cursor, so this session is re-attempted on
                     // the next run and its observations are not silently dropped.
-                    log::warn!("[persona] digest failed, cursor not committed: {e:#}");
+                    // Truncated/unparseable windows never reach here — they are
+                    // recovered or dropped-and-counted inside `digest_session`.
+                    log::warn!("[persona] digest provider failure, cursor not committed: {e:#}");
                     report.sessions_failed += 1;
                     continue;
                 }
             };
             report.sessions_processed += 1;
+            report.windows_lost += outcome.windows_lost;
+            let digest = outcome.digest;
             if !digest.is_empty() {
                 report.digests += 1;
                 report.observations += digest.observations.len();
                 fold_digest(self.config, &digest, asks, self.summariser, state).await?;
             }
-            // Commit the cursor/watermark now that the session is folded. Only a
-            // cleanly-digested session reaches here (a truncated/failed one took
-            // the `continue` above), so committing a *genuinely* empty digest is
-            // safe — re-running would reproduce it, not recover lost work.
+            // Commit the cursor/watermark now that the session is folded. A session
+            // reaches here once its windows are digested, recovered, or
+            // deterministically dropped-and-counted (`outcome.windows_lost`); only
+            // a provider failure took the `continue` above. Committing is safe —
+            // re-running a recovered or genuinely-empty session reproduces it, and
+            // a dropped window would only fail identically at temperature 0.0.
             if let Some((key, value)) = &p.commit {
                 self.store.set(state::NAMESPACE, key, value).await?;
             }

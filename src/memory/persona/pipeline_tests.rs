@@ -39,10 +39,11 @@ impl ChatProvider for FailChat {
     }
 }
 
-/// A provider that returns a **truncated** observation array — a well-formed
-/// prefix with the closing `]`/`}` missing, exactly what a hit output-token cap
-/// produces. The response parses to neither valid JSON nor a recoverable
-/// `{...}` slice, so the digest is a non-committable failure (B3).
+/// A provider that returns a **truncated** observation array on every call — a
+/// well-formed prefix with the closing `]`/`}` missing, exactly what a hit
+/// output-token cap produces, and unrecoverable no matter how small the window is
+/// re-split. The transcript windows here are tiny (well under the re-split floor),
+/// so recovery drops-and-counts them rather than looping forever.
 struct TruncatedChat;
 #[async_trait]
 impl ChatProvider for TruncatedChat {
@@ -54,6 +55,20 @@ impl ChatProvider for TruncatedChat {
             {"facet":"workflow","observation":"Commits small and often","quote":"commit","tier":"t2"},
             {"facet":"communication","observation":"Terse and direct","quote":"do X","tier":"t2"}"#
         .into())
+    }
+}
+
+/// A provider that returns a cleanly-parsed **empty** observation set. A real,
+/// low-signal session (nothing worth distilling) looks exactly like this, and it
+/// must commit its cursor — re-running only reproduces the empty result.
+struct EmptyChat;
+#[async_trait]
+impl ChatProvider for EmptyChat {
+    fn name(&self) -> &str {
+        "empty"
+    }
+    async fn chat_for_json(&self, _p: &ChatPrompt) -> anyhow::Result<String> {
+        Ok(r#"{"observations":[]}"#.into())
     }
 }
 
@@ -230,11 +245,12 @@ async fn hard_provider_failure_does_not_commit_cursor() {
 }
 
 #[tokio::test]
-async fn truncated_digest_does_not_commit_cursor() {
-    // A window that truncates at the output-token cap must NOT checkpoint its
-    // transcript: the observations the model already produced would be lost if we
-    // marked the file done. Assert the file cursor is absent from the store after
-    // the run, and that a later working run re-processes the file.
+async fn unrecoverable_truncation_commits_and_counts_loss() {
+    // A window that stays truncated even after in-process re-splitting (the tiny
+    // transcript windows here are already below the re-split floor) must NOT hold
+    // its cursor forever — that would starve every newer session behind it. It is
+    // dropped-and-counted in `windows_lost` and the cursor commits, so a later run
+    // skips it rather than re-burning budget on a deterministically-bad window.
     let (ws, src, cfg, persona) = setup();
     let summariser = ConcatSummariser::new();
     let store = FileStateStore::open_in_workspace(ws.path()).unwrap();
@@ -250,13 +266,21 @@ async fn truncated_digest_does_not_commit_cursor() {
     .await
     .unwrap();
     assert_eq!(
-        report.sessions_processed, 0,
-        "truncated digests commit nothing"
+        report.sessions_processed, 2,
+        "both sessions are processed (recovery bottomed out, no provider error)"
     );
-    assert_eq!(report.sessions_failed, 2, "both transcripts truncated");
+    assert_eq!(
+        report.sessions_failed, 0,
+        "a truncation is not a provider failure"
+    );
+    assert_eq!(
+        report.windows_lost, 2,
+        "both truncated windows are dropped-and-counted"
+    );
     assert_eq!(report.observations, 0);
 
-    // The transcript cursors must be absent — nothing was committed for them.
+    // The transcript cursors ARE committed — the loss is deterministic, so the
+    // queue must move on instead of retrying forever.
     use crate::memory::persona::state::{file_key, PersonaStateStore, NAMESPACE};
     let cc_root = src.path().join("claude/projects/-work-demo");
     for name in ["a.jsonl", "b.jsonl"] {
@@ -265,18 +289,16 @@ async fn truncated_digest_does_not_commit_cursor() {
             .await
             .unwrap();
         assert!(
-            stored.is_none(),
-            "cursor for {name} must NOT be committed after a truncated digest, got: {stored:?}"
+            stored.is_some(),
+            "cursor for {name} must be committed after an unrecoverable truncation"
         );
     }
 
-    // A later working run re-digests both un-committed transcripts (evidence was
-    // retained, not silently dropped).
-    let good = MockChat;
+    // A later incremental run skips both — no starvation, no repeated paid calls.
     let second = Pipeline {
         config: &cfg,
         persona: &persona,
-        provider: &good,
+        provider: &TruncatedChat,
         summariser: &summariser,
         store: &store,
     }
@@ -284,10 +306,73 @@ async fn truncated_digest_does_not_commit_cursor() {
     .await
     .unwrap();
     assert_eq!(
-        second.sessions_processed, 2,
-        "truncated sessions were retried on the next run"
+        second.sessions_processed, 0,
+        "committed sessions are not re-digested"
     );
-    assert!(second.observations >= 2);
+    assert!(
+        second.sessions_skipped >= 2,
+        "both truncated sessions are cursor-skipped on the next run"
+    );
+}
+
+#[tokio::test]
+async fn clean_empty_digest_commits_cursor() {
+    // The counterpart invariant to the truncation fix: a cleanly-parsed empty
+    // digest is genuinely done, so its cursor MUST commit and a later run skips it.
+    // (Guards against over-correcting the truncation fix into a permanent retry of
+    // low-signal sessions.)
+    let (ws, src, cfg, persona) = setup();
+    let summariser = ConcatSummariser::new();
+    let store = FileStateStore::open_in_workspace(ws.path()).unwrap();
+
+    let report = Pipeline {
+        config: &cfg,
+        persona: &persona,
+        provider: &EmptyChat,
+        summariser: &summariser,
+        store: &store,
+    }
+    .run(RunMode::Backfill)
+    .await
+    .unwrap();
+    assert_eq!(
+        report.sessions_processed, 2,
+        "both sessions digested cleanly"
+    );
+    assert_eq!(report.sessions_failed, 0);
+    assert_eq!(report.windows_lost, 0, "an empty digest is not a loss");
+    assert_eq!(report.observations, 0);
+
+    // Both cursors committed.
+    use crate::memory::persona::state::{file_key, PersonaStateStore, NAMESPACE};
+    let cc_root = src.path().join("claude/projects/-work-demo");
+    for name in ["a.jsonl", "b.jsonl"] {
+        let key = file_key("claude_code", &cc_root.join(name));
+        let stored = PersonaStateStore::get(&store, NAMESPACE, &key)
+            .await
+            .unwrap();
+        assert!(
+            stored.is_some(),
+            "cursor for {name} must be committed after a clean empty digest"
+        );
+    }
+
+    // Incremental re-run skips both.
+    let second = Pipeline {
+        config: &cfg,
+        persona: &persona,
+        provider: &EmptyChat,
+        summariser: &summariser,
+        store: &store,
+    }
+    .run(RunMode::Incremental)
+    .await
+    .unwrap();
+    assert_eq!(
+        second.sessions_processed, 0,
+        "empty sessions are not re-digested"
+    );
+    assert!(second.sessions_skipped >= 2);
 }
 
 #[tokio::test]
