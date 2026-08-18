@@ -491,6 +491,9 @@ async fn todoist_reingests_edited_task_without_timestamp_change() {
 async fn notion_fetches_markdown_and_counts_both_requests() {
     let server = MockServer::start().await;
     Mock::given(path("/tools/execute/NOTION_FETCH_DATA"))
+        .and(body_partial_json(
+            serde_json::json!({"arguments": {"fetch_type": "pages"}}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"successful": true, "data": {"results": [{"id": "page-1", "title": "Roadmap", "last_edited_time": "2026-03-01T00:00:00Z"}]}})))
         .mount(&server).await;
     Mock::given(path("/tools/execute/NOTION_GET_PAGE_MARKDOWN"))
