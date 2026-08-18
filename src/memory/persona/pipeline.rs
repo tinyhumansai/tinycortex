@@ -67,10 +67,13 @@ pub struct RunReport {
     /// Truncated/unparseable windows are recovered or counted in [`Self::windows_lost`],
     /// not here.
     pub sessions_failed: usize,
-    /// Windows dropped because their digest stayed unparseable even after
-    /// truncation-recovery re-splitting. Their session's cursor IS committed (the
-    /// failure is deterministic at temperature 0.0), so this is data intentionally
-    /// skipped to keep the queue moving — surfaced so the drop is never silent.
+    /// Recovery leaf sub-windows dropped because their digest stayed unparseable
+    /// even after truncation-recovery re-splitting (one truncated 12k window can
+    /// contribute several, so this counts sub-windows, not top-level windows). A
+    /// session's cursor is committed on this path only when the run produced
+    /// observations elsewhere (near-deterministic at temperature 0.0); a run that
+    /// lost windows and yielded nothing withholds instead — see
+    /// [`Self::systemic_digest_failure`]. Surfaced so the drop is never silent.
     pub windows_lost: usize,
     /// Observations distilled.
     pub observations: usize,
@@ -78,6 +81,12 @@ pub struct RunReport {
     pub facet_counts: BTreeMap<String, usize>,
     /// True when a run budget stopped the run early (checkpointed).
     pub budget_hit: bool,
+    /// True when every digested session yielded zero observations *and* at least
+    /// one window was lost — the signature of a systemic provider failure (a
+    /// wrong/non-instruct model, refusal mode, a proxy returning prose). The
+    /// fully-lost sessions' cursors are then **withheld** so the backlog is
+    /// retried once the cause is fixed, rather than silently committed and skipped.
+    pub systemic_digest_failure: bool,
     /// Path of the compiled pack, if written.
     pub pack_path: Option<String>,
 }
@@ -107,6 +116,16 @@ impl Budget {
     }
 }
 
+/// Digest-loop guards threaded through the ingest sources: the shared
+/// provider-call ceiling and the deferred cursor commits awaiting the run-level
+/// systemic-failure check in [`Pipeline::run`].
+struct DigestGuards {
+    call_budget: CallBudget,
+    /// Commits for fully-lost sessions (zero observations, ≥1 window dropped),
+    /// applied or withheld once the whole run's outcome is known.
+    deferred: Vec<(String, serde_json::Value)>,
+}
+
 /// The pipeline binds the workspace, config, provider, summariser, and state
 /// store; `run` executes one pass.
 pub struct Pipeline<'a> {
@@ -128,9 +147,13 @@ impl Pipeline<'_> {
         let asks = self.persona.asks();
         let mut state = ReduceState::default();
         let mut budget = Budget::from(self.persona);
-        // One provider-call budget shared across every digest source this run, so
-        // transcripts and git history draw from the same `max_llm_calls` ceiling.
-        let call_budget = CallBudget::new(self.persona.run_budget.max_llm_calls as usize);
+        // Shared provider-call ceiling (so transcripts and git history draw from
+        // the same `max_llm_calls`) plus the deferred fully-lost cursor commits,
+        // resolved after all sources run.
+        let mut guards = DigestGuards {
+            call_budget: CallBudget::new(self.persona.run_budget.max_llm_calls as usize),
+            deferred: Vec::new(),
+        };
         let mut report = RunReport {
             mode: mode.as_str().to_string(),
             ..Default::default()
@@ -148,7 +171,7 @@ impl Pipeline<'_> {
             &asks,
             &mut state,
             &mut budget,
-            &call_budget,
+            &mut guards,
             &mut report,
         )
         .await?;
@@ -160,10 +183,35 @@ impl Pipeline<'_> {
             &asks,
             &mut state,
             &mut budget,
-            &call_budget,
+            &mut guards,
             &mut report,
         )
         .await?;
+
+        // Resolve the deferred (zero-observation, ≥1-window-lost) cursor commits.
+        // If the run produced observations anywhere, those sessions are localized
+        // permanent failures — commit them so the queue advances (no starvation).
+        // If the run yielded *nothing* despite dropping windows, treat it as a
+        // systemic provider failure: withhold every deferred commit so the backlog
+        // is retried once the cause is fixed, and flag it loudly.
+        if !guards.deferred.is_empty() {
+            if report.observations > 0 {
+                for (key, value) in &guards.deferred {
+                    self.store.set(state::NAMESPACE, key, value).await?;
+                }
+            } else {
+                report.systemic_digest_failure = true;
+                log::error!(
+                    "[persona] {} session(s) digested to zero observations with {} window(s) \
+                     lost and no observations anywhere this run — likely a systemic provider \
+                     failure (wrong/non-instruct model, refusal, or a proxy returning prose). \
+                     Withholding {} cursor commit(s) so the backlog is retried, not skipped.",
+                    guards.deferred.len(),
+                    report.windows_lost,
+                    guards.deferred.len(),
+                );
+            }
+        }
 
         // Either ceiling stopping the run counts as a budget hit — don't clobber a
         // call-budget checkpoint recorded during digest with the session count.
@@ -263,7 +311,7 @@ impl Pipeline<'_> {
         asks: &FacetAsks,
         state: &mut ReduceState,
         budget: &mut Budget,
-        call_budget: &CallBudget,
+        guards: &mut DigestGuards,
         report: &mut RunReport,
     ) -> Result<()> {
         let mut files: Vec<(PathBuf, &'static str)> = Vec::new();
@@ -306,23 +354,24 @@ impl Pipeline<'_> {
                 .map(|v| (key, v));
             pending.push(Pending { session, commit });
         }
-        self.digest_and_fold(pending, asks, state, budget, call_budget, report)
+        self.digest_and_fold(pending, asks, state, budget, guards, report)
             .await
     }
 
     /// Digest the `pending` sessions concurrently (the network-bound map step)
     /// and fold the results serially into the facet trees (SQLite writes must
     /// stay serial). Order is preserved (`buffered`, not `buffer_unordered`) so
-    /// trees fold oldest-first. Selection honours the shared run budget; each
-    /// selected session's cursor is committed only after it is folded, so a
-    /// budget-truncated tail is re-processed on the next run.
+    /// trees fold oldest-first. Selection honours the shared run budget; a
+    /// selected session's cursor is committed after it is folded, except a
+    /// fully-lost session (zero observations, ≥1 window dropped) whose commit is
+    /// pushed to `deferred` for the run-level systemic check in [`Self::run`].
     async fn digest_and_fold(
         &self,
         pending: Vec<Pending>,
         asks: &FacetAsks,
         state: &mut ReduceState,
         budget: &mut Budget,
-        call_budget: &CallBudget,
+        guards: &mut DigestGuards,
         report: &mut RunReport,
     ) -> Result<()> {
         // Select within the session-count budget up front; the provider-call
@@ -341,7 +390,7 @@ impl Pipeline<'_> {
         }
         let concurrency = self.persona.digest_concurrency.max(1);
         let results: Vec<Result<SessionOutcome>> = stream::iter(selected.iter())
-            .map(|p| digest_session(self.provider, &p.session, call_budget))
+            .map(|p| digest_session(self.provider, &p.session, &guards.call_budget))
             .buffered(concurrency)
             .collect()
             .await;
@@ -370,19 +419,28 @@ impl Pipeline<'_> {
             report.sessions_processed += 1;
             report.windows_lost += outcome.windows_lost;
             let digest = outcome.digest;
+            let session_observations = digest.observations.len();
             if !digest.is_empty() {
                 report.digests += 1;
-                report.observations += digest.observations.len();
+                report.observations += session_observations;
                 fold_digest(self.config, &digest, asks, self.summariser, state).await?;
             }
-            // Commit the cursor/watermark now that the session is folded. A session
-            // reaches here once its windows are digested, recovered, or
-            // deterministically dropped-and-counted (`outcome.windows_lost`); only
-            // a provider failure took the `continue` above. Committing is safe —
-            // re-running a recovered or genuinely-empty session reproduces it, and
-            // a dropped window would only fail identically at temperature 0.0.
-            if let Some((key, value)) = &p.commit {
-                self.store.set(state::NAMESPACE, key, value).await?;
+            let Some(commit) = &p.commit else { continue };
+            if session_observations == 0 && outcome.windows_lost > 0 {
+                // Yielded nothing but lost ≥1 window. In isolation this is a
+                // localized permanent-garbage window that should commit so the
+                // queue advances; run-wide it can instead be the symptom of a
+                // systemic provider failure. Defer the commit — `run` applies it
+                // only if the run produced observations somewhere, otherwise it
+                // withholds and flags rather than silently skipping the backlog.
+                guards.deferred.push(commit.clone());
+            } else {
+                // Committed now that the session is folded: a recovered or
+                // genuinely-empty (zero-loss) session reproduces on re-run, so
+                // committing loses nothing.
+                self.store
+                    .set(state::NAMESPACE, &commit.0, &commit.1)
+                    .await?;
             }
         }
         Ok(())
@@ -395,7 +453,7 @@ impl Pipeline<'_> {
         asks: &FacetAsks,
         state: &mut ReduceState,
         budget: &mut Budget,
-        call_budget: &CallBudget,
+        guards: &mut DigestGuards,
         report: &mut RunReport,
     ) -> Result<()> {
         use super::readers::git_history::{self, GitReadConfig};
@@ -447,7 +505,7 @@ impl Pipeline<'_> {
                 pending.push(Pending { session, commit });
             }
         }
-        self.digest_and_fold(pending, asks, state, budget, call_budget, report)
+        self.digest_and_fold(pending, asks, state, budget, guards, report)
             .await
     }
 }

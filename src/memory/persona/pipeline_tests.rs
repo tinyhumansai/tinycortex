@@ -58,6 +58,30 @@ impl ChatProvider for TruncatedChat {
     }
 }
 
+/// A provider that truncates only when the prompt contains `POISON`, and returns
+/// a clean observation otherwise — so one transcript can be fully-lost while
+/// another in the same run digests normally (the localized-vs-systemic split).
+struct PoisonMarkerChat;
+#[async_trait]
+impl ChatProvider for PoisonMarkerChat {
+    fn name(&self) -> &str {
+        "poison-marker"
+    }
+    async fn chat_for_json(&self, p: &ChatPrompt) -> anyhow::Result<String> {
+        if p.user.contains("POISON") {
+            // Truncated array (unrecoverable at this tiny window size).
+            Ok(r#"{"observations":[
+                {"facet":"workflow","observation":"Commits small and often","quote":"c","tier":"t2"}"#
+                .into())
+        } else {
+            Ok(r#"{"observations":[
+                {"facet":"workflow","observation":"Commits small and often","quote":"c","tier":"t2"}
+            ]}"#
+            .into())
+        }
+    }
+}
+
 /// A provider that returns a cleanly-parsed **empty** observation set. A real,
 /// low-signal session (nothing worth distilling) looks exactly like this, and it
 /// must commit its cursor — re-running only reproduces the empty result.
@@ -313,12 +337,12 @@ async fn hard_provider_failure_does_not_commit_cursor() {
 }
 
 #[tokio::test]
-async fn unrecoverable_truncation_commits_and_counts_loss() {
-    // A window that stays truncated even after in-process re-splitting (the tiny
-    // transcript windows here are already below the re-split floor) must NOT hold
-    // its cursor forever — that would starve every newer session behind it. It is
-    // dropped-and-counted in `windows_lost` and the cursor commits, so a later run
-    // skips it rather than re-burning budget on a deterministically-bad window.
+async fn systemic_truncation_withholds_commits_and_retries() {
+    // When *every* session digests to zero observations with windows lost — the
+    // signature of a systemic provider failure (wrong model, refusal, proxy prose)
+    // — the fully-lost cursors must be WITHHELD, not committed. Committing them
+    // would silently skip the whole backlog and require manual state deletion to
+    // recover once the cause is fixed. The run is flagged and a later run retries.
     let (ws, src, cfg, persona) = setup();
     let summariser = ConcatSummariser::new();
     let store = FileStateStore::open_in_workspace(ws.path()).unwrap();
@@ -333,22 +357,19 @@ async fn unrecoverable_truncation_commits_and_counts_loss() {
     .run(RunMode::Backfill)
     .await
     .unwrap();
-    assert_eq!(
-        report.sessions_processed, 2,
-        "both sessions are processed (recovery bottomed out, no provider error)"
-    );
+    assert_eq!(report.sessions_processed, 2);
     assert_eq!(
         report.sessions_failed, 0,
         "a truncation is not a provider failure"
     );
-    assert_eq!(
-        report.windows_lost, 2,
-        "both truncated windows are dropped-and-counted"
-    );
+    assert_eq!(report.windows_lost, 2);
     assert_eq!(report.observations, 0);
+    assert!(
+        report.systemic_digest_failure,
+        "zero observations run-wide with losses is a systemic failure"
+    );
 
-    // The transcript cursors ARE committed — the loss is deterministic, so the
-    // queue must move on instead of retrying forever.
+    // The transcript cursors are WITHHELD — nothing is silently skipped.
     use crate::memory::persona::state::{file_key, PersonaStateStore, NAMESPACE};
     let cc_root = src.path().join("claude/projects/-work-demo");
     for name in ["a.jsonl", "b.jsonl"] {
@@ -357,16 +378,112 @@ async fn unrecoverable_truncation_commits_and_counts_loss() {
             .await
             .unwrap();
         assert!(
-            stored.is_some(),
-            "cursor for {name} must be committed after an unrecoverable truncation"
+            stored.is_none(),
+            "cursor for {name} must be withheld under a systemic digest failure"
         );
     }
 
-    // A later incremental run skips both — no starvation, no repeated paid calls.
+    // Once the provider works, a later run re-digests the withheld backlog.
     let second = Pipeline {
         config: &cfg,
         persona: &persona,
-        provider: &TruncatedChat,
+        provider: &MockChat,
+        summariser: &summariser,
+        store: &store,
+    }
+    .run(RunMode::Incremental)
+    .await
+    .unwrap();
+    assert_eq!(
+        second.sessions_processed, 2,
+        "the withheld sessions are retried, not skipped"
+    );
+    assert!(second.observations >= 2);
+    assert!(!second.systemic_digest_failure);
+}
+
+#[tokio::test]
+async fn fully_lost_session_commits_when_the_run_yields_observations() {
+    // A single fully-lost session amid a healthy run is a *localized* permanent
+    // failure, not systemic: because the run produced observations elsewhere, its
+    // deferred cursor IS committed so the queue advances (no starvation), and the
+    // run is not flagged systemic.
+    let ws = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let cc_root = src.path().join("claude/projects/-work-demo");
+    std::fs::create_dir_all(&cc_root).unwrap();
+    // good.jsonl (older) parses; poison.jsonl (newer) always truncates.
+    let mut good = std::fs::File::create(cc_root.join("good.jsonl")).unwrap();
+    writeln!(
+        good,
+        "{}",
+        user_turn("s1", "2026-07-01T10:00:00.000Z", "a normal working session")
+    )
+    .unwrap();
+    let mut poison = std::fs::File::create(cc_root.join("poison.jsonl")).unwrap();
+    writeln!(
+        poison,
+        "{}",
+        user_turn(
+            "s2",
+            "2026-07-02T10:00:00.000Z",
+            "POISON marks this one truncated"
+        )
+    )
+    .unwrap();
+
+    let cfg = MemoryConfig::new(ws.path());
+    let mut persona = PersonaConfig::with_home(src.path(), "me@example.com");
+    persona.claude_code_root = Some(src.path().join("claude/projects"));
+    persona.codex_root = None;
+    persona.project_roots = vec![];
+    persona.global_instruction_files = vec![];
+    persona.digest_concurrency = 1; // deterministic oldest-first
+
+    let summariser = ConcatSummariser::new();
+    let store = FileStateStore::open_in_workspace(ws.path()).unwrap();
+
+    let report = Pipeline {
+        config: &cfg,
+        persona: &persona,
+        provider: &PoisonMarkerChat,
+        summariser: &summariser,
+        store: &store,
+    }
+    .run(RunMode::Backfill)
+    .await
+    .unwrap();
+    assert_eq!(report.sessions_processed, 2);
+    assert_eq!(
+        report.windows_lost, 1,
+        "only the poison session lost its window"
+    );
+    assert!(
+        report.observations >= 1,
+        "the good session yielded observations"
+    );
+    assert!(
+        !report.systemic_digest_failure,
+        "a run that produced observations is not systemic"
+    );
+
+    // Both cursors are committed — the good one directly, the poison one via the
+    // applied deferral — so a later run skips both.
+    use crate::memory::persona::state::{file_key, PersonaStateStore, NAMESPACE};
+    for name in ["good.jsonl", "poison.jsonl"] {
+        let key = file_key("claude_code", &cc_root.join(name));
+        assert!(
+            PersonaStateStore::get(&store, NAMESPACE, &key)
+                .await
+                .unwrap()
+                .is_some(),
+            "cursor for {name} must be committed in a healthy run"
+        );
+    }
+    let second = Pipeline {
+        config: &cfg,
+        persona: &persona,
+        provider: &PoisonMarkerChat,
         summariser: &summariser,
         store: &store,
     }
@@ -375,11 +492,7 @@ async fn unrecoverable_truncation_commits_and_counts_loss() {
     .unwrap();
     assert_eq!(
         second.sessions_processed, 0,
-        "committed sessions are not re-digested"
-    );
-    assert!(
-        second.sessions_skipped >= 2,
-        "both truncated sessions are cursor-skipped on the next run"
+        "both sessions are cursor-skipped"
     );
 }
 

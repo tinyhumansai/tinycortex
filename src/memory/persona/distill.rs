@@ -48,10 +48,11 @@ const WINDOW_CHARS: usize = 12_000;
 /// [`WINDOW_CHARS`]: raising the input window raises the observations a window can
 /// yield, so the two move together.
 const DIGEST_MAX_OUTPUT_TOKENS: u32 = 16_384;
-/// Smallest sub-window truncation-recovery ([`digest_window_recovering`]) will
-/// produce. Below this a response that still won't parse is treated as genuinely
-/// broken (not merely output-capped) and dropped-with-a-count rather than split
-/// further — the floor that guarantees recovery terminates.
+/// Recovery stops splitting once the *half* it would produce falls below this, so
+/// the effective smallest window it will re-digest is ~2× this value (a ~3 000-char
+/// piece is the last one split). Below that a response that still won't parse is
+/// treated as genuinely broken (not merely output-capped) and dropped-with-a-count
+/// rather than split further — the floor that guarantees recovery terminates.
 const MIN_WINDOW_CHARS: usize = 1_500;
 /// Max times recovery halves a truncated window before giving up on a sub-window.
 /// `12_000 → 6_000 → 3_000 → 1_500` reaches [`MIN_WINDOW_CHARS`], an ~8× cut in
@@ -172,13 +173,15 @@ fn windows(session: &RawSession) -> Vec<String> {
 /// **dropped** because they stayed unparseable even after truncation-recovery
 /// re-splitting.
 ///
-/// A non-zero `windows_lost` still commits the session's cursor: the failure is
-/// deterministic (temperature `0.0`), so retrying would only re-burn budget
-/// without recovering anything, and holding the cursor would starve every newer
-/// session behind it. The count is surfaced in the run report so the drop is
-/// visible, never silent. Only a *provider* failure (transport/budget/auth) is a
-/// non-committable `Err` from [`digest_session`] — that is transient and worth
-/// retrying the whole session for.
+/// A non-zero `windows_lost` is near-deterministic at temperature `0.0` (a
+/// heuristic — hosted providers aren't bit-exact), so retrying it in isolation
+/// only re-burns budget while starving newer sessions. The pipeline therefore
+/// commits such a session's cursor when the run produced observations elsewhere
+/// (a localized failure) but *withholds* it when the whole run yielded nothing
+/// (a systemic failure worth retrying) — see the pipeline's `systemic_digest_failure`
+/// handling. The count is surfaced in the run report so the drop is never silent.
+/// Only a *provider* failure (transport/budget/auth) is a non-committable `Err`
+/// from [`digest_session`] — that is transient and worth retrying the whole session.
 #[derive(Debug, Clone)]
 pub struct SessionOutcome {
     /// The observations distilled from every digested (or recovered) window.
