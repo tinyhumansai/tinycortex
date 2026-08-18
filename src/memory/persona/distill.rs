@@ -150,8 +150,8 @@ pub struct SessionOutcome {
 ///   transport) → returns `Err`. The caller must NOT commit the session's cursor,
 ///   so the whole session is re-attempted next run. This is transient.
 /// - **Truncated/unparseable window** → recovered in-process by re-splitting (see
-///   [`digest_window_recovering`]); a piece that still won't parse at the minimum
-///   size is dropped and tallied in [`SessionOutcome::windows_lost`]. The cursor
+///   the private `digest_window_recovering`); a piece that still won't parse at the
+///   minimum size is dropped and tallied in [`SessionOutcome::windows_lost`]. The cursor
 ///   is still committed — the failure is deterministic, so retrying is pure waste.
 /// - **Genuinely empty digest** (`{"observations":[]}`) → `Ok` with an empty
 ///   digest and `windows_lost = 0`. Re-running reproduces it, so the cursor commits.
