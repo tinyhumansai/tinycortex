@@ -136,7 +136,7 @@ impl IncrementalSource for NotionSyncPipeline {
             state,
         )
         .await?;
-        let body = [
+        let markdown = [
             "/markdown",
             "/data/markdown",
             "/data/response_data/markdown",
@@ -149,18 +149,25 @@ impl IncrementalSource for NotionSyncPipeline {
         .iter()
         .find_map(|path| response.data.pointer(path).and_then(Value::as_str))
         .filter(|value| !value.trim().is_empty())
-        .map(str::to_owned)
-        .unwrap_or(serde_json::to_string_pretty(&item.raw)?);
+        .map(str::to_owned);
         // `NOTION_GET_PAGE_MARKDOWN` returns page *block* content only, so a
         // database-row page's structured property values (select / status /
-        // multi_select / date / …) never appear in `body`. Render them from the
-        // fetched row and prepend, so the agent reads the real dropdown
+        // multi_select / date / …) never appear in the markdown. Render them from
+        // the fetched row and prepend, so the agent reads the real dropdown
         // selections instead of inventing them (#5500).
-        let properties = render_properties(&item.raw);
-        let content = if properties.is_empty() {
-            body
-        } else {
-            format!("{properties}\n\n{body}")
+        let content = match markdown {
+            Some(body) => {
+                let properties = render_properties(&item.raw);
+                if properties.is_empty() {
+                    body
+                } else {
+                    format!("{properties}\n\n{body}")
+                }
+            }
+            // No page markdown available: fall back to the raw row JSON. It
+            // already contains the `properties` object, so do NOT prepend the
+            // rendered block as well — that would duplicate the property values.
+            None => serde_json::to_string_pretty(&item.raw)?,
         };
         Ok(document(
             "notion",
@@ -279,10 +286,15 @@ fn render_properties(page: &Value) -> String {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
-                _ => String::new(),
+                _ => render_unknown(kind, property),
             };
-            let value = value.trim();
-            (!value.is_empty()).then(|| format!("{name}: {value}"))
+            // Collapse whitespace (including newlines) in both the property name
+            // and value so neither can forge extra `Name: value` lines in the
+            // block — a rich_text value like "real\nStatus: FAKE" would otherwise
+            // inject a second, higher-sorting property line into the agent's
+            // context. Also keeps the one-line `Name: value` contract.
+            let value = collapse_ws(&value);
+            (!value.is_empty()).then(|| format!("{}: {value}", collapse_ws(name)))
         })
         .collect();
     if lines.is_empty() {
@@ -322,4 +334,76 @@ fn named_list(value: Option<&Value>) -> String {
                 .join(", ")
         })
         .unwrap_or_default()
+}
+
+/// Best-effort render of a Notion property kind not handled explicitly above.
+///
+/// Tracker pages routinely carry `formula`, `rollup`, `unique_id`, and the
+/// audit timestamps/users; dropping them silently leaves exactly the fields a
+/// #5500 page relies on missing, so the agent re-invents them. This reads the
+/// concrete shapes and falls back to any bare scalar; a kind it still can't read
+/// degrades to "skipped **and** logged" (`tracing::debug`) rather than vanishing,
+/// so a newly-introduced Notion property type is visible in telemetry.
+fn render_unknown(kind: &str, property: &Value) -> String {
+    let inner = property.get(kind);
+    let rendered = match kind {
+        "created_time" | "last_edited_time" => inner
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        "created_by" | "last_edited_by" => inner
+            .and_then(|user| user.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        "unique_id" => inner
+            .and_then(Value::as_object)
+            .map(|uid| {
+                let number = uid.get("number").filter(|n| n.is_number());
+                match (uid.get("prefix").and_then(Value::as_str), number) {
+                    (Some(prefix), Some(n)) => format!("{prefix}-{n}"),
+                    (_, Some(n)) => n.to_string(),
+                    _ => String::new(),
+                }
+            })
+            .unwrap_or_default(),
+        // `formula`/`rollup` wrap their result in `{ "type": T, T: value }`.
+        "formula" | "rollup" => inner
+            .and_then(Value::as_object)
+            .and_then(|obj| obj.get("type").and_then(Value::as_str).map(|t| (obj, t)))
+            .map(|(obj, t)| scalar_value(obj.get(t)))
+            .unwrap_or_default(),
+        // `files` entries expose a `name`; reuse the same object-name join.
+        "files" => named_list(inner),
+        _ => scalar_value(inner),
+    };
+    if rendered.trim().is_empty() {
+        tracing::debug!(kind, "[memory_sync:notion] unrendered property");
+    }
+    rendered
+}
+
+/// Render a bare Notion scalar (`string` / `number` / `bool`) or a `{ name: … }`
+/// object into text; empty for a structured shape we don't recognise. The last
+/// resort for [`render_unknown`], covering `formula`/`rollup` inner values and
+/// any future scalar-typed property.
+fn scalar_value(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Number(n)) => n.to_string(),
+        Some(Value::Bool(b)) => if *b { "Yes" } else { "No" }.to_string(),
+        Some(Value::Object(obj)) => obj
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Collapse every run of whitespace (spaces, tabs, newlines) to a single space
+/// and trim. Applied to each property name and value before it is emitted so a
+/// value can't inject additional `Name: value` lines into the rendered block.
+fn collapse_ws(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }

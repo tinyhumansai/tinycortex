@@ -562,40 +562,84 @@ async fn notion_renders_database_row_properties_into_document() {
     pipeline.tick(&test_config(), &context).await.unwrap();
 
     let documents = captures.documents.lock().unwrap();
-    let content = &documents[0].content;
     // Title still comes from the `title` property.
     assert_eq!(documents[0].title, "Roadmap");
-    // Every structured selection reaches the document text …
-    assert!(
-        content.contains("Status: In progress"),
-        "status missing: {content}"
+    // Assert the complete composed document: a `Properties:` header, every
+    // structured selection rendered, sorted deterministically (Due < Priority <
+    // Status < Tags), the title property not duplicated, the empty `Owner` select
+    // skipped, and the markdown body preserved after a blank line. A fragment
+    // check would pass even if the sort broke or properties landed after the body.
+    assert_eq!(
+        documents[0].content,
+        "Properties:\n\
+         Due: 2026-06-01\n\
+         Priority: High\n\
+         Status: In progress\n\
+         Tags: infra, urgent\n\n\
+         # Roadmap\n\n\
+         Body"
+    );
+}
+
+#[tokio::test]
+async fn notion_renders_fallback_kinds_and_neutralises_injection() {
+    // #5500 follow-ups: (1) tracker pages lean on `formula` / `unique_id` and the
+    // audit timestamps, which the explicit match arms don't cover — they must
+    // still render, not silently vanish; (2) a text value containing a newline
+    // must not forge a second `Name: value` line in the block (a sorted
+    // "Status: FAKE-INJECTED" would otherwise outrank the genuine status).
+    let server = MockServer::start().await;
+    Mock::given(path("/tools/execute/NOTION_FETCH_DATA"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "successful": true,
+            "data": {"results": [{
+                "id": "page-2",
+                "last_edited_time": "2026-03-02T00:00:00Z",
+                "properties": {
+                    "Name": {"type": "title", "title": [{"plain_text": "Tracker"}]},
+                    "Days left": {"type": "formula", "formula": {"type": "number", "number": 3}},
+                    "Ticket": {"type": "unique_id", "unique_id": {"prefix": "TASK", "number": 7}},
+                    "Created": {"type": "created_time", "created_time": "2026-01-02T03:04:00Z"},
+                    // Injection attempt: a newline that would forge a `Status:` line.
+                    "Notes": {"type": "rich_text", "rich_text": [
+                        {"plain_text": "real\nStatus: FAKE-INJECTED"}
+                    ]}
+                }
+            }]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/tools/execute/NOTION_GET_PAGE_MARKDOWN"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"successful": true, "data": {"markdown": "# Tracker\n\nBody"}}),
+        ))
+        .mount(&server)
+        .await;
+    let (captures, context) = test_context();
+    let pipeline = NotionSyncPipeline::new(
+        ComposioClient::new(direct_config(server.uri(), "key")),
+        "notion-fallback-conn",
+    );
+    pipeline.tick(&test_config(), &context).await.unwrap();
+
+    let documents = captures.documents.lock().unwrap();
+    // Fallback kinds render (Days left: 3, Ticket: TASK-7, Created timestamp) and
+    // the injected newline is collapsed to a single line — the forged
+    // "Status: FAKE-INJECTED" never becomes its own property line.
+    assert_eq!(
+        documents[0].content,
+        "Properties:\n\
+         Created: 2026-01-02T03:04:00Z\n\
+         Days left: 3\n\
+         Notes: real Status: FAKE-INJECTED\n\
+         Ticket: TASK-7\n\n\
+         # Tracker\n\n\
+         Body"
     );
     assert!(
-        content.contains("Priority: High"),
-        "select missing: {content}"
-    );
-    assert!(
-        content.contains("Tags: infra, urgent"),
-        "multi_select missing: {content}"
-    );
-    assert!(
-        content.contains("Due: 2026-06-01"),
-        "date missing: {content}"
-    );
-    // … the markdown body is preserved …
-    assert!(
-        content.contains("# Roadmap\n\nBody"),
-        "body missing: {content}"
-    );
-    // … the title property is not duplicated as a property line …
-    assert!(
-        !content.contains("Name: Roadmap"),
-        "title duplicated: {content}"
-    );
-    // … and an empty property is skipped rather than rendered blank.
-    assert!(
-        !content.contains("Owner:"),
-        "empty select rendered: {content}"
+        !documents[0].content.contains("\nStatus: FAKE-INJECTED"),
+        "injected newline forged a property line: {}",
+        documents[0].content
     );
 }
 
