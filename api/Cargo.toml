@@ -1,30 +1,28 @@
 [package]
 name = "tinycortex-api"
+# Not published, for the same reason as the engine above.
+publish = false
 version = "0.1.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/tinyhumansai/tinycortex"
 description = "Stable public contracts for the TinyCortex memory system"
 
-# Deliberately dependency-light: this crate is the stable contract surface that
-# hosts compile against, so it must stay free of native, async-runtime, and
-# storage dependencies. Anything heavier belongs in the `tinycortex` engine
-# crate, never here.
+# One dependency, and that is the whole crate. `api/src/` is a single file of
+# `pub use tinymemory_api::{...}`, so the value types, error enum, capability
+# vocabulary and storage trait all come from there.
 #
-# The full set is intentionally small and pure-Rust. Beyond the
-# serde/error/async-trait baseline it carries exactly three additions, each
-# pulled in by a value type that has to keep behaving identically after the
-# move out of the engine crate:
-#
-# - `chrono`  — timestamps on chunk/tree nodes; the `serde` feature backs
-#               `chunks::Metadata`'s `chrono::serde::ts_milliseconds`.
-# - `sha2`    — the deterministic `chunks::chunk_id`.
-# - `uuid`    — `tool_memory::ToolMemoryRule::generate_id` (v4 bytes, nibble
-#               encoded). Only the `v4` feature is needed here; the engine
-#               crate additionally enables `serde`.
+# The eight direct dependencies that used to sit here — anyhow, async-trait,
+# chrono, serde, serde_json, sha2, thiserror, uuid — were each pulled in by a
+# type this crate defined. It defines none of them now, so they are gone. They
+# were not free while they stayed: `sha2 = "0.10"` here against `sha2 0.11` in
+# `tinymemory-api` gave `cargo tree -p tinycortex-api` a doubled hash stack
+# (block-buffer, crypto-common and digest each resolved twice).
 #
 # Nothing here may pull in `rusqlite`, `git2`, `reqwest`, `regex`, or an async
-# runtime. Guard with the FORWARD form, which is scoped to this package:
+# runtime. That rule now applies transitively through the contract rather than
+# to a list kept here; `tinymemory-api` carries the same rule and enforces it in
+# its own CI. Guard with the FORWARD form, which is scoped to this package:
 #
 #   cargo tree -p tinycortex-api -e normal,build --prefix none \
 #     | grep -Ei 'rusqlite|libsqlite|git2|reqwest|regex|tokio'   # expect no match
@@ -33,11 +31,23 @@ description = "Stable public contracts for the TinyCortex memory system"
 # scope and prints the whole-workspace inverse tree, so it exits 0 and looks
 # clean even when this crate is the one pulling the dependency in.
 [dependencies]
-anyhow = "1"
-async-trait = "0.1"
-chrono = { version = "0.4", features = ["serde"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.10"
-thiserror = "2"
-uuid = { version = "1", features = ["v4"] }
+# The contract itself. This crate no longer defines the memory value types; it
+# re-exports them, so `tinycortex_api::types::MemoryEntry` and
+# `tinymemory_api::types::MemoryEntry` are one type rather than two that a
+# conversion layer has to keep in step (tinymemory#18 §A1).
+#
+# By git rather than by version because neither crate is published, and pinned
+# by `rev` because bumping the contract is a deliberate act that should be a
+# reviewable line in a diff rather than whatever the default branch happened to
+# be on the day someone rebuilt.
+#
+# A host that vendors both crates must patch this entry to its own checkout, or
+# cargo resolves the git copy alongside the path copy and the two
+# `MemoryEntry`s are different types. That needs a git-URL patch table — a
+# `[patch.crates-io]` entry cannot override a git dependency:
+#
+#   [patch."https://github.com/tinyhumansai/tinymemory"]
+#   tinymemory-api = { path = "api" }
+#
+# tinymemory's own workspace root carries exactly that.
+tinymemory-api = { git = "https://github.com/tinyhumansai/tinymemory", rev = "4549cda222de3891b95e2fa58e2565bb2c194328" }

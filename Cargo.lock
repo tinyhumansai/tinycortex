@@ -1753,12 +1753,22 @@ dependencies = [
 name = "tinycortex-api"
 version = "0.1.1"
 dependencies = [
+ "tinymemory-api",
+]
+
+[[package]]
+name = "tinymemory-api"
+version = "0.1.1"
+source = "git+https://github.com/tinyhumansai/tinymemory?rev=4549cda222de3891b95e2fa58e2565bb2c194328#4549cda222de3891b95e2fa58e2565bb2c194328"
+dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "log",
+ "schemars",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "thiserror 2.0.19",
  "uuid",
 ]
