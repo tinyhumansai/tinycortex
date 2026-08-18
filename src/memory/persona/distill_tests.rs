@@ -216,9 +216,11 @@ async fn permanently_unparseable_window_terminates_and_is_counted() {
     assert!(outcome.digest.observations.is_empty());
 }
 
-/// The bounded re-splitting *descent*: a large window that never parses must walk
-/// the full 12k → 6k → 3k → 1.5k chain, drop every leaf piece, and terminate
-/// within a bounded number of calls — never loop. (The test above covers the
+/// The bounded re-splitting *descent*: a window sized to `MIN_WINDOW_CHARS <<
+/// MAX_RESPLIT_DEPTH` (12k) splits binarily the full 12k → 6k → 3k → 1.5k chain,
+/// digesting a complete recovery tree and dropping every leaf. Pinning the call
+/// count to the exact tree size — `sum(2^i for i in 0..=depth) = 2^(depth+1) - 1`
+/// — detects a fan-out regression, not merely a hang. (The test above covers the
 /// immediate below-floor drop; this exercises the `MAX_RESPLIT_DEPTH` path.)
 #[tokio::test]
 async fn large_permanently_unparseable_window_terminates_within_bounded_calls() {
@@ -227,18 +229,17 @@ async fn large_permanently_unparseable_window_terminates_within_bounded_calls() 
     let provider = MockChat {
         body: Ok(truncated.into()),
     };
-    let session = big_session(12_000);
+    let session = big_session(MIN_WINDOW_CHARS << MAX_RESPLIT_DEPTH); // 1500 * 8 = 12_000
     let budget = CallBudget::new(1_000);
     let outcome = digest_session(&provider, &session, &budget).await.unwrap();
     assert!(outcome.digest.observations.is_empty());
-    assert!(
-        outcome.windows_lost >= 1,
-        "the descent's leaf pieces are dropped-and-counted"
-    );
+    // Leaves are the `2^depth` pieces at the floor (8 here), each dropped-and-counted.
+    assert_eq!(outcome.windows_lost, 1 << MAX_RESPLIT_DEPTH);
     let calls = 1_000 - budget.remaining();
-    assert!(
-        (1..=60).contains(&calls),
-        "recovery must terminate within a bounded call count, spent {calls}"
+    let expected_calls = (1usize << (MAX_RESPLIT_DEPTH + 1)) - 1; // 1+2+4+8 = 15
+    assert_eq!(
+        calls, expected_calls,
+        "recovery must spend exactly the bounded tree ({expected_calls}), spent {calls}"
     );
 }
 
