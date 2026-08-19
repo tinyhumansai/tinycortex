@@ -8,7 +8,7 @@ use tempfile::TempDir;
 
 use crate::memory::config::MemoryConfig;
 use crate::memory::persona::compile::{compile_pack, PackInputs};
-use crate::memory::persona::distill::digest_session;
+use crate::memory::persona::distill::{digest_session, CallBudget};
 use crate::memory::persona::readers::RawSession;
 use crate::memory::persona::types::{
     EvidenceSource, EvidenceTier, PersonaEvidence, PersonaSourceKind,
@@ -65,7 +65,10 @@ async fn full_map_reduce_compile_offline() {
 
     // Two sessions from two different scopes → cross-project strength.
     for scope in ["projA", "projB"] {
-        let digest = digest_session(&provider, &session(scope)).await.unwrap();
+        let digest = digest_session(&provider, &session(scope), &CallBudget::unlimited())
+            .await
+            .unwrap()
+            .digest;
         fold_digest(&config, &digest, &asks, &summariser, &mut state)
             .await
             .unwrap();

@@ -39,6 +39,63 @@ impl ChatProvider for FailChat {
     }
 }
 
+/// A provider that returns a **truncated** observation array on every call — a
+/// well-formed prefix with the closing `]`/`}` missing, exactly what a hit
+/// output-token cap produces, and unrecoverable no matter how small the window is
+/// re-split. The transcript windows here are tiny (well under the re-split floor),
+/// so recovery drops-and-counts them rather than looping forever.
+struct TruncatedChat;
+#[async_trait]
+impl ChatProvider for TruncatedChat {
+    fn name(&self) -> &str {
+        "truncated"
+    }
+    async fn chat_for_json(&self, _p: &ChatPrompt) -> anyhow::Result<String> {
+        Ok(r#"{"observations":[
+            {"facet":"workflow","observation":"Commits small and often","quote":"commit","tier":"t2"},
+            {"facet":"communication","observation":"Terse and direct","quote":"do X","tier":"t2"}"#
+        .into())
+    }
+}
+
+/// A provider that truncates only when the prompt contains `POISON`, and returns
+/// a clean observation otherwise — so one transcript can be fully-lost while
+/// another in the same run digests normally (the localized-vs-systemic split).
+struct PoisonMarkerChat;
+#[async_trait]
+impl ChatProvider for PoisonMarkerChat {
+    fn name(&self) -> &str {
+        "poison-marker"
+    }
+    async fn chat_for_json(&self, p: &ChatPrompt) -> anyhow::Result<String> {
+        if p.user.contains("POISON") {
+            // Truncated array (unrecoverable at this tiny window size).
+            Ok(r#"{"observations":[
+                {"facet":"workflow","observation":"Commits small and often","quote":"c","tier":"t2"}"#
+                .into())
+        } else {
+            Ok(r#"{"observations":[
+                {"facet":"workflow","observation":"Commits small and often","quote":"c","tier":"t2"}
+            ]}"#
+            .into())
+        }
+    }
+}
+
+/// A provider that returns a cleanly-parsed **empty** observation set. A real,
+/// low-signal session (nothing worth distilling) looks exactly like this, and it
+/// must commit its cursor — re-running only reproduces the empty result.
+struct EmptyChat;
+#[async_trait]
+impl ChatProvider for EmptyChat {
+    fn name(&self) -> &str {
+        "empty"
+    }
+    async fn chat_for_json(&self, _p: &ChatPrompt) -> anyhow::Result<String> {
+        Ok(r#"{"observations":[]}"#.into())
+    }
+}
+
 fn user_turn(session: &str, ts: &str, text: &str) -> String {
     format!(
         r#"{{"type":"user","isSidechain":false,"cwd":"/work/demo","sessionId":"{session}","timestamp":"{ts}","message":{{"role":"user","content":"{text}"}}}}"#
@@ -148,6 +205,74 @@ async fn budget_cutoff_checkpoints() {
 }
 
 #[tokio::test]
+async fn call_budget_exhaustion_checkpoints_and_resumes() {
+    // `max_llm_calls` is a hard ceiling on provider calls: with a budget of one
+    // call and two sessions (one window each, digested oldest-first), only the
+    // first commits; the second hits the spent budget, does NOT commit, and is
+    // re-digested on a later run once the budget refreshes.
+    let (ws, src, cfg, mut persona) = setup();
+    persona.run_budget.max_llm_calls = 1;
+    persona.digest_concurrency = 1; // deterministic oldest-first ordering
+    let summariser = ConcatSummariser::new();
+    let store = FileStateStore::open_in_workspace(ws.path()).unwrap();
+
+    let report = Pipeline {
+        config: &cfg,
+        persona: &persona,
+        provider: &MockChat,
+        summariser: &summariser,
+        store: &store,
+    }
+    .run(RunMode::Backfill)
+    .await
+    .unwrap();
+    assert_eq!(
+        report.sessions_processed, 1,
+        "only one call's worth digested"
+    );
+    assert_eq!(
+        report.sessions_failed, 0,
+        "budget exhaustion is not a failure"
+    );
+    assert!(report.budget_hit, "the call budget stopped the run");
+
+    // Exactly one transcript cursor is committed; the budget-checkpointed one is not.
+    use crate::memory::persona::state::{file_key, PersonaStateStore, NAMESPACE};
+    let cc_root = src.path().join("claude/projects/-work-demo");
+    let mut committed = 0;
+    for name in ["a.jsonl", "b.jsonl"] {
+        let key = file_key("claude_code", &cc_root.join(name));
+        if PersonaStateStore::get(&store, NAMESPACE, &key)
+            .await
+            .unwrap()
+            .is_some()
+        {
+            committed += 1;
+        }
+    }
+    assert_eq!(
+        committed, 1,
+        "budget checkpoint commits exactly one session"
+    );
+
+    // A fresh run (new budget) digests the un-committed session.
+    let second = Pipeline {
+        config: &cfg,
+        persona: &persona,
+        provider: &MockChat,
+        summariser: &summariser,
+        store: &store,
+    }
+    .run(RunMode::Incremental)
+    .await
+    .unwrap();
+    assert_eq!(
+        second.sessions_processed, 1,
+        "the budget-checkpointed session resumes"
+    );
+}
+
+#[tokio::test]
 async fn compile_only_reassembles_without_llm() {
     let (ws, _src, cfg, persona) = setup();
     let provider = MockChat;
@@ -209,6 +334,229 @@ async fn hard_provider_failure_does_not_commit_cursor() {
     .unwrap();
     assert_eq!(second.sessions_processed, 2, "failed sessions were retried");
     assert!(second.observations >= 2);
+}
+
+#[tokio::test]
+async fn systemic_truncation_withholds_commits_and_retries() {
+    // When *every* session digests to zero observations with windows lost — the
+    // signature of a systemic provider failure (wrong model, refusal, proxy prose)
+    // — the fully-lost cursors must be WITHHELD, not committed. Committing them
+    // would silently skip the whole backlog and require manual state deletion to
+    // recover once the cause is fixed. The run is flagged and a later run retries.
+    let (ws, src, cfg, mut persona) = setup();
+    persona.run_budget.max_llm_calls = 64; // decouple from the config default
+    let summariser = ConcatSummariser::new();
+    let store = FileStateStore::open_in_workspace(ws.path()).unwrap();
+
+    let report = Pipeline {
+        config: &cfg,
+        persona: &persona,
+        provider: &TruncatedChat,
+        summariser: &summariser,
+        store: &store,
+    }
+    .run(RunMode::Backfill)
+    .await
+    .unwrap();
+    assert_eq!(report.sessions_processed, 2);
+    assert_eq!(
+        report.sessions_failed, 0,
+        "a truncation is not a provider failure"
+    );
+    assert_eq!(report.windows_lost, 2);
+    assert_eq!(report.observations, 0);
+    assert!(
+        report.systemic_digest_failure,
+        "zero observations run-wide with losses is a systemic failure"
+    );
+
+    // The transcript cursors are WITHHELD — nothing is silently skipped.
+    use crate::memory::persona::state::{file_key, PersonaStateStore, NAMESPACE};
+    let cc_root = src.path().join("claude/projects/-work-demo");
+    for name in ["a.jsonl", "b.jsonl"] {
+        let key = file_key("claude_code", &cc_root.join(name));
+        let stored = PersonaStateStore::get(&store, NAMESPACE, &key)
+            .await
+            .unwrap();
+        assert!(
+            stored.is_none(),
+            "cursor for {name} must be withheld under a systemic digest failure"
+        );
+    }
+
+    // Once the provider works, a later run re-digests the withheld backlog.
+    let second = Pipeline {
+        config: &cfg,
+        persona: &persona,
+        provider: &MockChat,
+        summariser: &summariser,
+        store: &store,
+    }
+    .run(RunMode::Incremental)
+    .await
+    .unwrap();
+    assert_eq!(
+        second.sessions_processed, 2,
+        "the withheld sessions are retried, not skipped"
+    );
+    assert!(second.observations >= 2);
+    assert!(!second.systemic_digest_failure);
+}
+
+#[tokio::test]
+async fn fully_lost_session_commits_when_the_run_yields_observations() {
+    // A single fully-lost session amid a healthy run is a *localized* permanent
+    // failure, not systemic: because the run produced observations elsewhere, its
+    // deferred cursor IS committed so the queue advances (no starvation), and the
+    // run is not flagged systemic.
+    let ws = TempDir::new().unwrap();
+    let src = TempDir::new().unwrap();
+    let cc_root = src.path().join("claude/projects/-work-demo");
+    std::fs::create_dir_all(&cc_root).unwrap();
+    // good.jsonl (older) parses; poison.jsonl (newer) always truncates.
+    let mut good = std::fs::File::create(cc_root.join("good.jsonl")).unwrap();
+    writeln!(
+        good,
+        "{}",
+        user_turn("s1", "2026-07-01T10:00:00.000Z", "a normal working session")
+    )
+    .unwrap();
+    let mut poison = std::fs::File::create(cc_root.join("poison.jsonl")).unwrap();
+    writeln!(
+        poison,
+        "{}",
+        user_turn(
+            "s2",
+            "2026-07-02T10:00:00.000Z",
+            "POISON marks this one truncated"
+        )
+    )
+    .unwrap();
+
+    let cfg = MemoryConfig::new(ws.path());
+    let mut persona = PersonaConfig::with_home(src.path(), "me@example.com");
+    persona.claude_code_root = Some(src.path().join("claude/projects"));
+    persona.codex_root = None;
+    persona.project_roots = vec![];
+    persona.global_instruction_files = vec![];
+    persona.digest_concurrency = 1; // deterministic oldest-first
+    persona.run_budget.max_llm_calls = 64; // decouple from the config default
+
+    let summariser = ConcatSummariser::new();
+    let store = FileStateStore::open_in_workspace(ws.path()).unwrap();
+
+    let report = Pipeline {
+        config: &cfg,
+        persona: &persona,
+        provider: &PoisonMarkerChat,
+        summariser: &summariser,
+        store: &store,
+    }
+    .run(RunMode::Backfill)
+    .await
+    .unwrap();
+    assert_eq!(report.sessions_processed, 2);
+    assert_eq!(
+        report.windows_lost, 1,
+        "only the poison session lost its window"
+    );
+    assert!(
+        report.observations >= 1,
+        "the good session yielded observations"
+    );
+    assert!(
+        !report.systemic_digest_failure,
+        "a run that produced observations is not systemic"
+    );
+
+    // Both cursors are committed — the good one directly, the poison one via the
+    // applied deferral — so a later run skips both.
+    use crate::memory::persona::state::{file_key, PersonaStateStore, NAMESPACE};
+    for name in ["good.jsonl", "poison.jsonl"] {
+        let key = file_key("claude_code", &cc_root.join(name));
+        assert!(
+            PersonaStateStore::get(&store, NAMESPACE, &key)
+                .await
+                .unwrap()
+                .is_some(),
+            "cursor for {name} must be committed in a healthy run"
+        );
+    }
+    let second = Pipeline {
+        config: &cfg,
+        persona: &persona,
+        provider: &PoisonMarkerChat,
+        summariser: &summariser,
+        store: &store,
+    }
+    .run(RunMode::Incremental)
+    .await
+    .unwrap();
+    assert_eq!(
+        second.sessions_processed, 0,
+        "both sessions are cursor-skipped"
+    );
+}
+
+#[tokio::test]
+async fn clean_empty_digest_commits_cursor() {
+    // The counterpart invariant to the truncation fix: a cleanly-parsed empty
+    // digest is genuinely done, so its cursor MUST commit and a later run skips it.
+    // (Guards against over-correcting the truncation fix into a permanent retry of
+    // low-signal sessions.)
+    let (ws, src, cfg, mut persona) = setup();
+    persona.run_budget.max_llm_calls = 64; // decouple from the config default
+    let summariser = ConcatSummariser::new();
+    let store = FileStateStore::open_in_workspace(ws.path()).unwrap();
+
+    let report = Pipeline {
+        config: &cfg,
+        persona: &persona,
+        provider: &EmptyChat,
+        summariser: &summariser,
+        store: &store,
+    }
+    .run(RunMode::Backfill)
+    .await
+    .unwrap();
+    assert_eq!(
+        report.sessions_processed, 2,
+        "both sessions digested cleanly"
+    );
+    assert_eq!(report.sessions_failed, 0);
+    assert_eq!(report.windows_lost, 0, "an empty digest is not a loss");
+    assert_eq!(report.observations, 0);
+
+    // Both cursors committed.
+    use crate::memory::persona::state::{file_key, PersonaStateStore, NAMESPACE};
+    let cc_root = src.path().join("claude/projects/-work-demo");
+    for name in ["a.jsonl", "b.jsonl"] {
+        let key = file_key("claude_code", &cc_root.join(name));
+        let stored = PersonaStateStore::get(&store, NAMESPACE, &key)
+            .await
+            .unwrap();
+        assert!(
+            stored.is_some(),
+            "cursor for {name} must be committed after a clean empty digest"
+        );
+    }
+
+    // Incremental re-run skips both.
+    let second = Pipeline {
+        config: &cfg,
+        persona: &persona,
+        provider: &EmptyChat,
+        summariser: &summariser,
+        store: &store,
+    }
+    .run(RunMode::Incremental)
+    .await
+    .unwrap();
+    assert_eq!(
+        second.sessions_processed, 0,
+        "empty sessions are not re-digested"
+    );
+    assert!(second.sessions_skipped >= 2);
 }
 
 #[tokio::test]
