@@ -79,6 +79,103 @@ pub(super) fn valid_luhn(s: &str) -> bool {
     sum.is_multiple_of(10)
 }
 
+/// True when a digit string has a plausible payment-card shape: a known
+/// major-network IIN prefix at a length that network actually issues.
+///
+/// The structural gate behind bare (separator-less) credit-card redaction.
+/// Luhn alone passes ~10% of arbitrary digit runs — the same raw
+/// false-positive rate that put bare Aadhaar behind a keyword — and 13-19
+/// contiguous digits is a common machine-identifier shape: 13-digit
+/// epoch-millisecond timestamps (`17…`/`18…` for decades either side of now)
+/// sit squarely in the window and were being redacted out of stored JSON at
+/// that rate (opencompany#1201). No card network issues from a `17`/`18`
+/// prefix, so requiring a real IIN removes that entire class while keeping
+/// every number a major network could actually have issued.
+///
+/// The table lists each supported network's published IIN ranges at the
+/// lengths that network issues: Visa, Mastercard (incl. the 2-series), Amex,
+/// Discover, JCB, Diners Club, UnionPay, Maestro, Mir, RuPay, and the
+/// Brazilian networks Elo and Hipercard (in scope by this module's own
+/// design: it already carries bare and formatted CPF/CNPJ). It is a
+/// *corroboration* tier, not an acquirer's validator: an exhaustive BIN
+/// registry is a licensed, continuously updated database, and a range missing
+/// here is not silently dropped from redaction — a bare PAN on an unlisted
+/// network still redacts whenever a card keyword appears within the keyword
+/// window (the third gate in `push_credit_cards`).
+///
+/// One dated caveat, so nobody inherits a stronger claim than the code makes:
+/// "timestamps can never corroborate" is prefix-and-length dependent, not
+/// absolute. 13-digit epoch-milliseconds stay out of every range until the
+/// year 2096 (`4…`, Visa's 13-digit arm); but 16-digit epoch-MICROsecond
+/// stamps enter Mir's `2200-2204` window in late 2039 and Mastercard's
+/// 2-series `2221-2720` from ~2040 to ~2056. If this code outlives that,
+/// those stamps redact at Luhn's ~10% again and this gate needs a rethink.
+pub(super) fn plausible_card_number(d: &[u32]) -> bool {
+    let len = d.len();
+    if !(13..=19).contains(&len) {
+        return false;
+    }
+    // len >= 13 makes the first four digits always present.
+    let p2 = d[0] * 10 + d[1];
+    let p3 = p2 * 10 + d[2];
+    let p4 = p3 * 10 + d[3];
+    match d[0] {
+        // Visa: 16 standard, 13 legacy, 19 extended. (Also where Elo's
+        // 4-prefixed ranges land, at the same 16.)
+        4 => matches!(len, 13 | 16 | 19),
+        5 => {
+            // Mastercard 51-55 (16 only).
+            ((51..=55).contains(&p2) && len == 16)
+                // Maestro 5018/5020/5038/5893 and 56-58. Maestro issues
+                // 12-19; the floor here is 13 because CC_RE requires 13
+                // digits, so the explicit bound below is the whole window
+                // this function can see — kept explicit so the "at an
+                // issued length" promise stays visibly true.
+                || ((matches!(p4, 5018 | 5020 | 5038 | 5893) || (56..=58).contains(&p2))
+                    && (13..=19).contains(&len))
+                // Elo 5041/5066/5067 (16), RuPay 508 (16).
+                || ((matches!(p4, 5041 | 5066 | 5067) || p3 == 508) && len == 16)
+        }
+        2 => {
+            // Mastercard 2-series 2221-2720 (16 only).
+            ((2221..=2720).contains(&p4) && len == 16)
+                // Mir 2200-2204 (16 only).
+                || ((2200..=2204).contains(&p4) && len == 16)
+        }
+        3 => {
+            // Amex 34/37 (15 only).
+            (matches!(p2, 34 | 37) && len == 15)
+                // JCB 3528-3589 (16-19).
+                || ((3528..=3589).contains(&p4) && (16..=19).contains(&len))
+                // Diners Club 36 / 300-305 / 3095 / 38-39, one scheme, one
+                // length rule: 14 (Diners International / Carte Blanche
+                // classic — 30569309025904, the canonical test PAN, is 14)
+                // through 19.
+                || ((p2 == 36
+                    || (300..=305).contains(&p3)
+                    || p4 == 3095
+                    || matches!(p2, 38 | 39))
+                    && (14..=19).contains(&len))
+        }
+        6 => {
+            // Discover 6011 / 644-649 / 65 (16 or 19).
+            ((p4 == 6011 || (644..=649).contains(&p3) || p2 == 65) && matches!(len, 16 | 19))
+                // UnionPay 62 (16-19), which also covers the
+                // Discover-processed 622126-622925 range.
+                || (p2 == 62 && (16..=19).contains(&len))
+                // Maestro 6304/6759/6761-6763, bounded as the 5-prefix
+                // Maestro arm above.
+                || (matches!(p4, 6304 | 6759 | 6761 | 6762 | 6763) && (13..=19).contains(&len))
+                // RuPay 60 (16) beyond the 65 range shared with Discover;
+                // Elo 6277/6362/6363 and Hipercard 6062 (16).
+                || ((p2 == 60 || matches!(p4, 6277 | 6362 | 6363 | 6062)) && len == 16)
+        }
+        // RuPay 81/82 (16).
+        8 => matches!(p2, 81 | 82) && len == 16,
+        _ => false,
+    }
+}
+
 // IBAN mod-97. Steps: strip spaces, move first 4 chars to end, expand letters
 // (A=10..Z=35), divide as a big-integer mod 97, require remainder == 1.
 pub(super) fn valid_iban(s: &str) -> bool {
