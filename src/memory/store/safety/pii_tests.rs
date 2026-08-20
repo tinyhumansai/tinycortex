@@ -139,6 +139,37 @@ fn credit_card_amex_redacted() {
 fn credit_card_invalid_luhn_kept() {
     unchanged("invoice 4111 1111 1111 1112");
 }
+#[test]
+fn credit_card_bare_visa_redacted_without_keyword() {
+    // A real network IIN (Visa `4`) at an issued length: bare runs with an
+    // issued card shape still redact with no keyword anywhere near.
+    redacts("4111111111111111", PII_CC);
+}
+#[test]
+fn credit_card_bare_amex_redacted_without_keyword() {
+    redacts("378282246310005", PII_CC);
+}
+#[test]
+fn credit_card_keyword_corroborates_a_bare_non_iin_run() {
+    // Luhn-valid, but `17` is no network's IIN — the keyword is what makes
+    // this a card mention rather than a machine identifier.
+    redacts("card 1787178633773", PII_CC);
+}
+#[test]
+fn bare_luhn_valid_timestamp_kept() {
+    // A 13-digit epoch-millisecond timestamp that happens to pass Luhn
+    // (~10% of them do). No IIN, no keyword: not a card.
+    unchanged("run 1787178633773 finished");
+}
+#[test]
+fn json_envelope_luhn_valid_timestamp_kept() {
+    // opencompany#1201: the exact corruption — a serialized record whose
+    // `at_millis` passed Luhn was redacted into unparseable JSON, and the
+    // read side then dropped the whole record as undecodable.
+    unchanged(
+        r#"{"v":1,"record":{"cycle_id":"c1","summary":"summary 1","at_millis":1787178633773}}"#,
+    );
+}
 
 // --- IBAN ---
 #[test]

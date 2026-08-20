@@ -79,6 +79,54 @@ pub(super) fn valid_luhn(s: &str) -> bool {
     sum.is_multiple_of(10)
 }
 
+/// True when a digit string has a plausible payment-card shape: a known
+/// major-network IIN prefix at a length that network actually issues.
+///
+/// The structural gate behind bare (separator-less) credit-card redaction.
+/// Luhn alone passes ~10% of arbitrary digit runs — the same raw
+/// false-positive rate that put bare Aadhaar behind a keyword — and 13-19
+/// contiguous digits is a common machine-identifier shape: 13-digit
+/// epoch-millisecond timestamps (`17…`/`18…` for decades either side of now)
+/// sit squarely in the window and were being redacted out of stored JSON at
+/// that rate (opencompany#1201). No card network issues from a `17`/`18`
+/// prefix, so requiring a real IIN removes that entire class while keeping
+/// every number a major network could actually have issued.
+///
+/// Deliberately conservative on both axes: majors only (Visa, Mastercard
+/// incl. the 2-series, Amex, Discover, JCB, Diners, UnionPay), each prefix
+/// only at its network's issued lengths.
+pub(super) fn plausible_card_number(d: &[u32]) -> bool {
+    let len = d.len();
+    if !(13..=19).contains(&len) {
+        return false;
+    }
+    // len >= 13 makes the first four digits always present.
+    let p2 = d[0] * 10 + d[1];
+    let p3 = p2 * 10 + d[2];
+    let p4 = p3 * 10 + d[3];
+    match d[0] {
+        // Visa; 13-digit cards are legacy but real.
+        4 => matches!(len, 13 | 16 | 19),
+        // Mastercard 51-55.
+        5 => (51..=55).contains(&p2) && len == 16,
+        // Mastercard 2-series.
+        2 => (2221..=2720).contains(&p4) && len == 16,
+        3 => {
+            // Amex 34/37, JCB 3528-3589, Diners 300-305/36/38.
+            (matches!(p2, 34 | 37) && len == 15)
+                || ((3528..=3589).contains(&p4) && (16..=19).contains(&len))
+                || (((300..=305).contains(&p3) || matches!(p2, 36 | 38))
+                    && (14..=19).contains(&len))
+        }
+        6 => {
+            // Discover 6011 / 644-649 / 65, UnionPay 62.
+            ((p4 == 6011 || (644..=649).contains(&p3) || p2 == 65) && matches!(len, 16 | 19))
+                || (p2 == 62 && (16..=19).contains(&len))
+        }
+        _ => false,
+    }
+}
+
 // IBAN mod-97. Steps: strip spaces, move first 4 chars to end, expand letters
 // (A=10..Z=35), divide as a big-integer mod 97, require remainder == 1.
 pub(super) fn valid_iban(s: &str) -> bool {

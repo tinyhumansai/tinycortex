@@ -99,9 +99,24 @@ static PHONE_NANP_RE: LazyLock<Regex> = LazyLock::new(|| {
 static SSN_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").expect("ssn"));
 
-// Credit card: 13-19 digits with optional spaces/dashes every 4. Luhn-gated.
+// Credit card: 13-19 digits with optional spaces/dashes every 4. Every match
+// is Luhn-gated; a match with no separators at all additionally needs
+// corroboration — a real network IIN at an issued length, or a card keyword
+// nearby — because Luhn alone passes ~10% of arbitrary digit runs, and bare
+// 13-digit epoch-millisecond timestamps were being redacted out of stored
+// JSON envelopes at exactly that rate (opencompany#1201). Same split as
+// Aadhaar below: formatted keeps the checksum-only gate, bare needs more.
 static CC_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b(?:\d[\s\-]?){13,19}\b").expect("credit card"));
+
+// Card keyword corroborating a bare digit run. Word-bounded, so `pan` (the
+// payment-industry term) cannot fire inside `japan` or `panel`.
+static CC_KEYWORD_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(?:card|credit|debit|visa|mastercard|amex|american\s?express|discover|jcb|diners|unionpay|cvv|cvc|pan)\b",
+    )
+    .expect("cc keyword")
+});
 
 // IBAN: 2 letter country code + 2 check digits + 11-30 alphanumeric.
 // Allow optional spaces every 4 chars (common human format).
@@ -283,7 +298,7 @@ fn collect_redactions_inner(norm: &str, cand: &Candidates, include_bare_numeric:
     if include_bare_numeric {
         // Credit card before bare CPF/CNPJ to avoid catching a 13-19 digit run as CPF/CNPJ.
         if cand.cc {
-            push_checksum(&mut hits, norm, &CC_RE, PII_CC, valid_luhn);
+            push_credit_cards(&mut hits, norm);
         }
         if cand.cnpj_bare {
             push_checksum(&mut hits, norm, &CNPJ_BARE_RE, PII_CNPJ, |s| {
@@ -405,6 +420,63 @@ fn push_captured(
             });
         }
     }
+}
+
+/// Credit-card collection. Every match must pass Luhn; a bare match (no
+/// separators) additionally needs structural or contextual corroboration.
+///
+/// Luhn alone passes ~10% of arbitrary digit runs, and 13-19 contiguous
+/// digits is a common machine-identifier shape — 13-digit epoch-millisecond
+/// timestamps above all, which were being redacted out of stored JSON
+/// envelopes at that rate and corrupting them (opencompany#1201). The strict
+/// boundary set ([`collect_strict_redactions`]) already excludes credit card
+/// for exactly this reason; this brings the content path to the same
+/// judgement without giving up real cards: a separated run keeps the
+/// Luhn-only gate it always had, and a bare run still redacts when its
+/// prefix is a real network IIN at an issued length
+/// ([`plausible_card_number`]) or a card keyword sits within
+/// [`CC_KEYWORD_WINDOW`] bytes.
+fn push_credit_cards(hits: &mut Vec<Hit>, norm: &str) {
+    for m in CC_RE.find_iter(norm) {
+        let s = m.as_str();
+        if !valid_luhn(s) {
+            continue;
+        }
+        // Judge bare-vs-separated on the interior of the digit run: the
+        // regex's per-digit `[\s\-]?` can capture one trailing separator
+        // (`"…773 "`), which is not the human 4-4-4-4 grouping this
+        // distinction is after.
+        let interior = s.trim_matches(|c: char| !c.is_ascii_digit());
+        let bare = interior.bytes().all(|b| b.is_ascii_digit());
+        let corroborated =
+            !bare || plausible_card_number(&digits(s)) || cc_keyword_near(norm, m.start(), m.end());
+        if corroborated {
+            hits.push(Hit {
+                start: m.start(),
+                end: m.end(),
+                token: PII_CC,
+            });
+        }
+    }
+}
+
+/// Bytes of context searched either side of a bare digit run for a card
+/// keyword. Wide enough for "credit card number is" plus punctuation.
+const CC_KEYWORD_WINDOW: usize = 32;
+
+/// True when [`CC_KEYWORD_RE`] matches within the window around
+/// `start..end`, widened outward to char boundaries so the slice cannot
+/// split a multi-byte character.
+fn cc_keyword_near(norm: &str, start: usize, end: usize) -> bool {
+    let mut lo = start.saturating_sub(CC_KEYWORD_WINDOW);
+    while lo > 0 && !norm.is_char_boundary(lo) {
+        lo -= 1;
+    }
+    let mut hi = (end + CC_KEYWORD_WINDOW).min(norm.len());
+    while hi < norm.len() && !norm.is_char_boundary(hi) {
+        hi += 1;
+    }
+    CC_KEYWORD_RE.is_match(&norm[lo..hi])
 }
 
 // Sort by start asc, length desc. Then walk in order, dropping any hit whose
