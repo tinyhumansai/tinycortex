@@ -122,11 +122,14 @@ static CC_RE: LazyLock<Regex> =
 //   `panNumber` all lowercase into these.
 // * Native-script terms, per this module's multilingual mandate (the Aadhaar
 //   and My Number patterns already carry theirs). CJK terms match as
-//   substrings — CJK text does not put `[\W_]` between a word and the
-//   digits that follow it.
+//   substrings because CJK sentences provide no `[\W_]` boundaries around a
+//   word — the case this buys is a keyword embedded mid-sentence
+//   (`…信用卡账单 <PAN>`). It does not buy `卡号<PAN>` with the digits
+//   directly attached: there `CC_RE`'s own leading `\b` already fails
+//   (CJK is `\w`), so the run is never a candidate in the first place.
 static CC_KEYWORD_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)(?:^|[\W_])(?:card|credit|debit|visa|mastercard|amex|american\s?express|discover|jcb|diners|unionpay|maestro|hipercard|elo|rupay|cvv|cvc|cc|pan|tarjeta|cart[aã]o|carte|karte|карта|карты|карту|картой|карте|кредитка)(?:[\W_]|$)|(?i:cardnumber|creditcard|ccnum|cardno|pannumber|カード|信用卡|卡号|银行卡|카드)",
+        r"(?i)(?:^|[\W_])(?:card|credit|debit|visa|mastercard|amex|american\s?express|discover|jcb|diners|unionpay|hipercard|rupay|cvv|cvc|cc|pan|tarjeta|cart[aã]o|carte|karte|карта|карты|карту|картой|карте|кредитка)(?:[\W_]|$)|(?i:cardnumber|creditcard|ccnum|cardno|pannumber|カード|信用卡|卡号|银行卡|카드)",
     )
     .expect("cc keyword")
 });
