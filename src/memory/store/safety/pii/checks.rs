@@ -92,9 +92,14 @@ pub(super) fn valid_luhn(s: &str) -> bool {
 /// prefix, so requiring a real IIN removes that entire class while keeping
 /// every number a major network could actually have issued.
 ///
-/// Deliberately conservative on both axes: majors only (Visa, Mastercard
-/// incl. the 2-series, Amex, Discover, JCB, Diners, UnionPay), each prefix
-/// only at its network's issued lengths.
+/// The table lists each supported network's published IIN ranges at the
+/// lengths that network issues: Visa, Mastercard (incl. the 2-series), Amex,
+/// Discover, JCB, Diners Club, UnionPay, Maestro, Mir, and RuPay. It is a
+/// *corroboration* tier, not an acquirer's validator: an exhaustive BIN
+/// registry is a licensed, continuously updated database, and a range missing
+/// here is not silently dropped from redaction — a bare PAN on an unlisted
+/// network still redacts whenever a card keyword appears within the keyword
+/// window (the third gate in `push_credit_cards`).
 pub(super) fn plausible_card_number(d: &[u32]) -> bool {
     let len = d.len();
     if !(13..=19).contains(&len) {
@@ -105,24 +110,45 @@ pub(super) fn plausible_card_number(d: &[u32]) -> bool {
     let p3 = p2 * 10 + d[2];
     let p4 = p3 * 10 + d[3];
     match d[0] {
-        // Visa; 13-digit cards are legacy but real.
+        // Visa: 16 standard, 13 legacy, 19 extended.
         4 => matches!(len, 13 | 16 | 19),
-        // Mastercard 51-55.
-        5 => (51..=55).contains(&p2) && len == 16,
-        // Mastercard 2-series.
-        2 => (2221..=2720).contains(&p4) && len == 16,
+        5 => {
+            // Mastercard 51-55 (16 only).
+            ((51..=55).contains(&p2) && len == 16)
+                // Maestro 5018/5020/5038/5893 (12-19 issued; 13 is this
+                // module's floor because CC_RE requires 13 digits).
+                || matches!(p4, 5018 | 5020 | 5038 | 5893)
+        }
+        2 => {
+            // Mastercard 2-series 2221-2720 (16 only).
+            ((2221..=2720).contains(&p4) && len == 16)
+                // Mir 2200-2204 (16 only).
+                || ((2200..=2204).contains(&p4) && len == 16)
+        }
         3 => {
-            // Amex 34/37, JCB 3528-3589, Diners 300-305/36/38.
+            // Amex 34/37 (15 only).
             (matches!(p2, 34 | 37) && len == 15)
+                // JCB 3528-3589 (16-19).
                 || ((3528..=3589).contains(&p4) && (16..=19).contains(&len))
-                || (((300..=305).contains(&p3) || matches!(p2, 36 | 38))
-                    && (14..=19).contains(&len))
+                // Diners Club: 36 at the classic 14 up to 19; 300-305, 3095,
+                // 38-39 at 16-19.
+                || (p2 == 36 && (14..=19).contains(&len))
+                || (((300..=305).contains(&p3) || p4 == 3095 || matches!(p2, 38 | 39))
+                    && (16..=19).contains(&len))
         }
         6 => {
-            // Discover 6011 / 644-649 / 65, UnionPay 62.
+            // Discover 6011 / 644-649 / 65 (16 or 19).
             ((p4 == 6011 || (644..=649).contains(&p3) || p2 == 65) && matches!(len, 16 | 19))
+                // UnionPay 62 (16-19), which also covers the
+                // Discover-processed 622126-622925 range.
                 || (p2 == 62 && (16..=19).contains(&len))
+                // Maestro 6304/6759/6761-6763 (13-19, floor as above).
+                || matches!(p4, 6304 | 6759 | 6761 | 6762 | 6763)
+                // RuPay 60 (16), beyond the 65 range shared with Discover.
+                || (p2 == 60 && len == 16)
         }
+        // RuPay 81/82 (16).
+        8 => matches!(p2, 81 | 82) && len == 16,
         _ => false,
     }
 }

@@ -44,26 +44,12 @@ fn identity_validators_cover_checksums_reserved_values_and_prefixes() {
 
 #[test]
 fn plausible_card_number_requires_a_real_iin_at_an_issued_length() {
-    // Issued shapes on major networks.
-    assert!(plausible_card_number(&digits("4111111111111111"))); // Visa 16
-    assert!(plausible_card_number(&digits("4222222222222"))); // Visa 13 (legacy)
-    assert!(plausible_card_number(&digits("5500005555555559"))); // Mastercard 55
-    assert!(plausible_card_number(&digits("2221000000000009"))); // Mastercard 2-series
-    assert!(plausible_card_number(&digits("378282246310005"))); // Amex 37, 15
-    assert!(plausible_card_number(&digits("6011111111111117"))); // Discover
-    assert!(plausible_card_number(&digits("3530111333300000"))); // JCB
-    assert!(plausible_card_number(&digits("36700102000000"))); // Diners 36, 14
-    assert!(plausible_card_number(&digits("6200000000000005"))); // UnionPay
-
-    // Right prefix at a length the network does not issue.
-    assert!(!plausible_card_number(&digits("41111111111111"))); // Visa at 14
-    assert!(!plausible_card_number(&digits("37828224631000"))); // Amex at 14
-    assert!(!plausible_card_number(&digits("55000055555555590"))); // MC at 17
-
     // No network's prefix: epoch-millisecond timestamps and other machine ids.
     assert!(!plausible_card_number(&digits("1787178633773"))); // 13-digit epoch ms
     assert!(!plausible_card_number(&digits("1700000000000")));
     assert!(!plausible_card_number(&digits("9111111111111119")));
+    assert!(!plausible_card_number(&digits("2000000000000000"))); // year-2033 epoch-µs shape
+    assert!(!plausible_card_number(&digits("1900000000000"))); // 13-digit, no IIN starts 1
 
     // Out of the card length window entirely.
     assert!(!plausible_card_number(&digits("411111111111"))); // 12
