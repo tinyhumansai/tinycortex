@@ -109,11 +109,24 @@ static SSN_RE: LazyLock<Regex> =
 static CC_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b(?:\d[\s\-]?){13,19}\b").expect("credit card"));
 
-// Card keyword corroborating a bare digit run. Word-bounded, so `pan` (the
-// payment-industry term) cannot fire inside `japan` or `panel`.
+// Card keyword corroborating a bare digit run. Three tiers, matched
+// case-insensitively:
+//
+// * Standalone words, bounded by `[\W_]` rather than `\b` — the regex crate
+//   counts `_` as a word character, so `\bcard\b` never fires inside
+//   `card_number`, which is among the most common serialized key shapes a
+//   stored payload carries. The explicit class keeps `pan` from firing
+//   inside `japan` while still matching `card_number=` and `cc=`.
+// * Compound identifiers matched as substrings, because camelCase provides
+//   no boundary of any kind: `cardNumber`, `creditCard`, `ccNum`, `cardNo`,
+//   `panNumber` all lowercase into these.
+// * Native-script terms, per this module's multilingual mandate (the Aadhaar
+//   and My Number patterns already carry theirs). CJK terms match as
+//   substrings — CJK text does not put `[\W_]` between a word and the
+//   digits that follow it.
 static CC_KEYWORD_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)\b(?:card|credit|debit|visa|mastercard|amex|american\s?express|discover|jcb|diners|unionpay|cvv|cvc|pan)\b",
+        r"(?i)(?:^|[\W_])(?:card|credit|debit|visa|mastercard|amex|american\s?express|discover|jcb|diners|unionpay|maestro|hipercard|elo|rupay|cvv|cvc|cc|pan|tarjeta|cart[aã]o|carte|karte|карта|карты|карту|картой|карте|кредитка)(?:[\W_]|$)|(?i:cardnumber|creditcard|ccnum|cardno|pannumber|カード|信用卡|卡号|银行卡|카드)",
     )
     .expect("cc keyword")
 });
@@ -218,8 +231,12 @@ pub fn redact_pii(text: &str) -> Sanitized<String> {
 /// JIDs like `12025551234-1543890267@g.us`, telegram numeric peer IDs,
 /// millisecond timestamps, padded counters) is too high to use as a hard
 /// rejection signal. Content scrubbing via [`redact_pii`] still applies
-/// those patterns — false positives are tolerable there because they only
-/// replace bytes inside a string, not reject the whole write.
+/// those patterns — a content false positive replaces bytes inside a string
+/// rather than rejecting the whole write, which is cheaper but *not* free:
+/// a redaction landing inside structured content corrupts it for whatever
+/// wrote it (opencompany#1201 — timestamps in stored JSON envelopes), which
+/// is why the credit-card pattern's bare form now demands corroboration
+/// beyond its checksum.
 pub fn has_likely_pii(value: &str) -> bool {
     let nview = NormalizedView::build(value);
     let cand = scan_candidates(&nview.normalized);
@@ -461,8 +478,12 @@ fn push_credit_cards(hits: &mut Vec<Hit>, norm: &str) {
 }
 
 /// Bytes of context searched either side of a bare digit run for a card
-/// keyword. Wide enough for "credit card number is" plus punctuation.
-const CC_KEYWORD_WINDOW: usize = 32;
+/// keyword. 64 bytes rather than 32 because the window is counted in bytes
+/// while text is not: 32 bytes is only ~10 CJK characters or 8 emoji, so a
+/// run of either could evict an English keyword that a reader would call
+/// adjacent. 64 comfortably spans `{"payment_method":{"card":{"number":…`
+/// and a `カード`-prefixed line alike.
+const CC_KEYWORD_WINDOW: usize = 64;
 
 /// True when [`CC_KEYWORD_RE`] matches within the window around
 /// `start..end`, widened outward to char boundaries so the slice cannot

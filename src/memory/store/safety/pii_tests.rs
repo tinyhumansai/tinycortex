@@ -162,6 +162,74 @@ fn bare_luhn_valid_timestamp_kept() {
     unchanged("run 1787178633773 finished");
 }
 #[test]
+fn credit_card_keyword_matches_serialized_key_shapes() {
+    // The keyword net is what the IIN table's incompleteness leans on, so it
+    // has to fire for the key shapes serialized payloads actually use. The
+    // digit run is Luhn-valid with no network's IIN (`17…`), so only the
+    // keyword tier can be doing the work in each of these.
+    for text in [
+        r#"{"card_number":"1787178633773"}"#,
+        r#"{"cardNumber":"1787178633773"}"#,
+        r#"{"credit_card":"1787178633773"}"#,
+        r#"{"creditCard":"1787178633773"}"#,
+        r#"{"ccNumber":"1787178633773"}"#,
+        r#"{"card_no":"1787178633773"}"#,
+        "CARD_NUMBER=1787178633773",
+        "cc=1787178633773",
+    ] {
+        let out = redact_pii(text);
+        assert!(
+            out.value.contains(PII_CC),
+            "expected the keyword tier to corroborate: {text:?} -> {out:?}"
+        );
+    }
+}
+
+#[test]
+fn credit_card_keyword_speaks_more_than_english() {
+    // Multilingual mandate: native card words corroborate too, and the
+    // window is wide enough that non-ASCII text does not evict them.
+    for text in [
+        "カード 1787178633773",
+        "信用卡 1787178633773",
+        "카드 1787178633773",
+        "карта 1787178633773",
+        "tarjeta 1787178633773",
+        "cartão 1787178633773",
+        "card 😀😀😀😀😀😀😀😀 1787178633773",
+    ] {
+        let out = redact_pii(text);
+        assert!(
+            out.value.contains(PII_CC),
+            "expected corroboration: {text:?} -> {out:?}"
+        );
+    }
+}
+
+#[test]
+fn credit_card_keyword_still_respects_word_boundaries() {
+    // `pan` must not fire inside an unrelated word: Luhn-valid non-IIN run
+    // next to `japan` stays untouched.
+    unchanged("japan 1787178633773 spans");
+}
+
+#[test]
+fn bare_brazilian_network_pans_redact_without_keyword() {
+    // Elo and Hipercard are in the IIN table (the module targets Brazilian
+    // PII by design — it carries CPF/CNPJ), so their bare PANs corroborate
+    // structurally, keyword or not.
+    redacts("5067310000000010", PII_CC);
+    redacts("6062821234567890", PII_CC);
+}
+
+#[test]
+fn bare_diners_14_digit_pan_redacts() {
+    // Regression for the review finding: the canonical 14-digit Diners test
+    // PAN redacted before the corroboration gate and must keep redacting.
+    redacts("30569309025904", PII_CC);
+}
+
+#[test]
 fn json_envelope_luhn_valid_timestamp_kept() {
     // opencompany#1201: the exact corruption — a serialized record whose
     // `at_millis` passed Luhn was redacted into unparseable JSON, and the
