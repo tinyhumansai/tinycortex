@@ -99,9 +99,40 @@ static PHONE_NANP_RE: LazyLock<Regex> = LazyLock::new(|| {
 static SSN_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").expect("ssn"));
 
-// Credit card: 13-19 digits with optional spaces/dashes every 4. Luhn-gated.
+// Credit card: 13-19 digits with optional spaces/dashes every 4. Every match
+// is Luhn-gated; a match with no separators at all additionally needs
+// corroboration — a real network IIN at an issued length, or a card keyword
+// nearby — because Luhn alone passes ~10% of arbitrary digit runs, and bare
+// 13-digit epoch-millisecond timestamps were being redacted out of stored
+// JSON envelopes at exactly that rate (opencompany#1201). Same split as
+// Aadhaar below: formatted keeps the checksum-only gate, bare needs more.
 static CC_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b(?:\d[\s\-]?){13,19}\b").expect("credit card"));
+
+// Card keyword corroborating a bare digit run. Three tiers, matched
+// case-insensitively:
+//
+// * Standalone words, bounded by `[\W_]` rather than `\b` — the regex crate
+//   counts `_` as a word character, so `\bcard\b` never fires inside
+//   `card_number`, which is among the most common serialized key shapes a
+//   stored payload carries. The explicit class keeps `pan` from firing
+//   inside `japan` while still matching `card_number=` and `cc=`.
+// * Compound identifiers matched as substrings, because camelCase provides
+//   no boundary of any kind: `cardNumber`, `creditCard`, `ccNum`, `cardNo`,
+//   `panNumber` all lowercase into these.
+// * Native-script terms, per this module's multilingual mandate (the Aadhaar
+//   and My Number patterns already carry theirs). CJK terms match as
+//   substrings because CJK sentences provide no `[\W_]` boundaries around a
+//   word — the case this buys is a keyword embedded mid-sentence
+//   (`…信用卡账单 <PAN>`). It does not buy `卡号<PAN>` with the digits
+//   directly attached: there `CC_RE`'s own leading `\b` already fails
+//   (CJK is `\w`), so the run is never a candidate in the first place.
+static CC_KEYWORD_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(?:^|[\W_])(?:card|credit|debit|visa|mastercard|amex|american\s?express|discover|jcb|diners|unionpay|hipercard|rupay|cvv|cvc|cc|pan|tarjeta|cart[aã]o|carte|karte|карта|карты|карту|картой|карте|кредитка)(?:[\W_]|$)|(?i:cardnumber|creditcard|ccnum|cardno|pannumber|カード|信用卡|卡号|银行卡|카드)",
+    )
+    .expect("cc keyword")
+});
 
 // IBAN: 2 letter country code + 2 check digits + 11-30 alphanumeric.
 // Allow optional spaces every 4 chars (common human format).
@@ -203,8 +234,12 @@ pub fn redact_pii(text: &str) -> Sanitized<String> {
 /// JIDs like `12025551234-1543890267@g.us`, telegram numeric peer IDs,
 /// millisecond timestamps, padded counters) is too high to use as a hard
 /// rejection signal. Content scrubbing via [`redact_pii`] still applies
-/// those patterns — false positives are tolerable there because they only
-/// replace bytes inside a string, not reject the whole write.
+/// those patterns — a content false positive replaces bytes inside a string
+/// rather than rejecting the whole write, which is cheaper but *not* free:
+/// a redaction landing inside structured content corrupts it for whatever
+/// wrote it (opencompany#1201 — timestamps in stored JSON envelopes), which
+/// is why the credit-card pattern's bare form now demands corroboration
+/// beyond its checksum.
 pub fn has_likely_pii(value: &str) -> bool {
     let nview = NormalizedView::build(value);
     let cand = scan_candidates(&nview.normalized);
@@ -283,7 +318,7 @@ fn collect_redactions_inner(norm: &str, cand: &Candidates, include_bare_numeric:
     if include_bare_numeric {
         // Credit card before bare CPF/CNPJ to avoid catching a 13-19 digit run as CPF/CNPJ.
         if cand.cc {
-            push_checksum(&mut hits, norm, &CC_RE, PII_CC, valid_luhn);
+            push_credit_cards(&mut hits, norm);
         }
         if cand.cnpj_bare {
             push_checksum(&mut hits, norm, &CNPJ_BARE_RE, PII_CNPJ, |s| {
@@ -405,6 +440,67 @@ fn push_captured(
             });
         }
     }
+}
+
+/// Credit-card collection. Every match must pass Luhn; a bare match (no
+/// separators) additionally needs structural or contextual corroboration.
+///
+/// Luhn alone passes ~10% of arbitrary digit runs, and 13-19 contiguous
+/// digits is a common machine-identifier shape — 13-digit epoch-millisecond
+/// timestamps above all, which were being redacted out of stored JSON
+/// envelopes at that rate and corrupting them (opencompany#1201). The strict
+/// boundary set ([`collect_strict_redactions`]) already excludes credit card
+/// for exactly this reason; this brings the content path to the same
+/// judgement without giving up real cards: a separated run keeps the
+/// Luhn-only gate it always had, and a bare run still redacts when its
+/// prefix is a real network IIN at an issued length
+/// ([`plausible_card_number`]) or a card keyword sits within
+/// [`CC_KEYWORD_WINDOW`] bytes.
+fn push_credit_cards(hits: &mut Vec<Hit>, norm: &str) {
+    for m in CC_RE.find_iter(norm) {
+        let s = m.as_str();
+        if !valid_luhn(s) {
+            continue;
+        }
+        // Judge bare-vs-separated on the interior of the digit run: the
+        // regex's per-digit `[\s\-]?` can capture one trailing separator
+        // (`"…773 "`), which is not the human 4-4-4-4 grouping this
+        // distinction is after.
+        let interior = s.trim_matches(|c: char| !c.is_ascii_digit());
+        let bare = interior.bytes().all(|b| b.is_ascii_digit());
+        let corroborated =
+            !bare || plausible_card_number(&digits(s)) || cc_keyword_near(norm, m.start(), m.end());
+        if corroborated {
+            hits.push(Hit {
+                start: m.start(),
+                end: m.end(),
+                token: PII_CC,
+            });
+        }
+    }
+}
+
+/// Bytes of context searched either side of a bare digit run for a card
+/// keyword. 64 bytes rather than 32 because the window is counted in bytes
+/// while text is not: 32 bytes is only ~10 CJK characters or 8 emoji, so a
+/// run of either could evict an English keyword that a reader would call
+/// adjacent. 64 comfortably spans `{"payment_method":{"card":{"number":…`
+/// and a `カード`-prefixed line alike.
+const CC_KEYWORD_WINDOW: usize = 64;
+
+/// True when [`CC_KEYWORD_RE`] matches within the window around
+/// `start..end`, widened outward to char boundaries so the slice cannot
+/// split a multi-byte character.
+fn cc_keyword_near(norm: &str, start: usize, end: usize) -> bool {
+    let mut lo = start.saturating_sub(CC_KEYWORD_WINDOW);
+    while lo > 0 && !norm.is_char_boundary(lo) {
+        lo -= 1;
+    }
+    let mut hi = (end + CC_KEYWORD_WINDOW).min(norm.len());
+    while hi < norm.len() && !norm.is_char_boundary(hi) {
+        hi += 1;
+    }
+    CC_KEYWORD_RE.is_match(&norm[lo..hi])
 }
 
 // Sort by start asc, length desc. Then walk in order, dropping any hit whose

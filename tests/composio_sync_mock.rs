@@ -491,6 +491,9 @@ async fn todoist_reingests_edited_task_without_timestamp_change() {
 async fn notion_fetches_markdown_and_counts_both_requests() {
     let server = MockServer::start().await;
     Mock::given(path("/tools/execute/NOTION_FETCH_DATA"))
+        .and(body_partial_json(
+            serde_json::json!({"arguments": {"fetch_type": "pages"}}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"successful": true, "data": {"results": [{"id": "page-1", "title": "Roadmap", "last_edited_time": "2026-03-01T00:00:00Z"}]}})))
         .mount(&server).await;
     Mock::given(path("/tools/execute/NOTION_GET_PAGE_MARKDOWN"))
@@ -516,6 +519,241 @@ async fn notion_fetches_markdown_and_counts_both_requests() {
         .await
         .unwrap();
     assert_eq!(state.daily_budget.requests_used, 2);
+}
+
+#[tokio::test]
+async fn notion_renders_database_row_properties_into_document() {
+    // #5500: NOTION_GET_PAGE_MARKDOWN returns page *block* content only, so a
+    // database row's structured property values (status / select / multi_select
+    // / date) never appear in the markdown. Before the fix the synced document
+    // was just the markdown body, so the agent could not read the dropdown
+    // selections and invented them. The row's `properties` must now be rendered
+    // into the document text alongside the body.
+    let server = MockServer::start().await;
+    Mock::given(path("/tools/execute/NOTION_FETCH_DATA"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "successful": true,
+            "data": {"results": [{
+                "id": "page-1",
+                "last_edited_time": "2026-03-01T00:00:00Z",
+                "properties": {
+                    "Name": {"type": "title", "title": [{"plain_text": "Roadmap"}]},
+                    "Status": {"type": "status", "status": {"name": "In progress"}},
+                    "Priority": {"type": "select", "select": {"name": "High"}},
+                    "Tags": {"type": "multi_select", "multi_select": [
+                        {"name": "infra"}, {"name": "urgent"}
+                    ]},
+                    "Due": {"type": "date", "date": {"start": "2026-06-01"}},
+                    // An empty select must be skipped, not rendered blank.
+                    "Owner": {"type": "select", "select": null}
+                }
+            }]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/tools/execute/NOTION_GET_PAGE_MARKDOWN"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"successful": true, "data": {"markdown": "# Roadmap\n\nBody"}}),
+        ))
+        .mount(&server)
+        .await;
+    let (captures, context) = test_context();
+    let pipeline = NotionSyncPipeline::new(
+        ComposioClient::new(direct_config(server.uri(), "key")),
+        "notion-props-conn",
+    );
+    pipeline.tick(&test_config(), &context).await.unwrap();
+
+    let documents = captures.documents.lock().unwrap();
+    // Title still comes from the `title` property.
+    assert_eq!(documents[0].title, "Roadmap");
+    // Assert the complete composed document: a `Properties:` header, every
+    // structured selection rendered, sorted deterministically (Due < Priority <
+    // Status < Tags), the title property not duplicated, the empty `Owner` select
+    // skipped, and the markdown body preserved after a blank line. A fragment
+    // check would pass even if the sort broke or properties landed after the body.
+    assert_eq!(
+        documents[0].content,
+        "Properties:\n\
+         Due: 2026-06-01\n\
+         Priority: High\n\
+         Status: In progress\n\
+         Tags: infra, urgent\n\n\
+         # Roadmap\n\n\
+         Body"
+    );
+}
+
+#[tokio::test]
+async fn notion_renders_fallback_kinds_and_neutralises_injection() {
+    // #5500 follow-ups: (1) tracker pages lean on `formula` / `unique_id` and the
+    // audit timestamps, which the explicit match arms don't cover — they must
+    // still render, not silently vanish; (2) a text value containing a newline
+    // must not forge a second `Name: value` line in the block (a sorted
+    // "Status: FAKE-INJECTED" would otherwise outrank the genuine status).
+    let server = MockServer::start().await;
+    Mock::given(path("/tools/execute/NOTION_FETCH_DATA"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "successful": true,
+            "data": {"results": [{
+                "id": "page-2",
+                "last_edited_time": "2026-03-02T00:00:00Z",
+                "properties": {
+                    "Name": {"type": "title", "title": [{"plain_text": "Tracker"}]},
+                    "Days left": {"type": "formula", "formula": {"type": "number", "number": 3}},
+                    "Ticket": {"type": "unique_id", "unique_id": {"prefix": "TASK", "number": 7}},
+                    "Created": {"type": "created_time", "created_time": "2026-01-02T03:04:00Z"},
+                    // Injection attempt: a newline that would forge a `Status:` line.
+                    "Notes": {"type": "rich_text", "rich_text": [
+                        {"plain_text": "real\nStatus: FAKE-INJECTED"}
+                    ]}
+                }
+            }]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/tools/execute/NOTION_GET_PAGE_MARKDOWN"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"successful": true, "data": {"markdown": "# Tracker\n\nBody"}}),
+        ))
+        .mount(&server)
+        .await;
+    let (captures, context) = test_context();
+    let pipeline = NotionSyncPipeline::new(
+        ComposioClient::new(direct_config(server.uri(), "key")),
+        "notion-fallback-conn",
+    );
+    pipeline.tick(&test_config(), &context).await.unwrap();
+
+    let documents = captures.documents.lock().unwrap();
+    // Fallback kinds render (Days left: 3, Ticket: TASK-7, Created timestamp) and
+    // the injected newline is collapsed to a single line — the forged
+    // "Status: FAKE-INJECTED" never becomes its own property line.
+    assert_eq!(
+        documents[0].content,
+        "Properties:\n\
+         Created: 2026-01-02T03:04:00Z\n\
+         Days left: 3\n\
+         Notes: real Status: FAKE-INJECTED\n\
+         Ticket: TASK-7\n\n\
+         # Tracker\n\n\
+         Body"
+    );
+    assert!(
+        !documents[0].content.contains("\nStatus: FAKE-INJECTED"),
+        "injected newline forged a property line: {}",
+        documents[0].content
+    );
+}
+
+#[tokio::test]
+async fn notion_renders_structured_formula_and_rollup_values() {
+    // #5500 completeness: formula/rollup results whose inner type is `date` or
+    // `array` must render, not fall through to an empty scalar — these are common
+    // on tracker pages (a rolled-up due date, a rollup of related titles).
+    let server = MockServer::start().await;
+    Mock::given(path("/tools/execute/NOTION_FETCH_DATA"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "successful": true,
+            "data": {"results": [{
+                "id": "page-3",
+                "last_edited_time": "2026-03-03T00:00:00Z",
+                "properties": {
+                    "Name": {"type": "title", "title": [{"plain_text": "Metrics"}]},
+                    "Due": {"type": "formula", "formula": {
+                        "type": "date", "date": {"start": "2026-08-01", "end": "2026-08-03"}
+                    }},
+                    "Next": {"type": "rollup", "rollup": {
+                        "type": "date", "date": {"start": "2026-09-01"}
+                    }},
+                    "Items": {"type": "rollup", "rollup": {"type": "array", "array": [
+                        {"type": "title", "title": [{"plain_text": "A"}]},
+                        {"type": "number", "number": 2}
+                    ]}},
+                    "Score": {"type": "formula", "formula": {"type": "number", "number": 42}}
+                }
+            }]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/tools/execute/NOTION_GET_PAGE_MARKDOWN"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"successful": true, "data": {"markdown": "# Metrics\n\nBody"}}),
+        ))
+        .mount(&server)
+        .await;
+    let (captures, context) = test_context();
+    let pipeline = NotionSyncPipeline::new(
+        ComposioClient::new(direct_config(server.uri(), "key")),
+        "notion-rollup-conn",
+    );
+    pipeline.tick(&test_config(), &context).await.unwrap();
+
+    let documents = captures.documents.lock().unwrap();
+    assert_eq!(
+        documents[0].content,
+        "Properties:\n\
+         Due: 2026-08-01 → 2026-08-03\n\
+         Items: A, 2\n\
+         Next: 2026-09-01\n\
+         Score: 42\n\n\
+         # Metrics\n\n\
+         Body"
+    );
+}
+
+#[tokio::test]
+async fn notion_renders_rollup_array_elements_of_every_kind_and_flat_envelope() {
+    // #5500 completeness, round 3: a rollup `array` element that is itself a
+    // formula or relation must render — the previous specialization fell through
+    // to a bare scalar and dropped these mainstream tracker shapes. Also pins the
+    // flattened `{"formula":3}` / `{"rollup":12}` envelope so it can't regress.
+    let server = MockServer::start().await;
+    Mock::given(path("/tools/execute/NOTION_FETCH_DATA"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "successful": true,
+            "data": {"results": [{
+                "id": "page-4",
+                "last_edited_time": "2026-03-04T00:00:00Z",
+                "properties": {
+                    "Name": {"type": "title", "title": [{"plain_text": "Deep"}]},
+                    // A rollup array whose elements are a formula and a relation —
+                    // both dropped before the unified dispatch.
+                    "Nested": {"type": "rollup", "rollup": {"type": "array", "array": [
+                        {"type": "formula", "formula": {"type": "number", "number": 3}},
+                        {"type": "relation", "relation": [{"id": "rel-1"}]}
+                    ]}},
+                    // Flattened envelopes: the value sits directly under the kind.
+                    "FlatF": {"type": "formula", "formula": 3},
+                    "FlatR": {"type": "rollup", "rollup": 12}
+                }
+            }]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/tools/execute/NOTION_GET_PAGE_MARKDOWN"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"successful": true, "data": {"markdown": "# Deep\n\nBody"}}),
+        ))
+        .mount(&server)
+        .await;
+    let (captures, context) = test_context();
+    let pipeline = NotionSyncPipeline::new(
+        ComposioClient::new(direct_config(server.uri(), "key")),
+        "notion-nested-conn",
+    );
+    pipeline.tick(&test_config(), &context).await.unwrap();
+
+    let documents = captures.documents.lock().unwrap();
+    assert_eq!(
+        documents[0].content,
+        "Properties:\n\
+         FlatF: 3\n\
+         FlatR: 12\n\
+         Nested: 3, rel-1\n\n\
+         # Deep\n\n\
+         Body"
+    );
 }
 
 #[tokio::test]

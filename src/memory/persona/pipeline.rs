@@ -16,12 +16,12 @@ use serde::Serialize;
 
 use super::compile::{write_pack, PackInputs};
 use super::config::PersonaConfig;
-use super::distill::digest_session;
+use super::distill::{digest_session, is_budget_exhausted, CallBudget, SessionOutcome};
 use super::readers::{claude_code, codex, instruction, RawSession};
 use super::reduce::{fold_digest, fold_directives, seal_and_collect, FacetAsks, ReduceState};
 use super::state::PersonaStateStore;
 use super::state::{self, file_key, file_unchanged, record_file};
-use super::types::{PersonaFacet, SessionDigest};
+use super::types::PersonaFacet;
 use crate::memory::config::MemoryConfig;
 use crate::memory::score::extract::ChatProvider;
 use crate::memory::tree::Summariser;
@@ -62,45 +62,76 @@ pub struct RunReport {
     pub evidence_units: usize,
     /// Digest calls that produced at least one observation.
     pub digests: usize,
-    /// Sessions whose digest hit a hard provider failure (cursor NOT committed;
-    /// retried next run).
+    /// Sessions whose digest hit a hard **provider** failure — transport or auth
+    /// (cursor NOT committed; the whole session is retried next run). A spent call
+    /// budget is a clean checkpoint reported in [`Self::budget_hit`], not here, and
+    /// truncated/unparseable windows are recovered or counted in
+    /// [`Self::windows_lost`], not here.
     pub sessions_failed: usize,
+    /// Recovery leaf sub-windows dropped because their digest stayed unparseable
+    /// even after truncation-recovery re-splitting (one truncated 12k window can
+    /// contribute several, so this counts sub-windows, not top-level windows). A
+    /// session's cursor is committed on this path only when the run produced
+    /// observations elsewhere (near-deterministic at temperature 0.0); a run that
+    /// lost windows and yielded nothing withholds instead — see
+    /// [`Self::systemic_digest_failure`]. Surfaced so the drop is never silent.
+    pub windows_lost: usize,
     /// Observations distilled.
     pub observations: usize,
     /// Per-facet observation counts (facet wire-string → count).
     pub facet_counts: BTreeMap<String, usize>,
     /// True when a run budget stopped the run early (checkpointed).
     pub budget_hit: bool,
+    /// True when every digested session yielded zero observations *and* at least
+    /// one window was lost — the signature of a systemic provider failure (a
+    /// wrong/non-instruct model, refusal mode, a proxy returning prose). The
+    /// fully-lost sessions' cursors are then **withheld** so the backlog is
+    /// retried once the cause is fixed, rather than silently committed and skipped.
+    pub systemic_digest_failure: bool,
     /// Path of the compiled pack, if written.
     pub pack_path: Option<String>,
 }
 
-/// A run's budget accounting.
+/// A run's session-count budget. The provider-call ceiling (`max_llm_calls`) is
+/// enforced separately and precisely by [`CallBudget`] — per actual call, so
+/// multi-window sessions and truncation-recovery re-tries all count — rather than
+/// estimated here at one call per session.
 struct Budget {
     max_sessions: usize,
-    max_calls: usize,
     sessions: usize,
-    calls: usize,
 }
 
 impl Budget {
     fn from(cfg: &PersonaConfig) -> Self {
         Self {
             max_sessions: cfg.run_budget.max_sessions,
-            max_calls: cfg.run_budget.max_llm_calls as usize,
             sessions: 0,
-            calls: 0,
         }
     }
-    /// True if another digest would exceed the budget (stop cleanly).
+    /// True once the run has digested its full session allowance (stop cleanly).
     fn exhausted(&self) -> bool {
-        self.sessions >= self.max_sessions || self.calls >= self.max_calls
+        self.sessions >= self.max_sessions
     }
     fn charge(&mut self) {
         self.sessions += 1;
-        self.calls += 1;
     }
 }
+
+/// Digest-loop guards threaded through the ingest sources: the shared
+/// provider-call ceiling and the deferred cursor commits awaiting the run-level
+/// systemic-failure check in [`Pipeline::run`].
+struct DigestGuards {
+    call_budget: CallBudget,
+    /// Commits for fully-lost sessions (zero observations, ≥1 window dropped),
+    /// applied or withheld once the whole run's outcome is known.
+    deferred: Vec<(String, serde_json::Value)>,
+}
+
+/// Git-history ingestion (`ingest_git`), feature-gated and split into a sibling
+/// module to keep this file within the repo's size norm.
+#[cfg(feature = "git-diff")]
+#[path = "pipeline_git.rs"]
+mod pipeline_git;
 
 /// The pipeline binds the workspace, config, provider, summariser, and state
 /// store; `run` executes one pass.
@@ -123,6 +154,13 @@ impl Pipeline<'_> {
         let asks = self.persona.asks();
         let mut state = ReduceState::default();
         let mut budget = Budget::from(self.persona);
+        // Shared provider-call ceiling (so transcripts and git history draw from
+        // the same `max_llm_calls`) plus the deferred fully-lost cursor commits,
+        // resolved after all sources run.
+        let mut guards = DigestGuards {
+            call_budget: CallBudget::new(self.persona.run_budget.max_llm_calls as usize),
+            deferred: Vec::new(),
+        };
         let mut report = RunReport {
             mode: mode.as_str().to_string(),
             ..Default::default()
@@ -135,15 +173,67 @@ impl Pipeline<'_> {
         self.ingest_instructions(&mut state, &mut report).await?;
 
         // 2. Transcripts (Claude Code + Codex) — the digest map step.
-        self.ingest_transcripts(mode, &asks, &mut state, &mut budget, &mut report)
-            .await?;
+        self.ingest_transcripts(
+            mode,
+            &asks,
+            &mut state,
+            &mut budget,
+            &mut guards,
+            &mut report,
+        )
+        .await?;
 
         // 3. Git history (feature-gated).
         #[cfg(feature = "git-diff")]
-        self.ingest_git(mode, &asks, &mut state, &mut budget, &mut report)
-            .await?;
+        self.ingest_git(
+            mode,
+            &asks,
+            &mut state,
+            &mut budget,
+            &mut guards,
+            &mut report,
+        )
+        .await?;
 
-        report.budget_hit = budget.exhausted();
+        // Resolve the deferred (zero-observation, ≥1-window-lost) cursor commits.
+        // If the run produced observations anywhere, those sessions are localized
+        // permanent failures — commit them so the queue advances (no starvation).
+        // If the run yielded *nothing* despite dropping windows, treat it as a
+        // systemic provider failure: withhold every deferred commit so the backlog
+        // is retried once the cause is fixed, and flag it loudly.
+        if !guards.deferred.is_empty() {
+            if report.observations > 0 {
+                for (key, value) in &guards.deferred {
+                    // A single failed cursor write must not discard the whole run's
+                    // reduce output (the pack, written below): a cursor is a
+                    // fast-skip, not a correctness gate, so the session simply
+                    // re-digests next run. Log and carry on rather than `?`-abort.
+                    if let Err(e) = self.store.set(state::NAMESPACE, key, value).await {
+                        log::warn!(
+                            "[persona] deferred cursor commit failed for {key}; \
+                             it will be re-digested next run: {e:#}"
+                        );
+                    }
+                }
+            } else {
+                report.systemic_digest_failure = true;
+                log::error!(
+                    "[persona] {} session(s) digested to zero observations with {} window(s) \
+                     lost and no observations anywhere this run — likely a systemic provider \
+                     failure (wrong/non-instruct model, refusal, or a proxy returning prose). \
+                     Withholding {} cursor commit(s) so the backlog is retried, not skipped.",
+                    guards.deferred.len(),
+                    report.windows_lost,
+                    guards.deferred.len(),
+                );
+            }
+        }
+
+        // `budget_hit` is recorded precisely where a ceiling actually stops work:
+        // the selection loop when it drops a pending session, and the call-budget
+        // checkpoint on `BudgetExhausted`. It is deliberately NOT re-derived from
+        // `budget.exhausted()` here — that is true whenever the run merely filled
+        // its session allowance exactly, which drops nothing and is not a hit.
 
         // 4. Seal facet trees + compile the pack.
         let bodies = seal_and_collect(self.config, &asks, self.summariser).await?;
@@ -239,6 +329,7 @@ impl Pipeline<'_> {
         asks: &FacetAsks,
         state: &mut ReduceState,
         budget: &mut Budget,
+        guards: &mut DigestGuards,
         report: &mut RunReport,
     ) -> Result<()> {
         let mut files: Vec<(PathBuf, &'static str)> = Vec::new();
@@ -281,25 +372,28 @@ impl Pipeline<'_> {
                 .map(|v| (key, v));
             pending.push(Pending { session, commit });
         }
-        self.digest_and_fold(pending, asks, state, budget, report)
+        self.digest_and_fold(pending, asks, state, budget, guards, report)
             .await
     }
 
     /// Digest the `pending` sessions concurrently (the network-bound map step)
     /// and fold the results serially into the facet trees (SQLite writes must
     /// stay serial). Order is preserved (`buffered`, not `buffer_unordered`) so
-    /// trees fold oldest-first. Selection honours the shared run budget; each
-    /// selected session's cursor is committed only after it is folded, so a
-    /// budget-truncated tail is re-processed on the next run.
+    /// trees fold oldest-first. Selection honours the shared run budget; a
+    /// selected session's cursor is committed after it is folded, except a
+    /// fully-lost session (zero observations, ≥1 window dropped) whose commit is
+    /// pushed to `deferred` for the run-level systemic check in [`Self::run`].
     async fn digest_and_fold(
         &self,
         pending: Vec<Pending>,
         asks: &FacetAsks,
         state: &mut ReduceState,
         budget: &mut Budget,
+        guards: &mut DigestGuards,
         report: &mut RunReport,
     ) -> Result<()> {
-        // Select within budget up front.
+        // Select within the session-count budget up front; the provider-call
+        // budget is enforced per call inside `digest_session`.
         let mut selected: Vec<Pending> = Vec::new();
         for p in pending {
             if budget.exhausted() {
@@ -313,97 +407,65 @@ impl Pipeline<'_> {
             return Ok(());
         }
         let concurrency = self.persona.digest_concurrency.max(1);
-        let results: Vec<Result<SessionDigest>> = stream::iter(selected.iter())
-            .map(|p| digest_session(self.provider, &p.session))
+        let results: Vec<Result<SessionOutcome>> = stream::iter(selected.iter())
+            .map(|p| digest_session(self.provider, &p.session, &guards.call_budget))
             .buffered(concurrency)
             .collect()
             .await;
         for (p, result) in selected.iter().zip(results) {
-            let digest = match result {
-                Ok(d) => d,
+            let outcome = match result {
+                Ok(o) => o,
                 Err(e) => {
-                    // Hard provider failure: do NOT commit the cursor, so this
-                    // session is re-attempted on the next run.
-                    log::warn!("[persona] digest failed, cursor not committed: {e:#}");
-                    report.sessions_failed += 1;
+                    // Non-committable, cursor NOT committed so the session is
+                    // re-attempted next run. Two shapes reach here, neither a
+                    // silent drop: the run's call budget was spent mid-session (a
+                    // clean checkpoint), or a hard provider failure
+                    // (transport/auth). Truncated/unparseable windows never reach
+                    // here — they are recovered or dropped-and-counted inside
+                    // `digest_session`.
+                    if is_budget_exhausted(&e) {
+                        report.budget_hit = true;
+                    } else {
+                        log::warn!(
+                            "[persona] digest provider failure, cursor not committed: {e:#}"
+                        );
+                        report.sessions_failed += 1;
+                    }
                     continue;
                 }
             };
             report.sessions_processed += 1;
+            report.windows_lost += outcome.windows_lost;
+            let digest = outcome.digest;
+            let session_observations = digest.observations.len();
             if !digest.is_empty() {
                 report.digests += 1;
-                report.observations += digest.observations.len();
+                report.observations += session_observations;
                 fold_digest(self.config, &digest, asks, self.summariser, state).await?;
             }
-            // Commit the cursor/watermark now that the session is folded (a valid
-            // empty digest still commits — retrying would reproduce it).
-            if let Some((key, value)) = &p.commit {
-                self.store.set(state::NAMESPACE, key, value).await?;
+            let Some(commit) = &p.commit else { continue };
+            if session_observations == 0 && outcome.windows_lost > 0 {
+                // Yielded nothing but lost ≥1 window. In isolation this is a
+                // localized permanent-garbage window that should commit so the
+                // queue advances; run-wide it can instead be the symptom of a
+                // systemic provider failure. Defer the commit — `run` applies it
+                // only if the run produced observations somewhere, otherwise it
+                // withholds and flags rather than silently skipping the backlog.
+                guards.deferred.push(commit.clone());
+            } else if let Err(e) = self.store.set(state::NAMESPACE, &commit.0, &commit.1).await {
+                // Committed now that the session is folded: a recovered or
+                // genuinely-empty (zero-loss) session reproduces on re-run, so
+                // committing loses nothing. As on the deferred path, a failed
+                // write is logged and skipped rather than `?`-aborting the run and
+                // discarding the pack — the cursor is a fast-skip, so the session
+                // simply re-digests next run.
+                log::warn!(
+                    "[persona] cursor commit failed for {}; it will be re-digested next run: {e:#}",
+                    commit.0
+                );
             }
         }
         Ok(())
-    }
-
-    #[cfg(feature = "git-diff")]
-    async fn ingest_git(
-        &self,
-        mode: RunMode,
-        asks: &FacetAsks,
-        state: &mut ReduceState,
-        budget: &mut Budget,
-        report: &mut RunReport,
-    ) -> Result<()> {
-        use super::readers::git_history::{self, GitReadConfig};
-
-        let git_cfg = GitReadConfig {
-            author_emails: self.persona.author_emails.clone(),
-            batch_size: self.persona.git.batch_size,
-            max_commits: self.persona.git.max_commits,
-            diff_sample_cap: self.persona.git.diff_sample_cap,
-            diff_size_cap_bytes: self.persona.git.diff_size_cap_bytes,
-            small_commit_max_files: self.persona.git.small_commit_max_files,
-        };
-        let author_hash = author_set_hash(&self.persona.author_emails);
-
-        // Read all qualifying repos into a pending list (serial, cheap), then
-        // digest concurrently + fold serially. A repo's HEAD watermark is
-        // attached to the LAST of its sessions, so it is only committed once the
-        // whole repo has been folded (a budget-truncated repo re-scans next run).
-        let mut pending: Vec<Pending> = Vec::new();
-        for repo in git_history::discover(&self.persona.project_roots) {
-            report.files_seen += 1;
-            let head = match git_head_sha(&repo) {
-                Some(h) => format!("{h}:{author_hash}"),
-                None => continue,
-            };
-            let key = state::git_key(&repo);
-            if mode == RunMode::Incremental
-                && state::watermark_unchanged(self.store, &key, &head).await?
-            {
-                report.sessions_skipped += 1;
-                continue;
-            }
-            let sessions = match git_history::read_repo(&repo, &git_cfg) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            for session in &sessions {
-                report.evidence_units += session.evidence.len();
-            }
-            if sessions.is_empty() {
-                // No author commits — watermark immediately (nothing to digest).
-                state::record_watermark(self.store, &key, &head).await?;
-                continue;
-            }
-            let head_value = serde_json::Value::String(head);
-            let last = sessions.len() - 1;
-            for (i, session) in sessions.into_iter().enumerate() {
-                let commit = (i == last).then(|| (key.clone(), head_value.clone()));
-                pending.push(Pending { session, commit });
-            }
-        }
-        self.digest_and_fold(pending, asks, state, budget, report)
-            .await
     }
 }
 
@@ -427,29 +489,6 @@ fn read_transcript(kind: &str, path: &Path) -> Result<RawSession> {
 /// File mtime in millis for oldest-first ordering (0 when unknown).
 fn file_mtime_ms(path: &Path) -> i64 {
     state::FileCursor::of(path).map(|c| c.mtime_ms).unwrap_or(0)
-}
-
-/// Stable short hash of the author-email set, so changing it forces a re-scan.
-#[cfg(feature = "git-diff")]
-fn author_set_hash(emails: &[String]) -> String {
-    use sha2::{Digest, Sha256};
-    let mut sorted: Vec<String> = emails.iter().map(|e| e.to_lowercase()).collect();
-    sorted.sort();
-    let mut h = Sha256::new();
-    h.update(sorted.join(",").as_bytes());
-    h.finalize()
-        .iter()
-        .take(4)
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
-
-/// Current HEAD sha of a repo, or `None` for an empty/broken repo.
-#[cfg(feature = "git-diff")]
-fn git_head_sha(repo: &Path) -> Option<String> {
-    let repo = git2::Repository::open(repo).ok()?;
-    let head = repo.head().ok()?;
-    head.target().map(|oid| oid.to_string())
 }
 
 #[cfg(test)]
