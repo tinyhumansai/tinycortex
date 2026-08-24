@@ -62,8 +62,8 @@ pub fn list_chunks(config: &MemoryConfig, query: &ListChunksQuery) -> Result<Vec
 /// How many rows [`list_chunks`] would match for `query`, ignoring its `limit`
 /// and `offset`.
 ///
-/// The predicate is built by the same [`append_filters`] the listing uses, so
-/// the two cannot drift apart. That matters more than the saving: a total that
+/// The predicate is built by the same private filter builder the listing uses,
+/// so the two cannot drift apart. That matters more than the saving: a total that
 /// disagrees with the page beside it sends a caller paging towards rows that
 /// are not there, which is worse than having no total at all.
 ///
