@@ -1,6 +1,7 @@
-//! Chunk deletion by source / source-prefix / owner, with cascade cleanup of
-//! the dependent score / entity-index / embedding side tables, the source
-//! ingest gate, and any on-disk content files.
+//! Chunk deletion by source / source-prefix / owner / id, and the whole-tier
+//! purge, with cascade cleanup of the dependent score / entity-index /
+//! embedding side tables, the source ingest gate, and any on-disk content
+//! files.
 //!
 //! Unlike OpenHuman, this slice does **not** cascade into summary trees (that
 //! subsystem is not ported here); it deletes only the chunk-owned rows and
@@ -16,7 +17,7 @@
 //! scopes must be processed after the database transaction commits.
 
 use anyhow::{Context, Result};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::HashSet;
 
 use super::connection::with_connection;
@@ -82,17 +83,58 @@ pub fn delete_chunks_by_owner(
     delete_chunks_by_source_filter(config, source_kind, DeleteFilter::Owner(owner))
 }
 
+/// Delete one chunk by its id, with the same dependent-row, ingest-gate and
+/// content-file cleanup the source-scoped deletes perform.
+///
+/// Returns `1` when the chunk existed and `0` when it did not — deleting an
+/// unknown id is not an error, matching the idempotence of the other deletes.
+///
+/// The stored source kind is read first because the shared implementation
+/// needs it to decide whether the source's ingest gate and source-scoped
+/// summary tree have just been orphaned. It cannot go stale between the read
+/// and the delete: a chunk id is derived from its source kind, so a row whose
+/// kind changed is a row whose id changed.
+///
+/// # Errors
+/// Returns `Err` if the kind lookup fails, if the stored kind is not one this
+/// build knows (a hand-edited DB), or for the reasons
+/// `delete_chunks_by_source_filter` documents.
+pub fn delete_chunk_by_id(config: &MemoryConfig, chunk_id: &str) -> Result<usize> {
+    let stored_kind = with_connection(config, |conn| {
+        let stored = conn
+            .query_row(
+                "SELECT source_kind FROM mem_tree_chunks WHERE id = ?1",
+                params![chunk_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context("Failed to read the source kind of the chunk to delete")?;
+        Ok(stored)
+    })?;
+    let Some(stored_kind) = stored_kind else {
+        return Ok(0);
+    };
+    let source_kind = SourceKind::parse(&stored_kind).map_err(|error| {
+        anyhow::anyhow!("Chunk {chunk_id} has an unusable source kind: {error}")
+    })?;
+    delete_chunks_by_source_filter(config, source_kind, DeleteFilter::Chunk(chunk_id))
+}
+
 #[derive(Clone, Copy)]
 enum DeleteFilter<'a> {
     ExactSource(&'a str),
     SourcePrefix(&'a str),
     Owner(&'a str),
+    Chunk(&'a str),
 }
 
 impl<'a> DeleteFilter<'a> {
     fn value(self) -> &'a str {
         match self {
-            Self::ExactSource(value) | Self::SourcePrefix(value) | Self::Owner(value) => value,
+            Self::ExactSource(value)
+            | Self::SourcePrefix(value)
+            | Self::Owner(value)
+            | Self::Chunk(value) => value,
         }
     }
 
@@ -101,12 +143,32 @@ impl<'a> DeleteFilter<'a> {
             Self::ExactSource(_) => "source_id = ?2",
             Self::SourcePrefix(_) => "substr(source_id, 1, length(?2)) = ?2",
             Self::Owner(_) => "owner = ?2",
+            Self::Chunk(_) => "id = ?2",
+        }
+    }
+
+    /// The `source_kind = ?1 AND` prefix the source-scoped filters select on,
+    /// and nothing for the by-id filter.
+    ///
+    /// `id` is the primary key, so a kind ANDed onto it can never narrow the
+    /// match — it can only make the whole delete silently select nothing when
+    /// the caller's kind and the stored one disagree. `?1` stays bound either
+    /// way: SQLite sizes a statement's parameter list by the highest index it
+    /// names, so an unused `?1` beside a used `?2` is legal, and all four
+    /// filters keep the one binding site below.
+    fn source_kind_clause(self) -> &'static str {
+        match self {
+            Self::ExactSource(_) | Self::SourcePrefix(_) | Self::Owner(_) => {
+                "source_kind = ?1 AND "
+            }
+            Self::Chunk(_) => "",
         }
     }
 }
 
 /// Shared implementation behind [`delete_chunks_by_source`],
-/// [`delete_chunks_by_source_prefix`], and [`delete_chunks_by_owner`].
+/// [`delete_chunks_by_source_prefix`], [`delete_chunks_by_owner`], and
+/// [`delete_chunk_by_id`].
 ///
 /// Selects matching rows into a temporary SQLite table, then deletes each
 /// dependent table with one set-based statement before removing the chunk
@@ -146,7 +208,8 @@ fn delete_chunks_by_source_filter(
                 (id, source_id, path_scope, content_path, raw_refs_json)
              SELECT id, source_id, path_scope, content_path, raw_refs_json
                FROM mem_tree_chunks
-              WHERE source_kind = ?1 AND {}",
+              WHERE {}{}",
+            filter.source_kind_clause(),
             filter.chunk_predicate()
         );
         tx.execute(
@@ -277,7 +340,12 @@ fn delete_chunks_by_source_filter(
                     params![source_kind.as_str(), prefix],
                 )?;
             }
-            DeleteFilter::Owner(_) => {}
+            // Neither an owner nor a single chunk id names a source, so
+            // neither may remove an ingest gate on its own — chunks of that
+            // source owned by someone else, or simply other chunks, can still
+            // be there. The orphan sweep above already takes the gate in the
+            // case where they are not.
+            DeleteFilter::Owner(_) | DeleteFilter::Chunk(_) => {}
         }
 
         for scope in &deleted_tree_scopes {
@@ -361,6 +429,130 @@ pub fn delete_orphaned_source_tree(
     })?;
     remove_chunk_content_files(config, &content_paths);
     Ok(cascaded)
+}
+
+/// Every table [`purge_all`] empties before `mem_tree_chunks`, in the order it
+/// empties them.
+///
+/// The order is load-bearing. `PRAGMA foreign_keys` is ON for every connection
+/// this module hands out, so a parent whose children are still present cannot
+/// be deleted: `mem_tree_summaries` and `mem_tree_buffers` go before the
+/// `mem_tree_trees` rows they reference. The four embedding/tombstone sidecars
+/// are listed explicitly even though their foreign keys declare
+/// `ON DELETE CASCADE` — the same belt-and-braces `purge_global_topic_trees`
+/// uses, so this keeps emptying them if a future schema revision drops a
+/// cascade.
+const PURGE_TABLES_BEFORE_CHUNKS: &[&str] = &[
+    "mem_tree_score",
+    "mem_tree_entity_index",
+    "mem_tree_entity_edges",
+    "mem_tree_entity_hotness",
+    "mem_tree_jobs",
+    "mem_tree_buffers",
+    "mem_tree_summary_embeddings",
+    "mem_tree_summary_reembed_skipped",
+    "mem_tree_summaries",
+    "mem_tree_trees",
+    "mem_tree_chunk_embeddings",
+    "mem_tree_chunk_reembed_skipped",
+];
+
+/// Empty the chunk tier: every chunk, every row keyed off one, the summary
+/// trees built from them, the ingest gates that would otherwise refuse to
+/// re-ingest anything, and the on-disk bodies they pointed at.
+///
+/// Returns the total number of rows removed, summed across every table this
+/// purge empties — deliberately NOT the chunk-row count that
+/// [`delete_chunks_by_source`] and its siblings return.
+///
+/// The unit differs from its siblings on purpose, and the reason is the caller
+/// rather than this module: the only consumer is a whole-store wipe that has
+/// always reported a cross-table sum, so returning chunk rows here would shrink
+/// a number a user already reads without anything having changed about what was
+/// forgotten. A scoped delete answers "how many chunks did this reach", which is
+/// the caller's own unit; a purge answers "how much did emptying the store
+/// remove", which is every row it touched.
+///
+/// The consequence is that the number moves when this purge learns about a new
+/// table. That is accepted: a table added here is a table that was previously
+/// left behind, so the count rising is the fix being visible rather than a
+/// meaning change.
+///
+/// # What it deliberately does not clear
+///
+/// `mcp_writes`, the audit trail of tool-driven writes. It records that a
+/// write happened, not what memory holds, and discarding an audit log is a
+/// decision for whoever wants it discarded rather than a side effect of
+/// emptying the store.
+///
+/// Summary trees are cleared here, unlike everywhere else in this module: a
+/// tree built out of chunks that no longer exist is not memory this store can
+/// explain, and the module's rule about not cascading into the summary tier is
+/// about *which chunks* a scoped delete may reach beyond, not about leaving a
+/// whole-store purge half done.
+///
+/// # Errors
+/// Returns `Err` if any `DELETE`, the path collection, or the commit fails, in
+/// which case the whole purge rolls back and the store is exactly as it was.
+/// Content-file removal runs after the commit and is best-effort: a filesystem
+/// failure there leaves orphaned files but neither fails nor undoes the
+/// database side.
+pub fn purge_all(config: &MemoryConfig) -> Result<usize> {
+    let mut content_paths = Vec::new();
+    let deleted = with_connection(config, |conn| {
+        let tx = conn.unchecked_transaction()?;
+        collect_purge_content_paths(&tx, &mut content_paths)?;
+        let mut total = 0usize;
+        for table in PURGE_TABLES_BEFORE_CHUNKS {
+            total += tx.execute(&format!("DELETE FROM {table}"), [])?;
+        }
+        total += tx.execute("DELETE FROM mem_tree_chunks", [])?;
+        total += tx.execute("DELETE FROM mem_tree_ingested_sources", [])?;
+        tx.commit()?;
+        Ok(total)
+    })?;
+    remove_chunk_content_files(config, &content_paths);
+    Ok(deleted)
+}
+
+/// Collect every on-disk path [`purge_all`] is about to orphan: chunk and
+/// summary bodies in the content vault, plus the raw archive files chunks
+/// point at.
+///
+/// Gathered inside the transaction and removed only after it commits, the same
+/// order `delete_chunks_by_source_filter` uses, so a purge that rolls back
+/// never leaves a deleted file behind a surviving row. Unlike that function
+/// there is no reachability question to answer first — nothing survives a
+/// purge, so every path found here is unreferenced by definition.
+///
+/// A `raw_refs_json` value that does not parse is skipped rather than failing
+/// the purge. Its file is then orphaned on disk, which is exactly what its
+/// unreadable pointer row already made it.
+fn collect_purge_content_paths(tx: &Transaction<'_>, out: &mut Vec<String>) -> Result<()> {
+    for sql in [
+        "SELECT content_path FROM mem_tree_chunks
+          WHERE content_path IS NOT NULL AND content_path != ''",
+        "SELECT content_path FROM mem_tree_summaries
+          WHERE content_path IS NOT NULL AND content_path != ''",
+    ] {
+        let mut stmt = tx.prepare(sql)?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        for row in rows {
+            out.push(row.context("Failed to read a content path to purge")?);
+        }
+    }
+    let mut stmt = tx.prepare(
+        "SELECT raw_refs_json FROM mem_tree_chunks
+          WHERE raw_refs_json IS NOT NULL AND raw_refs_json != ''",
+    )?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    for row in rows {
+        let json = row.context("Failed to read a raw-ref pointer to purge")?;
+        if let Ok(refs) = serde_json::from_str::<Vec<RawRef>>(&json) {
+            out.extend(refs.into_iter().map(|raw_ref| raw_ref.path));
+        }
+    }
+    Ok(())
 }
 
 /// Best-effort removal of on-disk chunk content files, with strict sandboxing:

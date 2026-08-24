@@ -76,8 +76,14 @@ use tinycortex_api::chunks as types;
 #[path = "store_conn_tests.rs"]
 mod store_conn_tests;
 #[cfg(test)]
+#[path = "store_delete_tests.rs"]
+mod store_delete_tests;
+#[cfg(test)]
 #[path = "store_embed_tests.rs"]
 mod store_embed_tests;
+#[cfg(test)]
+#[path = "store_list_tests.rs"]
+mod store_list_tests;
 #[cfg(test)]
 #[path = "store_tests.rs"]
 mod store_tests;
@@ -127,10 +133,13 @@ pub use store::{
 };
 pub(crate) use store_delete::remove_unreferenced_content_files;
 pub use store_delete::{
-    delete_chunks_by_owner, delete_chunks_by_source, delete_chunks_by_source_prefix,
-    delete_orphaned_source_tree,
+    delete_chunk_by_id, delete_chunks_by_owner, delete_chunks_by_source,
+    delete_chunks_by_source_prefix, delete_orphaned_source_tree, purge_all,
 };
-pub use store_list::{count_chunks_matching, list_chunks, ListChunksQuery};
+pub use store_list::{
+    count_chunks_matching, list_chunk_details, list_chunks, source_totals, ChunkDetailRow,
+    ListChunksQuery, SourceTotal,
+};
 pub use store_sources::{get_chunk_lifecycle_status_tx, set_chunk_lifecycle_status_tx};
 
 // ── Shared internal constants / helpers ─────────────────────────────────────
