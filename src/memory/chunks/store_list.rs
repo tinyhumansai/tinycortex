@@ -1,4 +1,4 @@
-//! Filtered and paginated chunk listing.
+//! Filtered and paginated chunk listing, and the count that goes with it.
 
 use anyhow::{Context, Result};
 
@@ -42,32 +42,7 @@ pub fn list_chunks(config: &MemoryConfig, query: &ListChunksQuery) -> Result<Vec
     with_connection(config, |conn| {
         let mut sql = format!("SELECT {SELECT_COLUMNS} FROM mem_tree_chunks WHERE 1=1");
         let mut bound: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-        if let Some(kind) = query.source_kind {
-            sql.push_str(" AND source_kind = ?");
-            bound.push(Box::new(kind.as_str().to_string()));
-        }
-        for (clause, value) in [
-            (" AND source_id = ?", query.source_id.as_ref()),
-            (" AND owner = ?", query.owner.as_ref()),
-        ] {
-            if let Some(value) = value {
-                sql.push_str(clause);
-                bound.push(Box::new(value.clone()));
-            }
-        }
-        if let Some(value) = query.since_ms {
-            sql.push_str(" AND timestamp_ms >= ?");
-            bound.push(Box::new(value));
-        }
-        if let Some(value) = query.until_ms {
-            sql.push_str(" AND timestamp_ms <= ?");
-            bound.push(Box::new(value));
-        }
-        if query.exclude_dropped {
-            sql.push_str(" AND lifecycle_status != ?");
-            bound.push(Box::new(CHUNK_STATUS_DROPPED.to_string()));
-        }
-        append_source_scope(&mut sql, &mut bound, query.source_scope.as_ref());
+        append_filters(&mut sql, &mut bound, query);
         sql.push_str(" ORDER BY timestamp_ms DESC, seq_in_source ASC, id ASC LIMIT ? OFFSET ?");
         bound.push(Box::new(normalized_limit(query.limit)));
         bound.push(Box::new(
@@ -82,6 +57,75 @@ pub fn list_chunks(config: &MemoryConfig, query: &ListChunksQuery) -> Result<Vec
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("Failed to collect chunks")
     })
+}
+
+/// How many rows [`list_chunks`] would match for `query`, ignoring its `limit`
+/// and `offset`.
+///
+/// The predicate is built by the same [`append_filters`] the listing uses, so
+/// the two cannot drift apart. That matters more than the saving: a total that
+/// disagrees with the page beside it sends a caller paging towards rows that
+/// are not there, which is worse than having no total at all.
+///
+/// [`count_chunks`](super::count_chunks) answers a different question — every
+/// row in the table, no filters — and is not a substitute for this.
+///
+/// # Errors
+/// Returns an error when SQLite preparation or execution fails.
+pub fn count_chunks_matching(config: &MemoryConfig, query: &ListChunksQuery) -> Result<u64> {
+    with_connection(config, |conn| {
+        let mut sql = String::from("SELECT COUNT(*) FROM mem_tree_chunks WHERE 1=1");
+        let mut bound: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        append_filters(&mut sql, &mut bound, query);
+        let params = bound
+            .iter()
+            .map(|value| value.as_ref() as &dyn rusqlite::ToSql)
+            .collect::<Vec<_>>();
+        let total: i64 = conn
+            .query_row(&sql, params.as_slice(), |row| row.get(0))
+            .context("Failed to count chunks")?;
+        Ok(total.max(0) as u64)
+    })
+}
+
+/// Append every `WHERE` term the query asks for, binding in the same order.
+///
+/// Shared by [`list_chunks`] and [`count_chunks_matching`]: everything that
+/// decides *which* rows match lives here, and nothing that decides how many of
+/// them are returned does. Ordering and the page bounds stay with the listing
+/// because the count deliberately ignores them — `limit` is a property of the
+/// page, not of the result set.
+fn append_filters(
+    sql: &mut String,
+    bound: &mut Vec<Box<dyn rusqlite::ToSql>>,
+    query: &ListChunksQuery,
+) {
+    if let Some(kind) = query.source_kind {
+        sql.push_str(" AND source_kind = ?");
+        bound.push(Box::new(kind.as_str().to_string()));
+    }
+    for (clause, value) in [
+        (" AND source_id = ?", query.source_id.as_ref()),
+        (" AND owner = ?", query.owner.as_ref()),
+    ] {
+        if let Some(value) = value {
+            sql.push_str(clause);
+            bound.push(Box::new(value.clone()));
+        }
+    }
+    if let Some(value) = query.since_ms {
+        sql.push_str(" AND timestamp_ms >= ?");
+        bound.push(Box::new(value));
+    }
+    if let Some(value) = query.until_ms {
+        sql.push_str(" AND timestamp_ms <= ?");
+        bound.push(Box::new(value));
+    }
+    if query.exclude_dropped {
+        sql.push_str(" AND lifecycle_status != ?");
+        bound.push(Box::new(CHUNK_STATUS_DROPPED.to_string()));
+    }
+    append_source_scope(sql, bound, query.source_scope.as_ref());
 }
 
 fn append_source_scope(

@@ -130,7 +130,7 @@ pub use store_delete::{
     delete_chunks_by_owner, delete_chunks_by_source, delete_chunks_by_source_prefix,
     delete_orphaned_source_tree,
 };
-pub use store_list::{list_chunks, ListChunksQuery};
+pub use store_list::{count_chunks_matching, list_chunks, ListChunksQuery};
 pub use store_sources::{get_chunk_lifecycle_status_tx, set_chunk_lifecycle_status_tx};
 
 // ── Shared internal constants / helpers ─────────────────────────────────────
