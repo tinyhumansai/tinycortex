@@ -123,9 +123,20 @@ pub struct ChunkDetailRow {
     pub content_path: Option<String>,
     /// Lifecycle state — `admitted`, `sealed`, `dropped`, …
     ///
-    /// `Option` because the column arrived as an additive `ALTER TABLE`: a row
-    /// written by a build that predates it, or by a writer that bypassed it,
-    /// can still read back NULL, and one such row must not fail the page.
+    /// `Option` for the decode, not for the column. The column arrived as an
+    /// additive `ALTER TABLE` and is declared `TEXT NOT NULL DEFAULT
+    /// 'admitted'` (`connection.rs`), so SQLite backfilled every pre-existing
+    /// row and rejects a writer that omits it — a NULL cannot be produced by
+    /// this schema. What the `Option` buys is that a row which somehow read
+    /// back empty does not fail the whole page, and that the contract type
+    /// this maps onto can be answered by a driver with no lifecycle concept at
+    /// all.
+    ///
+    /// This matters for `exclude_dropped`, which filters with
+    /// `lifecycle_status != 'dropped'`: under SQLite a NULL there would compare
+    /// NULL and silently drop the row from the page *and* from the count. It
+    /// does not need a `COALESCE` guard, and the reason is the `NOT NULL` above
+    /// rather than luck.
     pub lifecycle_status: Option<String>,
     /// Whether an embedding vector exists for this chunk in **any** signature.
     ///

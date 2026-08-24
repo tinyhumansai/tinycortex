@@ -357,3 +357,76 @@ fn source_totals_group_by_source_and_honour_the_scope() {
     // `limit` bounds groups, not chunks.
     assert_eq!(source_totals(&cfg, Some(1), None).unwrap().len(), 1);
 }
+
+/// `exclude_dropped` filters with `lifecycle_status != 'dropped'`, and under
+/// SQLite a NULL in that column would compare NULL — the row would vanish from
+/// the page *and* from the count, silently, for a chunk that was never dropped.
+///
+/// It cannot happen, and this pins why rather than trusting it: the column is
+/// declared `TEXT NOT NULL DEFAULT 'admitted'` as an additive `ALTER TABLE`, so
+/// an insert that names every other column still lands with a value. The test
+/// writes a row through raw SQL that deliberately omits `lifecycle_status` —
+/// the "writer that bypassed it" case — and asserts the row is stored
+/// `admitted` and survives the filter.
+#[test]
+fn exclude_dropped_keeps_a_row_whose_lifecycle_was_never_written() {
+    let (_tmp, cfg) = test_config();
+    let seed = chunk_with(SourceKind::Chat, "slack:#eng", 0, 1_000, "seed");
+    upsert_chunks(&cfg, std::slice::from_ref(&seed)).expect("seed");
+
+    let bypassed = chunk_id(SourceKind::Chat, "slack:#eng", 1, "bypassed");
+    with_connection(&cfg, |conn| {
+        // The stored encoding of `source_kind` is read back off the seeded row
+        // rather than spelled out, so this test cannot drift if that encoding
+        // ever changes.
+        let kind: String = conn.query_row(
+            "SELECT source_kind FROM mem_tree_chunks WHERE id = ?1",
+            params![seed.id],
+            |row| row.get(0),
+        )?;
+        conn.execute(
+            "INSERT INTO mem_tree_chunks (
+                 id, source_kind, source_id, owner,
+                 timestamp_ms, time_range_start_ms, time_range_end_ms,
+                 tags_json, content, token_count, seq_in_source, created_at_ms
+             ) VALUES (?1, ?2, 'slack:#eng', 'alice@example.com', 2000, 2000, 2000,
+                       '[]', 'bypassed', 1, 1, 2000)",
+            params![bypassed, kind],
+        )?;
+        Ok(())
+    })
+    .expect("insert without a lifecycle_status");
+
+    let stored: Option<String> = with_connection(&cfg, |conn| {
+        Ok(conn.query_row(
+            "SELECT lifecycle_status FROM mem_tree_chunks WHERE id = ?1",
+            params![bypassed],
+            |row| row.get(0),
+        )?)
+    })
+    .expect("read the stored lifecycle");
+    assert_eq!(
+        stored.as_deref(),
+        Some("admitted"),
+        "the NOT NULL default is what makes the filter safe"
+    );
+
+    let query = ListChunksQuery {
+        exclude_dropped: true,
+        ..Default::default()
+    };
+    let ids: HashSet<String> = list_chunks(&cfg, &query)
+        .expect("list")
+        .into_iter()
+        .map(|chunk| chunk.id)
+        .collect();
+    assert!(
+        ids.contains(&bypassed),
+        "a row that was never dropped must survive exclude_dropped"
+    );
+    assert_eq!(
+        count_chunks_matching(&cfg, &query).expect("count"),
+        ids.len() as u64,
+        "the count must agree with the page it labels"
+    );
+}
