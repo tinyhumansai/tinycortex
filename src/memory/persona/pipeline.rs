@@ -254,9 +254,12 @@ impl Pipeline<'_> {
 
         let asks = self.persona.asks();
         let mut bodies = BTreeMap::new();
-        let mut state = ReduceState::default();
-        // Reconstruct verbatim directives from the persisted store.
-        state.directives = super::compile::read_directives(self.config);
+        // Directives are reconstructed verbatim from the persisted store; the
+        // rest of the reduction starts empty.
+        let mut state = ReduceState {
+            directives: super::compile::read_directives(self.config),
+            ..Default::default()
+        };
         for facet in PersonaFacet::ALL {
             let factory = TreeFactory::flavoured(facet.tree_scope(), asks.ask(facet));
             let tree = factory.get_or_create(self.config)?;

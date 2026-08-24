@@ -434,11 +434,10 @@ pub fn bytes_to_vec(bytes: &[u8]) -> anyhow::Result<Vec<f32>> {
         bytes.len()
     );
     Ok(bytes
-        .chunks_exact(4)
-        .map(|chunk| {
-            let arr: [u8; 4] = chunk.try_into().unwrap_or([0; 4]);
-            f32::from_le_bytes(arr)
-        })
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
         .collect())
 }
 

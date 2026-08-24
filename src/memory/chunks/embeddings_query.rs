@@ -96,8 +96,10 @@ fn embedding_from_blob(bytes: &[u8], dim: i64, label: &str) -> Result<Option<Vec
         anyhow::bail!("{label} blob length {} not a multiple of 4", bytes.len());
     }
     let floats: Vec<f32> = bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect();
     if floats.len() != dim as usize {
         anyhow::bail!(

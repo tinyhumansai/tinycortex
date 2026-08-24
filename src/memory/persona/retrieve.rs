@@ -166,7 +166,7 @@ impl PersonaRetriever {
         let mut scored: Vec<(f32, &ObsDoc)> = self
             .docs
             .iter()
-            .filter(|d| facet.map_or(true, |f| d.facet == f))
+            .filter(|d| facet.is_none_or(|f| d.facet == f))
             .filter_map(|doc| {
                 let bm25 = self.bm25(&q_terms, doc, n);
                 if bm25 <= 0.0 {
