@@ -82,7 +82,7 @@ fn discover_matches_names_and_repo_scope() {
     let global = dir.path().join("global-CLAUDE.md");
     std::fs::write(&global, "- global rule").unwrap();
 
-    let found = discover(&[dir.path().to_path_buf()], &[global.clone()]);
+    let found = discover(&[dir.path().to_path_buf()], std::slice::from_ref(&global));
     let names: Vec<String> = found
         .iter()
         .map(|f| f.path.file_name().unwrap().to_string_lossy().to_string())

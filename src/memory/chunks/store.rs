@@ -390,13 +390,21 @@ pub fn extraction_coverage(config: &MemoryConfig) -> Result<f32> {
 /// negative (defensive against a hand-edited or otherwise corrupted DB — this
 /// silently coerces rather than erroring, since a negative count/seq has no
 /// valid interpretation but also isn't worth failing the whole read over).
+/// `tags_json` is treated the same way, and deliberately so: a value that does
+/// not deserialize as `Vec<String>` decodes to no tags, with a warning, rather
+/// than failing. Tags are metadata *about* a chunk, so losing them must not
+/// lose the chunk — and because this decoder is shared by every listing, the
+/// strict reading meant a single corrupted row took out an entire page for
+/// every reader, which is the failure a caller can neither see past nor work
+/// around. The value can only be malformed if something bypassed this module's
+/// own writer, which always stores `serde_json::to_string`.
+///
 /// `partial_message` is never persisted (it's a transient chunker signal) and
 /// always decodes to `false`.
 ///
 /// # Errors
-/// Returns `Err` if `source_kind` fails [`SourceKind::parse`], `tags_json`
-/// fails to deserialize as `Vec<String>`, or any of the three timestamp
-/// columns fails [`ms_to_utc`] (out-of-range milliseconds).
+/// Returns `Err` if `source_kind` fails [`SourceKind::parse`], or any of the
+/// three timestamp columns fails [`ms_to_utc`] (out-of-range milliseconds).
 pub(super) fn row_to_chunk(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chunk> {
     let id: String = row.get(0)?;
     let source_kind_s: String = row.get(1)?;
@@ -419,9 +427,13 @@ pub(super) fn row_to_chunk(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chunk> {
     let timestamp = ms_to_utc(ts_ms)?;
     let time_range = (ms_to_utc(trs_ms)?, ms_to_utc(tre_ms)?);
     let created_at = ms_to_utc(created_ms)?;
-    let tags: Vec<String> = serde_json::from_str(&tags_json).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(e))
-    })?;
+    let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_else(|e| {
+        log::warn!(
+            "[memory::chunks] chunk {id}: tags_json did not decode as a string list \
+             ({e}); reading the chunk with no tags rather than failing the query"
+        );
+        Vec::new()
+    });
 
     Ok(Chunk {
         id,

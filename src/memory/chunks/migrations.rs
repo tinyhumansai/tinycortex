@@ -81,8 +81,10 @@ pub(super) fn migrate_legacy_embeddings_to_sidecar(
                 continue;
             }
             let vec: Vec<f32> = blob
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
                 .collect();
             if is_chunk {
                 set_chunk_embedding_for_signature_tx(&tx, &id, &sig, &vec)?;
