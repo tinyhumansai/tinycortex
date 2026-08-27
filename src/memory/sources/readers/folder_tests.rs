@@ -149,3 +149,131 @@ async fn read_item_missing_file_errors() {
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
+
+// ── openhuman#5830: relative paths resolve against the workspace ─────────────
+
+/// Build a workspace containing `relative_docs/note.md`, and a `MemoryConfig`
+/// rooted at it.
+///
+/// The subdirectory name is deliberately distinctive: a relative path resolves
+/// against the process CWD before this fix, and the CWD under `cargo test` is
+/// the crate directory — a common name like `docs` could accidentally exist
+/// there and make the pre-fix run pass for the wrong reason.
+fn workspace_with_relative_folder() -> (TempDir, MemoryConfig) {
+    let tmp = TempDir::new().unwrap();
+    let nested = tmp.path().join("relative_docs");
+    fs::create_dir_all(&nested).unwrap();
+    fs::write(nested.join("note.md"), "# note").unwrap();
+    let cfg = MemoryConfig::new(tmp.path());
+    (tmp, cfg)
+}
+
+/// A relative folder path must be anchored on the memory workspace, not on
+/// whatever directory the host process happened to start in.
+///
+/// This is openhuman#5830: the desktop app's CWD is the Tauri build directory,
+/// so a source configured as `docs` looked in `…/app/src-tauri/docs` and failed
+/// on every sync cycle, permanently, for a source that could work.
+#[tokio::test]
+async fn list_items_resolves_a_relative_path_against_the_workspace() {
+    let (_tmp, cfg) = workspace_with_relative_folder();
+    let source = folder_source("relative_docs");
+    let reader = FolderReader;
+
+    let items = reader
+        .list_items(&source, &cfg)
+        .await
+        .expect("a relative folder path must resolve against the workspace, not the process CWD");
+
+    assert_eq!(
+        items.len(),
+        1,
+        "the workspace-relative folder holds exactly one .md file"
+    );
+    assert_eq!(items[0].id, "note.md");
+}
+
+/// `read_item` must resolve by the same rule as `list_items`.
+///
+/// Fixing only the listing half would be worse than the original bug: the
+/// reader would walk the workspace and then read back from the CWD, so every
+/// item it just listed would fail to load.
+#[tokio::test]
+async fn read_item_resolves_a_relative_path_against_the_workspace() {
+    let (_tmp, cfg) = workspace_with_relative_folder();
+    let source = folder_source("relative_docs");
+    let reader = FolderReader;
+
+    let content = reader
+        .read_item(&source, "note.md", &cfg)
+        .await
+        .expect("read_item must resolve a relative path against the workspace, like list_items");
+
+    assert_eq!(content.body, "# note");
+}
+
+/// The error has to say **where the reader looked**, not only what it was
+/// configured with. `folder does not exist: docs` is what cost a source-read
+/// and an `lsof` of the running process to diagnose.
+#[tokio::test]
+async fn a_missing_relative_folder_error_names_the_resolved_path() {
+    let tmp = TempDir::new().unwrap();
+    let cfg = MemoryConfig::new(tmp.path());
+    let source = folder_source("relative_docs");
+    let reader = FolderReader;
+
+    let err = reader
+        .list_items(&source, &cfg)
+        .await
+        .expect_err("a missing folder is still an error")
+        .to_string();
+
+    assert!(
+        err.contains("resolved to"),
+        "the error must name the resolved path, not only the configured one: {err}"
+    );
+    assert!(
+        err.contains(&tmp.path().join("relative_docs").display().to_string()),
+        "the resolved path must be the workspace-anchored one: {err}"
+    );
+}
+
+/// An absolute path keeps working exactly as before, and the workspace must not
+/// influence it — otherwise this fix would break every source already
+/// configured with an absolute path.
+#[tokio::test]
+async fn an_absolute_path_ignores_the_workspace() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("note.md"), "# note").unwrap();
+    let source = folder_source(&tmp.path().to_string_lossy());
+    let reader = FolderReader;
+
+    // A workspace that does not exist and shares no prefix with the source: if
+    // the absolute path were being joined onto it, nothing would resolve.
+    let bogus = MemoryConfig::new("/nonexistent/workspace/root");
+    let items = reader
+        .list_items(&source, &bogus)
+        .await
+        .expect("an absolute folder path must resolve without consulting the workspace");
+
+    assert_eq!(items.len(), 1, "the absolute folder still lists its file");
+}
+
+/// For an absolute path the configured string *is* the resolved path, so the
+/// error must not echo it twice.
+#[tokio::test]
+async fn an_absolute_missing_folder_error_does_not_echo_itself() {
+    let source = folder_source("/nonexistent/path/xyz");
+    let reader = FolderReader;
+
+    let err = reader
+        .list_items(&source, &config())
+        .await
+        .expect_err("a missing folder is still an error")
+        .to_string();
+
+    assert!(
+        !err.contains("resolved to"),
+        "an absolute path is already resolved; the error must not repeat it: {err}"
+    );
+}
