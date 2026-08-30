@@ -143,7 +143,7 @@ Pull requests should:
 - List the tests you ran (`cargo test`, plus any benchmark runs).
 - Link related issues where applicable.
 
-Keep each PR to one logical change. Maintainers may squash commits on merge to keep history clean. Contributions are licensed under the MIT License.
+Keep each PR to one logical change. Maintainers may squash commits on merge to keep history clean. Contributions are licensed under the GNU General Public License v3.0.
 
 ### Working in parallel
 

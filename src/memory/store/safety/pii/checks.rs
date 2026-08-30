@@ -138,9 +138,8 @@ pub(super) fn plausible_card_number(d: &[u32]) -> bool {
         }
         2 => {
             // Mastercard 2-series 2221-2720 (16 only).
-            ((2221..=2720).contains(&p4) && len == 16)
-                // Mir 2200-2204 (16 only).
-                || ((2200..=2204).contains(&p4) && len == 16)
+            // Mastercard 2221-2720 and Mir 2200-2204 (16 only).
+            ((2221..=2720).contains(&p4) || (2200..=2204).contains(&p4)) && len == 16
         }
         3 => {
             // Amex 34/37 (15 only).

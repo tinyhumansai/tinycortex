@@ -1,4 +1,4 @@
-# Doc 06 follow-on — persona memory engine live run + decision agent
+# Doc 06 follow-on — persona memory engine live run + decision assistant
 
 A working demonstration of the two things the persona surface was built to do:
 
@@ -11,8 +11,9 @@ Two new pieces land alongside the existing `persona` surface:
 
 - `memory::persona::retrieve` — a purely lexical, **no-LLM** BM25 retriever over
   the persona observation leaves (`retrieve.rs` + `retrieve_tests.rs`).
-- `examples/persona_agent.rs` — a `tinyagents` agent harness with read-only tools
-  over that retriever; DeepSeek v4 Flash (OpenRouter) does the final synthesis.
+- `examples/persona_agent.rs` — a direct TinyInference synthesis pass over the
+  ranked evidence and explicit directives; DeepSeek v4 Flash (OpenRouter) does
+  the final synthesis without an agent runtime.
 
 ---
 
@@ -77,16 +78,20 @@ retrieval stays lexical and the LLM only enters at the final pass. 10 unit +
 integration tests (parsing, tokenizer, BM25 ranking, facet filter, tier
 weighting, real-workspace load roundtrip).
 
-## 3. The decision agent (LLM final pass)
+## 3. The decision assistant (LLM final pass)
 
-`AgentHarness<PersonaState>` with three read-only tools over the retriever —
-`search_persona` (BM25, optional facet filter), `list_directives` (verbatim T0
-rules), `persona_overview` (facet coverage). The system prompt forces the model
-to ground every claim in retrieved evidence, prefer higher tiers, and flag when
-it is extrapolating. Retrieval selects candidates; the LLM only filters,
-resolves tier/recency conflicts, and writes the decision in the person's voice.
+The example builds one provider-neutral TinyInference request containing the
+BM25-ranked evidence, verbatim T0 directives, and facet coverage. The system
+prompt forces the model to ground every claim in that bounded context, prefer
+higher tiers, and flag when it is extrapolating. Retrieval selects candidates;
+the LLM only filters, resolves tier/recency conflicts, and writes the decision
+in the person's voice. No agent loop or tool registry is needed.
 
-### Live results (DeepSeek v4 Flash via OpenRouter)
+### Historical live results (pre-TinyInference agent harness)
+
+These measurements describe the original multi-step TinyAgents harness. The
+current TinyInference example makes exactly one model call after deterministic
+retrieval, so its latency and call count are not represented by this table.
 
 | question | model/tool calls | wall-clock | surfaced (verifiable) |
 |---|---|---|---|
@@ -105,7 +110,7 @@ OPENROUTER_API_KEY=… PERSONA_MAX_SESSIONS=80 PERSONA_MAX_COST_USD=0.60 \
 TINYCORTEX_WORKSPACE=/path/ws PERSONA_AUTHOR_EMAILS=you@example.com \
   cargo run --example persona_harness --features persona,providers-http,git-diff -- backfill
 
-# 2. ask the decision agent (stage 1 algorithmic retrieval → stage 2 LLM pass)
+# 2. ask the decision assistant (stage 1 algorithmic retrieval → stage 2 LLM pass)
 OPENROUTER_API_KEY=… TINYCORTEX_WORKSPACE=/path/ws \
   cargo run --example persona_agent --features persona -- "<your hard coding question>"
 ```

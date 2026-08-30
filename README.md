@@ -6,7 +6,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/tinycortex.svg)](https://crates.io/crates/tinycortex)
 [![docs.rs](https://img.shields.io/docsrs/tinycortex)](https://docs.rs/tinycortex)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](./LICENSE)
 
 [Discord](https://discord.tinyhumans.ai) • [Reddit](https://www.reddit.com/r/tinyhumansai/) • [X](https://x.com/tinyhumansai) • [Docs](https://tinyhumans.gitbook.io/tinycortex/)
 

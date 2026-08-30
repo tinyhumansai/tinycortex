@@ -1,8 +1,7 @@
 # The engine crate is also the workspace root so `api/` is never an orphan
 # package: `cargo fmt --all`, `cargo check`, and `cargo test` from this
 # directory cover the stable-contract crate too. `vendor/` is excluded so the
-# nested TinyAgents submodule (reached through the `[patch.crates-io]` path
-# below) is not pulled in as an implicit member.
+# vendored dependencies are not pulled in as implicit members.
 [workspace]
 members = [".", "api"]
 # `default-members` would otherwise fall back to the root package alone (this is
@@ -24,7 +23,7 @@ name = "tinycortex"
 publish = false
 version = "0.1.1"
 edition = "2021"
-license = "MIT"
+license = "GPL-3.0-only"
 repository = "https://github.com/tinyhumansai/tinycortex"
 description = "Rust core for the TinyCortex memory system"
 readme = "README.md"
@@ -118,11 +117,11 @@ serde_json = "1"
 schemars = "1"
 sha2 = "0.10"
 thiserror = "2"
-# Kept in lockstep with OpenHuman's vendored TinyAgents checkout. Standalone
-# development resolves this requirement to `vendor/tinyagents` through
-# `.cargo/config.toml`; embedding hosts may supply their own crates.io patch so
-# the host and TinyCortex share one `EmbeddingModel` trait identity.
-tinyagents = "2.1"
+# Provider-neutral inference contracts. Pinned until TinyInference is
+# published; embedding hosts may patch this exact git source so the host and
+# TinyCortex share one `EmbeddingModel` trait identity without pulling in an
+# agent runtime.
+tinyinference = { git = "https://github.com/tinyhumansai/tinyinference", rev = "cc8aca484bb995fbab3b7358f0d72ab5056b587c" }
 # The stable contract crate (value types, error enum, `Memory` trait). Declared
 # as a path dependency, not a registry requirement, so embedding hosts resolve
 # it through this checkout without needing their own `[patch.crates-io]` entry.
@@ -196,12 +195,6 @@ tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 wiremock = "0.6"
 
-# Standalone TinyCortex development still uses the pinned nested submodule.
-# Cargo ignores dependency-local patches when TinyCortex is consumed by a host,
-# allowing that host's crates.io patch to select its canonical TinyAgents copy.
-[patch.crates-io]
-tinyagents = { path = "vendor/tinyagents" }
-
 [[test]]
 name = "composio_sync_mock"
 required-features = ["sync"]
@@ -221,7 +214,7 @@ required-features = ["persona", "providers-http", "git-diff"]
 name = "persona_harness"
 required-features = ["persona", "providers-http", "git-diff"]
 
-# Persona decision agent: algorithmic BM25 retrieval + a tinyagents LLM pass
+# Persona decision assistant: algorithmic BM25 retrieval + a TinyInference LLM pass
 # over the distilled persona memory layer (doc 06 follow-on).
 # `OPENROUTER_API_KEY=... cargo run --example persona_agent --features persona -- "<question>"`
 [[example]]

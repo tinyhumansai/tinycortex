@@ -69,7 +69,7 @@ provider-specific parsing has no focused tests), `tree/hydrate.rs`,
 `archivist/sink.rs`, `diff/{checkpoint,snapshot,diff}.rs`,
 `chunks/{schema,store_delete,raw_refs,migrations,produce_split,store_sources,embeddings}.rs`,
 `retrieval/rerank.rs`, `conversations/{store_index,store_ops}.rs`,
-`score/extract/llm_prompt.rs`, `store/vectors/embedding.rs` (the tinyagents
+`score/extract/llm_prompt.rs`, `store/vectors/embedding.rs` (the inference
 bridge), `providers/`, `rpc/`. If a module is meant to be a trustworthy block,
 "has its own tests runnable in isolation" is the entry bar; these currently
 fail it.

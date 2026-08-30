@@ -136,10 +136,11 @@ conclusions:
    missing from the CI matrix, feature builds are only `cargo check`ed, the
    smoke test doesn't touch the real engine, and there are no setup/test
    scripts at all (VF-1..VF-5).
-4. **Meaningful dead weight.** A git dependency (`tinyagents`) that blocks
-   crates.io publishing, two placeholder feature modules, a flagship async
-   `Memory` trait with zero production impls, atomic-write implemented eight
-   times, and four dependencies with one call site each (SW-1..SW-6).
+4. **Meaningful dead weight.** The original audit found a TinyAgents git
+   dependency, two placeholder feature modules, a flagship async `Memory`
+   trait with zero production impls, atomic-write implemented eight times, and
+   four dependencies with one call site each (SW-1..SW-6). SW-1 is resolved by
+   the provider-neutral TinyInference dependency.
 
 Finding IDs: `MB-*` modularity, `CF-*` configurability, `VF-*` verification,
 `SW-*` simplification.

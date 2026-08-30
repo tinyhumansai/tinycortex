@@ -82,7 +82,7 @@ We may squash commits when merging to keep history clean.
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE). Copyright (c) 2026 Tiny Humans Intelligence Inc.
+By contributing, you agree that your contributions will be licensed under the [GNU General Public License v3.0](LICENSE). Copyright (c) 2026 Tiny Humans Intelligence Inc.
 
 ---
 
