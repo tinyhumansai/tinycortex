@@ -108,16 +108,30 @@ jobs:
           perl -0pi -e 's/(\[package\][\s\S]*?\nversion = ")[^"]+(")/$1$ENV{NEXT_VERSION}$2/' Cargo.toml
           cargo update -p "$CRATE_NAME" --precise "$NEXT_VERSION"
 
-      - name: Commit version bump and tag
+      # `main` is protected by a repository ruleset that requires all
+      # changes to land through a pull request (no direct pushes), and the
+      # workflow's GITHUB_TOKEN is not on that ruleset's bypass list. So the
+      # version-bump commit is pushed to a throwaway release branch and
+      # landed on `main` via an auto-merged PR instead of `git push`ing
+      # `HEAD` straight at `main` (which the ruleset rejects with GH013).
+      - name: Commit version bump
+        id: commit
         env:
           NEXT_VERSION: ${{ steps.version.outputs.next_version }}
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
+          set -euo pipefail
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          release_branch="release/${RELEASE_TAG}"
+          git checkout -b "${release_branch}"
           git add Cargo.toml Cargo.lock
           git commit -m "Release ${RELEASE_TAG}"
-          git tag -a "${RELEASE_TAG}" -m "Release ${RELEASE_TAG}"
+          git push origin "${release_branch}"
+
+          echo "branch=${release_branch}" >> "$GITHUB_OUTPUT"
 
       # `$CRATE_NAME` (and its path dependency `tinycortex-api`) both carry
       # `publish = false` right now: `tinycortex-api` depends on `tinymemory-api`
