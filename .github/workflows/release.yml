@@ -129,7 +129,10 @@ jobs:
           git checkout -b "${release_branch}"
           git add Cargo.toml Cargo.lock
           git commit -m "Release ${RELEASE_TAG}"
-          git push origin "${release_branch}"
+          # A previous failed run can leave this throwaway branch behind, which
+          # would make the retry's push a non-fast-forward. The branch only ever
+          # holds the version bump for this exact tag, so overwriting it is safe.
+          git push --force origin "${release_branch}"
 
           echo "branch=${release_branch}" >> "$GITHUB_OUTPUT"
 
