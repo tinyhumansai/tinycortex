@@ -173,7 +173,9 @@ jobs:
             --head "${RELEASE_BRANCH}" \
             --title "Release ${RELEASE_TAG}" \
             --body "Automated version bump for ${RELEASE_TAG}.")"
-          gh pr merge "${pr_url}" --squash --delete-branch
+          # This repository allows merge commits only (squash and rebase are
+          # both disabled), so the release PR must be merged with --merge.
+          gh pr merge "${pr_url}" --merge --delete-branch
 
           git fetch origin "${GITHUB_REF_NAME}"
           merge_sha="$(git rev-parse "origin/${GITHUB_REF_NAME}")"
