@@ -29,6 +29,47 @@ use super::SourceReader;
 /// Default glob applied when a folder source does not specify one.
 const DEFAULT_GLOB: &str = "**/*.md";
 
+/// Resolve a folder source's configured path against the memory workspace.
+///
+/// An absolute path is taken verbatim, so every source configured today keeps
+/// resolving exactly where it does now. A **relative** path is anchored on
+/// [`MemoryConfig::workspace`] — the root this crate already treats as
+/// authoritative — instead of being resolved against the process working
+/// directory.
+///
+/// The CWD is not a defensible root for this. It is whatever directory the host
+/// process happened to start in; for the OpenHuman desktop app that is the
+/// Tauri build directory, so a source configured as `docs` looked in
+/// `…/app/src-tauri/docs`, found nothing, and failed on every sync cycle
+/// forever (tinyhumansai/openhuman#5830).
+fn resolve_base(base_path: &str, workspace: &Path) -> PathBuf {
+    let configured = Path::new(base_path);
+    if configured.is_absolute() {
+        configured.to_path_buf()
+    } else {
+        workspace.join(configured)
+    }
+}
+
+/// Build the "folder does not exist" error so it always says **where the reader
+/// looked**, not merely what it was configured with.
+///
+/// Reporting the configured string alone is what made openhuman#5830 cost a
+/// source-read and an `lsof` of the running process to diagnose: the log said
+/// `folder does not exist: docs` and nothing in it revealed the root that had
+/// been joined on. The resolved path is appended only when it differs from the
+/// configured one, so an absolute source does not echo itself.
+fn missing_folder_error(base_path: &str, resolved: &Path) -> MemoryError {
+    let resolved = resolved.display().to_string();
+    if resolved == base_path {
+        MemoryError::NotFound(format!("folder does not exist: {base_path}"))
+    } else {
+        MemoryError::NotFound(format!(
+            "folder does not exist: {base_path} (resolved to {resolved})"
+        ))
+    }
+}
+
 /// A reader over a local folder of files.
 pub struct FolderReader;
 
@@ -41,7 +82,7 @@ impl SourceReader for FolderReader {
     async fn list_items(
         &self,
         source: &MemorySourceEntry,
-        _config: &MemoryConfig,
+        config: &MemoryConfig,
     ) -> MemoryEngineResult<Vec<SourceItem>> {
         let base_path = source
             .path
@@ -49,11 +90,9 @@ impl SourceReader for FolderReader {
             .ok_or_else(|| MemoryError::Invalid("folder source requires a path".to_string()))?;
         let pattern = source.glob.as_deref().unwrap_or(DEFAULT_GLOB);
 
-        let base = PathBuf::from(base_path);
+        let base = resolve_base(base_path, &config.workspace);
         if !base.exists() {
-            return Err(MemoryError::NotFound(format!(
-                "folder does not exist: {base_path}"
-            )));
+            return Err(missing_folder_error(base_path, &base));
         }
 
         let matcher = glob_to_regex(pattern)?;
@@ -107,7 +146,7 @@ impl SourceReader for FolderReader {
         &self,
         source: &MemorySourceEntry,
         item_id: &str,
-        _config: &MemoryConfig,
+        config: &MemoryConfig,
     ) -> MemoryEngineResult<SourceContent> {
         let base_path = source
             .path
@@ -123,7 +162,11 @@ impl SourceReader for FolderReader {
             )));
         }
 
-        let file_path = Path::new(base_path).join(item_id);
+        // Resolve through the same rule `list_items` used, so a relative source
+        // reads back the files it listed. Splitting these would be worse than
+        // the bug: list would walk the workspace while read looked in the CWD.
+        let base = resolve_base(base_path, &config.workspace);
+        let file_path = base.join(item_id);
         if !file_path.exists() {
             return Err(MemoryError::NotFound(format!(
                 "file not found: {}",
@@ -133,7 +176,12 @@ impl SourceReader for FolderReader {
 
         // Canonicalize and verify the resolved file stays within the folder
         // root — defends against `..` traversal and symlink escapes.
-        let canonical_file = ensure_within_base(Path::new(base_path), &file_path)?;
+        // Containment is checked against the *resolved* base. Passing the raw
+        // configured string here would canonicalise a relative base against the
+        // CWD while `file_path` sits under the workspace, so the two roots
+        // would not correspond — the check has to see the same base the file
+        // was joined onto.
+        let canonical_file = ensure_within_base(&base, &file_path)?;
 
         // Apply the same size cap as list_items so a huge file can't blow up
         // the renderer or the chunker.
