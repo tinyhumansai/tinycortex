@@ -118,8 +118,31 @@ jobs:
           git commit -m "Release ${RELEASE_TAG}"
           git tag -a "${RELEASE_TAG}" -m "Release ${RELEASE_TAG}"
 
+      # `$CRATE_NAME` (and its path dependency `tinycortex-api`) both carry
+      # `publish = false` right now: `tinycortex-api` depends on `tinymemory-api`
+      # by git rev, and cargo refuses to package/publish a crate whose
+      # dependency graph contains an unpublished git/path dependency (see the
+      # `publish = false` comments in Cargo.toml and api/Cargo.toml, tracked as
+      # tinymemory#18 §A1). Packaging or publishing while that holds always
+      # fails, so skip both steps until the crate is actually publishable
+      # instead of hard-failing the whole release (which also blocks the
+      # version-bump tag from ever being pushed).
+      - name: Check crates.io publishability
+        id: publishable
+        run: |
+          set -euo pipefail
+
+          publish="$(cargo metadata --no-deps --format-version 1 | jq -r --arg crate "$CRATE_NAME" '.packages[] | select(.name == $crate) | .publish')"
+          if [[ "$publish" == "[]" ]]; then
+            echo "publishable=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${CRATE_NAME} has publish = false; skipping crates.io package/publish steps."
+          else
+            echo "publishable=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Package crate
-        run: cargo package --locked
+        if: steps.publishable.outputs.publishable == 'true'
+        run: cargo package --locked -p "$CRATE_NAME"
 
       - name: Push release commit and tag
         env:
@@ -129,6 +152,7 @@ jobs:
           git push origin "${RELEASE_TAG}"
 
       - name: Publish to crates.io
-        run: cargo publish --locked
+        if: steps.publishable.outputs.publishable == 'true'
+        run: cargo publish --locked -p "$CRATE_NAME"
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
