@@ -229,8 +229,8 @@ regex backend, so the LLM path is optional. See
 
 ## What is the license?
 
-**MIT** (`LICENSE`, `Cargo.toml`), Copyright Tiny Humans Intelligence Inc. You
-can embed and ship it under permissive terms.
+**GNU GPL v3.0 only** (`GPL-3.0-only` in `Cargo.toml`), Copyright Tiny Humans
+Intelligence Inc. Derivative distributions must comply with GPLv3.
 
 ## How do I build and test it?
 

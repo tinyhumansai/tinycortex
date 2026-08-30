@@ -4,7 +4,7 @@ name = "tinycortex-api"
 publish = false
 version = "0.1.1"
 edition = "2021"
-license = "MIT"
+license = "GPL-3.0-only"
 repository = "https://github.com/tinyhumansai/tinycortex"
 description = "Stable public contracts for the TinyCortex memory system"
 
