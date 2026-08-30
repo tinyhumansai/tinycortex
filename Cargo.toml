@@ -148,7 +148,7 @@ reqwest = { version = "0.12", default-features = false, features = [
 ], optional = true }
 tracing = { version = "0.1", optional = true }
 # Per-OS config/home dir probing for the Obsidian vault registry (`obsidian`).
-dirs = { version = "5", optional = true }
+dirs = { version = "6", optional = true }
 # Hex-encodes summary read-pointer ids into git tag names (`wiki-git`).
 hex = { version = "0.4", optional = true }
 # tokio powers the optional background worker loops (`tokio` feature). It is
