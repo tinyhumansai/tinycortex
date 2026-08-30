@@ -121,7 +121,7 @@ thiserror = "2"
 # published; embedding hosts may patch this exact git source so the host and
 # TinyCortex share one `EmbeddingModel` trait identity without pulling in an
 # agent runtime.
-tinyinference = { git = "https://github.com/tinyhumansai/tinyinference", rev = "ff55eb12c9ea0620ac15badf32d1bbcde94dc19d" }
+tinyinference = { git = "https://github.com/tinyhumansai/tinyinference", rev = "cc8aca484bb995fbab3b7358f0d72ab5056b587c" }
 # The stable contract crate (value types, error enum, `Memory` trait). Declared
 # as a path dependency, not a registry requirement, so embedding hosts resolve
 # it through this checkout without needing their own `[patch.crates-io]` entry.
