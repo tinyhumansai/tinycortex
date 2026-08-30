@@ -1,4 +1,4 @@
-# Doc 06 follow-on — persona memory engine live run + decision agent
+# Doc 06 follow-on — persona memory engine live run + decision assistant
 
 A working demonstration of the two things the persona surface was built to do:
 
@@ -87,7 +87,11 @@ higher tiers, and flag when it is extrapolating. Retrieval selects candidates;
 the LLM only filters, resolves tier/recency conflicts, and writes the decision
 in the person's voice. No agent loop or tool registry is needed.
 
-### Live results (DeepSeek v4 Flash via OpenRouter)
+### Historical live results (pre-TinyInference agent harness)
+
+These measurements describe the original multi-step TinyAgents harness. The
+current TinyInference example makes exactly one model call after deterministic
+retrieval, so its latency and call count are not represented by this table.
 
 | question | model/tool calls | wall-clock | surfaced (verifiable) |
 |---|---|---|---|
@@ -106,7 +110,7 @@ OPENROUTER_API_KEY=… PERSONA_MAX_SESSIONS=80 PERSONA_MAX_COST_USD=0.60 \
 TINYCORTEX_WORKSPACE=/path/ws PERSONA_AUTHOR_EMAILS=you@example.com \
   cargo run --example persona_harness --features persona,providers-http,git-diff -- backfill
 
-# 2. ask the decision agent (stage 1 algorithmic retrieval → stage 2 LLM pass)
+# 2. ask the decision assistant (stage 1 algorithmic retrieval → stage 2 LLM pass)
 OPENROUTER_API_KEY=… TINYCORTEX_WORKSPACE=/path/ws \
   cargo run --example persona_agent --features persona -- "<your hard coding question>"
 ```

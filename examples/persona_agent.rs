@@ -23,6 +23,7 @@
 //! - `TINYCORTEX_WORKSPACE` — persona workspace (default `./persona-workspace`).
 //! - `OPENROUTER_API_KEY` — required (loaded from `.env` via dotenvy).
 //! - `TINYCORTEX_LLM_MODEL` — model id (default `deepseek/deepseek-v4-flash`).
+//! - `PERSONA_IDENTITY` — identity label in the prompt (default `this developer`).
 
 use tinyinference::message::Message;
 use tinyinference::model::{ChatModel, ModelRequest};
