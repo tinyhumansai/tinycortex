@@ -22,10 +22,10 @@
 ///
 /// Delegates to the same formatter the namespace store's embedding providers
 /// use ([`crate::memory::store::vectors::format_embedding_signature`], itself a
-/// re-export from `tinyagents`), so the two stores cannot drift into
+/// re-export from `tinyinference`), so the two stores cannot drift into
 /// byte-different spellings of the same space again.
 pub fn format_signature(provider: &str, model: &str, dims: usize) -> String {
-    tinyagents::harness::embeddings::format_embedding_signature(provider, model, dims)
+    tinyinference::embeddings::format_embedding_signature(provider, model, dims)
 }
 
 /// A signature decomposed into the parts that identify its vector space.

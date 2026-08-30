@@ -221,7 +221,7 @@ pub fn classify_embed_error_str(msg: &str) -> PipelineFailure {
 
     // #5354 — the local Ollama runtime is not usable: the daemon is not
     // listening, or the configured embedding model was never pulled. Both are
-    // emitted by `tinyagents::harness::embeddings::ollama` with the fix already
+    // emitted by `tinyinference::embeddings::ollama` with the fix already
     // in the text:
     //
     //   "ollama embed request failed (is Ollama running at <base>?): …"

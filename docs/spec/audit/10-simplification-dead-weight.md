@@ -11,6 +11,10 @@ to trust than it needs to be. IDs are `SW-*`.
 
 ### SW-1 (High). The `tinyagents` git dependency blocks publishing and pins trust to one file
 
+**Resolved:** TinyCortex now depends on the provider-neutral `tinyinference`
+crate and no longer carries the TinyAgents runtime or submodule. The original
+finding below is retained as audit history.
+
 `Cargo.toml` depends on
 `tinyagents = { git = "https://github.com/senamakel/tinyagents", rev = "8f75355" }` —
 a personal-repo git dependency at an unaudited commit. Its **only** consumer is

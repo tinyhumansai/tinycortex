@@ -266,7 +266,7 @@ fn classify_transport_error_is_transient() {
 }
 
 /// #5354 — the Ollama daemon is not listening. Verbatim wording from
-/// `tinyagents::harness::embeddings::ollama::OllamaEmbeddingModel::request`.
+/// `tinyinference::embeddings::OllamaEmbeddingModel` request path.
 /// Note the parenthesised hint: `parse_http_status` reads the first `(`, so
 /// without an explicit match this fell through to `Transient` and the panel
 /// told the user to wait for a retry that can never start their daemon.
