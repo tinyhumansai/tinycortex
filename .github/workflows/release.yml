@@ -159,11 +159,34 @@ jobs:
         if: steps.publishable.outputs.publishable == 'true'
         run: cargo package --locked -p "$CRATE_NAME"
 
-      - name: Push release commit and tag
+      - name: Open and merge release PR
+        id: merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_BRANCH: ${{ steps.commit.outputs.branch }}
+        run: |
+          set -euo pipefail
+
+          pr_url="$(gh pr create \
+            --base "${GITHUB_REF_NAME}" \
+            --head "${RELEASE_BRANCH}" \
+            --title "Release ${RELEASE_TAG}" \
+            --body "Automated version bump for ${RELEASE_TAG}.")"
+          gh pr merge "${pr_url}" --squash --delete-branch
+
+          git fetch origin "${GITHUB_REF_NAME}"
+          merge_sha="$(git rev-parse "origin/${GITHUB_REF_NAME}")"
+          echo "sha=${merge_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Tag and push release
         env:
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          MERGE_SHA: ${{ steps.merge.outputs.sha }}
         run: |
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          set -euo pipefail
+
+          git tag -a "${RELEASE_TAG}" -m "Release ${RELEASE_TAG}" "${MERGE_SHA}"
           git push origin "${RELEASE_TAG}"
 
       - name: Publish to crates.io
