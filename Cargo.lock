@@ -1703,7 +1703,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tinycortex-api",
- "tinyinference",
+ "tinyinference-core",
  "tokio",
  "toml",
  "tracing",
@@ -1720,13 +1720,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "tinyinference"
+name = "tinyinference-core"
 version = "0.2.1"
-source = "git+https://github.com/tinyhumansai/tinyinference?rev=cc8aca484bb995fbab3b7358f0d72ab5056b587c#cc8aca484bb995fbab3b7358f0d72ab5056b587c"
+source = "git+https://github.com/tinyhumansai/tinyinference?rev=98f402a#98f402afa426bbca8360c8e2dc68ca543421e1f2"
 dependencies = [
+ "anyhow",
  "async-trait",
  "bytes",
  "futures",
+ "hex",
  "httpdate",
  "reqwest",
  "serde",
@@ -1734,6 +1736,8 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror",
  "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

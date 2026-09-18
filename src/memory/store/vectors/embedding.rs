@@ -20,7 +20,7 @@ use async_trait::async_trait;
 /// instantiated backend. Drift between the two would silently split one
 /// embedding space into two.
 pub fn format_embedding_signature(name: &str, model_id: &str, dims: usize) -> String {
-    tinyinference::embeddings::format_embedding_signature(name, model_id, dims)
+    tinyinference_core::embeddings::format_embedding_signature(name, model_id, dims)
 }
 
 /// Interface for embedding backends that convert text into numerical vectors.
@@ -63,22 +63,22 @@ pub trait EmbeddingBackend: Send + Sync {
 #[async_trait]
 impl<T> EmbeddingBackend for T
 where
-    T: tinyinference::embeddings::EmbeddingModel + ?Sized,
+    T: tinyinference_core::embeddings::EmbeddingModel + ?Sized,
 {
     fn name(&self) -> &str {
-        tinyinference::embeddings::EmbeddingModel::name(self)
+        tinyinference_core::embeddings::EmbeddingModel::name(self)
     }
 
     fn model_id(&self) -> &str {
-        tinyinference::embeddings::EmbeddingModel::model_id(self)
+        tinyinference_core::embeddings::EmbeddingModel::model_id(self)
     }
 
     fn dimensions(&self) -> usize {
-        tinyinference::embeddings::EmbeddingModel::dimensions(self)
+        tinyinference_core::embeddings::EmbeddingModel::dimensions(self)
     }
 
     fn signature(&self) -> String {
-        tinyinference::embeddings::EmbeddingModel::signature(self)
+        tinyinference_core::embeddings::EmbeddingModel::signature(self)
     }
 
     async fn embed(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
@@ -86,7 +86,7 @@ where
             .iter()
             .map(|text| (*text).to_owned())
             .collect::<Vec<_>>();
-        tinyinference::embeddings::EmbeddingModel::embed(self, &owned)
+        tinyinference_core::embeddings::EmbeddingModel::embed(self, &owned)
             .await
             .map_err(|error| anyhow::anyhow!(error))
     }

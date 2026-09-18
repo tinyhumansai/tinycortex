@@ -5,7 +5,7 @@
 //!
 //! 1. [`PersonaRetriever`] ranks persisted observations with deterministic,
 //!    network-free BM25 retrieval weighted by evidence tier.
-//! 2. A provider-neutral [`tinyinference`] model receives only those ranked
+//! 2. A provider-neutral [`tinyinference-core`] model receives only those ranked
 //!    observations and the person's explicit directives, then writes one
 //!    evidence-cited decision.
 //!
@@ -25,9 +25,9 @@
 //! - `TINYCORTEX_LLM_MODEL` — model id (default `deepseek/deepseek-v4-flash`).
 //! - `PERSONA_IDENTITY` — identity label in the prompt (default `this developer`).
 
-use tinyinference::message::Message;
-use tinyinference::model::{ChatModel, ModelRequest};
-use tinyinference::providers::openai::OpenAiModel;
+use tinyinference_core::message::Message;
+use tinyinference_core::model::{ChatModel, ModelRequest};
+use tinyinference_core::providers::openai::OpenAiModel;
 
 use tinycortex::memory::config::MemoryConfig;
 use tinycortex::memory::persona::compile::read_directives;
