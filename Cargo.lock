@@ -1703,7 +1703,8 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tinycortex-api",
- "tinyinference-core",
+ "tinyinference-embeddings",
+ "tinyinference-llm",
  "tokio",
  "toml",
  "tracing",
@@ -1722,19 +1723,43 @@ dependencies = [
 [[package]]
 name = "tinyinference-core"
 version = "0.2.1"
-source = "git+https://github.com/tinyhumansai/tinyinference?rev=792028b#792028b6be2515ab4967ffa57e663eaa52b018e9"
+source = "git+https://github.com/tinyhumansai/tinyinference?rev=bb0f820#bb0f820a246874dff7fff2569d8679303d354fb0"
 dependencies = [
  "anyhow",
+ "httpdate",
+ "url",
+]
+
+[[package]]
+name = "tinyinference-embeddings"
+version = "0.2.1"
+source = "git+https://github.com/tinyhumansai/tinyinference?rev=bb0f820#bb0f820a246874dff7fff2569d8679303d354fb0"
+dependencies = [
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tinyinference-core",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "tinyinference-llm"
+version = "0.2.1"
+source = "git+https://github.com/tinyhumansai/tinyinference?rev=bb0f820#bb0f820a246874dff7fff2569d8679303d354fb0"
+dependencies = [
  "async-trait",
  "bytes",
  "futures",
- "hex",
- "httpdate",
  "reqwest",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "thiserror",
+ "tinyinference-core",
  "tokio",
  "tracing",
  "url",
