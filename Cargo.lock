@@ -1722,7 +1722,7 @@ dependencies = [
 [[package]]
 name = "tinyinference-core"
 version = "0.2.1"
-source = "git+https://github.com/tinyhumansai/tinyinference?rev=98f402a#98f402afa426bbca8360c8e2dc68ca543421e1f2"
+source = "git+https://github.com/tinyhumansai/tinyinference?rev=6428931#6428931d2fb259e4135f3b4a0e96b29d97c92c7e"
 dependencies = [
  "anyhow",
  "async-trait",
