@@ -10,6 +10,8 @@ members = [
     "vendor/tinyinference/crates/tinyinference-core",
     "vendor/tinyinference/crates/tinyinference-embeddings",
     "vendor/tinyinference/crates/tinyinference-llm",
+    "vendor/tinymemory/crates/tinymemory-api",
+    "vendor/tinymemory/crates/tinymemory-bus",
 ]
 default-members = [".", "api"]
 

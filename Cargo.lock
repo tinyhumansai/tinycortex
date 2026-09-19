@@ -1768,13 +1768,24 @@ dependencies = [
 [[package]]
 name = "tinymemory-api"
 version = "0.1.1"
-source = "git+https://github.com/tinyhumansai/tinymemory?rev=4549cda222de3891b95e2fa58e2565bb2c194328#4549cda222de3891b95e2fa58e2565bb2c194328"
 dependencies = [
  "anyhow",
  "async-trait",
- "chrono",
  "log",
  "schemars",
+ "serde",
+ "serde_json",
+ "tinymemory-bus",
+ "tokio",
+ "toml",
+]
+
+[[package]]
+name = "tinymemory-bus"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
  "serde",
  "serde_json",
  "sha2 0.11.0",
