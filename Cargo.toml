@@ -1,15 +1,58 @@
 # The engine crate is also the workspace root so `api/` is never an orphan
 # package: `cargo fmt --all`, `cargo check`, and `cargo test` from this
-# directory cover the stable-contract crate too. `vendor/` is excluded so the
-# vendored dependencies are not pulled in as implicit members.
+# directory cover the stable-contract crate too. The vendored TinyInference
+# crates are explicit members because their manifests inherit shared metadata
+# from their upstream workspace.
 [workspace]
-members = [".", "api"]
-# `default-members` would otherwise fall back to the root package alone (this is
-# a root-package workspace, not a virtual one), so a bare `cargo test` here
-# would silently skip `api/`. Naming both members keeps the contract crate in
-# every default build/test.
+members = [
+    ".",
+    "api",
+    "vendor/tinyinference/crates/tinyinference-core",
+    "vendor/tinyinference/crates/tinyinference-embeddings",
+    "vendor/tinyinference/crates/tinyinference-llm",
+]
 default-members = [".", "api"]
-exclude = ["vendor"]
+
+[workspace.package]
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.88"
+license = "GPL-3.0-only"
+repository = "https://github.com/tinyhumansai/tinyinference"
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+bytes = "1"
+futures = "0.3"
+httpdate = "1"
+once_cell = "1"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+thiserror = "2"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1"
+url = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+todo = "warn"
+unimplemented = "warn"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "warn"
+private_intra_doc_links = "warn"
 
 [package]
 name = "tinycortex"
@@ -117,12 +160,11 @@ serde_json = "1"
 schemars = "1"
 sha2 = "0.10"
 thiserror = "2"
-# Provider-neutral inference contracts. Pinned until TinyInference is
-# published; embedding hosts may patch this exact git source so the host and
-# TinyCortex share one `EmbeddingModel` trait identity without pulling in an
-# agent runtime.
-tinyinference-embeddings = { git = "https://github.com/tinyhumansai/tinyinference", rev = "bb0f820" }
-tinyinference-llm = { git = "https://github.com/tinyhumansai/tinyinference", rev = "bb0f820" }
+# Provider-neutral inference contracts. TinyInference is vendored as a
+# submodule so TinyCortex and embedding hosts resolve the same local trait
+# definitions without a direct Git dependency.
+tinyinference-embeddings = { path = "vendor/tinyinference/crates/tinyinference-embeddings" }
+tinyinference-llm = { path = "vendor/tinyinference/crates/tinyinference-llm" }
 # The stable contract crate (value types, error enum, `Memory` trait). Declared
 # as a path dependency, not a registry requirement, so embedding hosts resolve
 # it through this checkout without needing their own `[patch.crates-io]` entry.
