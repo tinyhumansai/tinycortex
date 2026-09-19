@@ -1,0 +1,8 @@
+[submodule "vendor/tinyinference"]
+	path = vendor/tinyinference
+	url = https://github.com/tinyhumansai/tinyinference.git
+	branch = main
+[submodule "vendor/tinymemory"]
+	path = vendor/tinymemory
+	url = https://github.com/tinyhumansai/tinymemory.git
+	branch = main

@@ -36,18 +36,6 @@ description = "Stable public contracts for the TinyCortex memory system"
 # `tinymemory_api::types::MemoryEntry` are one type rather than two that a
 # conversion layer has to keep in step (tinymemory#18 §A1).
 #
-# By git rather than by version because neither crate is published, and pinned
-# by `rev` because bumping the contract is a deliberate act that should be a
-# reviewable line in a diff rather than whatever the default branch happened to
-# be on the day someone rebuilt.
-#
-# A host that vendors both crates must patch this entry to its own checkout, or
-# cargo resolves the git copy alongside the path copy and the two
-# `MemoryEntry`s are different types. That needs a git-URL patch table — a
-# `[patch.crates-io]` entry cannot override a git dependency:
-#
-#   [patch."https://github.com/tinyhumansai/tinymemory"]
-#   tinymemory-api = { path = "api" }
-#
-# tinymemory's own workspace root carries exactly that.
-tinymemory-api = { git = "https://github.com/tinyhumansai/tinymemory", rev = "4549cda222de3891b95e2fa58e2565bb2c194328" }
+# Vendored as a submodule so this re-export and any local TinyMemory consumer
+# resolve exactly one set of contract types, without a direct Git dependency.
+tinymemory-api = { path = "../vendor/tinymemory/crates/tinymemory-api" }
