@@ -105,3 +105,7 @@ pub struct DegradedState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cause: Option<PipelineFailure>,
 }
+
+#[cfg(test)]
+#[path = "types_tests.rs"]
+mod tests;

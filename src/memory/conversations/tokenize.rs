@@ -43,7 +43,10 @@
 //! 4. **Non-decomposing fold** — small per-letter table for decorated letters
 //!    that have no canonical base (Polish ł, German ß, Norwegian ø, Icelandic
 //!    þ/ð, Latin æ/œ, Turkish ı, Croatian đ, Maltese ħ, Sami ŋ).
-//! 5. **Half-width → full-width katakana** — unifies the half-width and
+//! 5. **Full-width ASCII → ASCII** — folds the full-width variants
+//!    (`ＡＢＣ` → `abc`, U+FF01..=U+FF5E, plus the ideographic space) so an
+//!    ASCII query retrieves full-width Latin content, matching NFKC.
+//! 6. **Half-width → full-width katakana** — unifies the half-width and
 //!    full-width kana forms so byte equality lines up at lookup time.
 //!
 //! The result is idempotent: re-running `normalize` on its own output is a
@@ -66,6 +69,8 @@ pub fn normalize(text: &str) -> String {
             out.push_str(folded);
         } else if let Some(base) = strip_latin_diacritic(c) {
             out.push(base);
+        } else if let Some(ascii) = fullwidth_to_ascii(c) {
+            out.push(ascii);
         } else if let Some(full) = halfwidth_to_fullwidth(c) {
             out.push(full);
         } else {
@@ -73,6 +78,27 @@ pub fn normalize(text: &str) -> String {
         }
     }
     out
+}
+
+/// Full-width ASCII variants (U+FF01..=U+FF5E) → their ASCII originals, plus
+/// the ideographic space (U+3000) → an ordinary space.
+///
+/// These are NFKC compatibility folds — `ＡＢＣ` normalizes to `ABC` under
+/// NFKC — and the pipeline this port reproduces ran NFKD→NFKC, so without
+/// this arm an ASCII query could not retrieve indexed full-width Latin
+/// content (common in CJK text, where full-width forms are produced by the
+/// IME). The offset is uniform: full-width `！` (U+FF01) through `～`
+/// (U+FF5E) sit exactly `0xFEE0` above `!`..=`~`. Lowercasing has already
+/// happened by the time this runs, and `char::to_lowercase` maps full-width
+/// `Ａ`→`ａ` within the full-width block, so the subtraction lands on the
+/// lowercase ASCII letter directly. Disjoint from the half-width katakana
+/// range (U+FF61..) handled below.
+fn fullwidth_to_ascii(c: char) -> Option<char> {
+    match c {
+        '\u{FF01}'..='\u{FF5E}' => char::from_u32(c as u32 - 0xFEE0),
+        '\u{3000}' => Some(' '),
+        _ => None,
+    }
 }
 
 /// Per-letter folds for "decorated" letters that have no canonical

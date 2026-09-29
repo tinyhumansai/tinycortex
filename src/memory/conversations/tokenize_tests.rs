@@ -106,3 +106,14 @@ fn is_cjk_classifies_common_scripts() {
     assert!(!is_cjk('ą'));
     assert!(!is_cjk('，')); // CJK punctuation — intentionally NOT cjk
 }
+
+#[test]
+fn normalize_folds_fullwidth_ascii() {
+    // NFKC folds the full-width ASCII variants; the port must too, or an
+    // ASCII query cannot retrieve indexed full-width Latin content.
+    assert_eq!(normalize("ＡＢＣ"), "abc");
+    assert_eq!(normalize("ｈｅｌｌｏ　ｗｏｒｌｄ"), "hello world");
+    assert_eq!(normalize("１２３！"), "123!");
+    // Idempotent: the fold lands on plain ASCII, which passes through.
+    assert_eq!(normalize(&normalize("ＡＢＣ")), "abc");
+}

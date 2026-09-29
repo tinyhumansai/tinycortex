@@ -153,3 +153,27 @@ fn second_candidate_wins_when_first_missing() {
     let real = write_config(tmp.path(), &[root.to_str().unwrap()]);
     assert!(registration_in_files(&root, &[missing, real]).registered);
 }
+
+/// The override arm is the host's own reason for keeping this code: a user
+/// with a non-standard Obsidian install points at their config dir and the
+/// probe has to look there *first*. Both spellings are accepted because users
+/// cannot tell whether the path should end in `obsidian/`.
+#[test]
+fn extra_config_dir_is_probed_before_the_standard_locations() {
+    let tmp = tempfile::tempdir().unwrap();
+    let files = candidate_config_files(Some(tmp.path()));
+    assert_eq!(files[0], tmp.path().join("obsidian.json"));
+    assert_eq!(files[1], tmp.path().join("obsidian").join("obsidian.json"));
+}
+
+/// No override means no override-derived candidates — the probe must not
+/// invent a relative `./obsidian.json`, which would make the answer depend on
+/// the process working directory.
+#[test]
+fn no_extra_config_dir_adds_no_relative_candidate() {
+    let files = candidate_config_files(None);
+    assert!(
+        files.iter().all(|p| p.is_absolute()),
+        "every candidate must be absolute; got {files:?}"
+    );
+}

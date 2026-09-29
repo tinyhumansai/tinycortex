@@ -115,6 +115,51 @@ pub struct CrossThreadHit {
     pub score: f64,
 }
 
+/// Prefix of the message ids the core mints **deterministically** rather than
+/// from a fresh UUID.
+///
+/// Only such an id can be presented to the store twice by two different
+/// writers, so it is also the marker
+/// [`is_deterministic_message_id`] keys the store's idempotency lookup on.
+pub const DETERMINISTIC_MESSAGE_ID_PREFIX: &str = "agent:";
+
+/// The id an autonomous run's closing reply is stored under.
+///
+/// Two writers legitimately persist that one reply — the core's
+/// background-delivery path and the client that also persists the
+/// `chat_done` the run announces (`ChatRuntimeProvider` mirrors this shape for
+/// `client_id: "system"` turns) — so both must derive the same id and the store
+/// must collapse the second write onto the first (#5933).
+pub fn run_reply_message_id(run_id: &str) -> String {
+    format!("{DETERMINISTIC_MESSAGE_ID_PREFIX}{run_id}")
+}
+
+/// Whether `id` is one the core mints deterministically, i.e. one a second
+/// writer can legitimately present again.
+///
+/// This is what buys back the constant-time append path: every other id in the
+/// store is UUID-fresh by construction (`user:<uuid>`, `<sender>:<uuid>`), can
+/// never be re-presented, and so must not pay for a duplicate lookup. The
+/// `agent:<uuid>` ids the subagent/worker-thread writers mint do match — they
+/// pay for a lookup they can never hit, which is one cheap scan of a
+/// two-message worker transcript.
+pub fn is_deterministic_message_id(id: &str) -> bool {
+    id.starts_with(DETERMINISTIC_MESSAGE_ID_PREFIX)
+}
+
+/// The run/request id [`run_reply_message_id`] minted `id` from, or `None`
+/// when `id` is not a deterministic reply id (see
+/// [`is_deterministic_message_id`]).
+///
+/// Backs `threads.edit_message` / `threads.regenerate`: an assistant reply's
+/// store id is the one place the conversation-store id space and the
+/// model-facing transcript's `request_id` space provably correlate, so
+/// recovering the run id from the store id is how a UI message id resolves
+/// to a transcript cut point.
+pub fn reply_run_id(id: &str) -> Option<&str> {
+    id.strip_prefix(DETERMINISTIC_MESSAGE_ID_PREFIX)
+}
+
 #[cfg(test)]
 #[path = "types_tests.rs"]
 mod tests;
